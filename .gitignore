@@ -1,0 +1,17 @@
+# compiled binaries
+/everflow
+/dist/
+
+# local test artifacts
+/tmp/
+*.test
+coverage.out
+cover.out
+
+# editor
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
