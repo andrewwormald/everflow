@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="200" height="200" role="img" aria-label="Everflow">
+  <title>Everflow</title>
+  <path d="M41 20 H55 A21 21 0 0 1 76 41 V55 A21 21 0 0 1 55 76 H41 A21 21 0 0 1 20 55 V41 A21 21 0 0 1 41 20 Z"
+        fill="none" stroke="#16263d" stroke-width="11" stroke-linejoin="round"/>
+  <circle cx="37.5" cy="20" r="4"   fill="#ff5a3c" opacity="0.30"/>
+  <circle cx="46"   cy="20" r="6"   fill="#ff5a3c" opacity="0.58"/>
+  <circle cx="57"   cy="20" r="9.5" fill="#ff5a3c"/>
+</svg>

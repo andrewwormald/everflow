@@ -1,8 +1,17 @@
-# Everflow
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="logo/mark-dark.gif">
+    <img src="logo/mark.gif" alt="Everflow" width="220" />
+  </picture>
 
-> Durable, terminal-independent runner for Claude Code / Qwen Code / OpenHands skills.
+  <h1>everflow</h1>
 
-Everflow runs your AI coding agent on a schedule, in an isolated git worktree, in a durable workflow that survives terminal closure, daemon restarts, and machine reboots. Designed for the work that doesn't fit a single session — multi-day CI babysitting, scheduled audits, "keep this MR green until it merges."
+  <p><strong>Never polls.</strong> A token forever circling the event loop —<br/>dispatching, waiting on callbacks and timeouts, coming back around.</p>
+</div>
+
+---
+
+Everflow is a durable, terminal-independent host for AI coding agents. It runs your Claude Code (or Qwen Code, or OpenHands) skill on a schedule, in an isolated git worktree, in a workflow that survives terminal closure, daemon restarts, and machine reboots. Designed for the work that doesn't fit a single session — multi-day CI babysitting, scheduled audits, "keep this MR green until it merges."
 
 Built on [`luno/workflow`](https://github.com/luno/workflow) for the durable state machine.
 
