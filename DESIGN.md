@@ -1,403 +1,281 @@
 # Everflow — design
 
-Long-running AI agent loops on `luno/workflow`. A durable, terminal-independent
-runner for Claude Code / Qwen Code / OpenHands skills.
+**Status**: Active design. The v0 scheduled-skill code in this repo demonstrates the durable-workflow plumbing but does not yet implement the v1 mandate described below. Every load-bearing decision in this doc links to an ADR under [`decisions/`](decisions/).
 
-**Status**: Design doc. The scheduled-skill subset is implemented; the full
-`Iterating`/`Awaiting` loop is not.
-**Author**: Andrew Wormald
-**Last updated**: 2026-06-15
+**Last updated**: 2026-06-16
 
-## Motivation
+## Mandate
 
-Interactive AI coding tools (Claude Code, OpenHands, Codex CLI) are bound to a single session: when the user closes the terminal, the agent loop dies. Stateful long-running work — multi-day refactors, scheduled audits, "babysit this until CI is green" — needs an L1/L2/L3 model:
+Everflow drives **bulk refactor sweeps over large codebases**. It opens MRs one (or N) at a time, watches them through review and CI, addresses reviewer feedback, ships the merge, and picks up the next unit — until the refactor is done or the user calls a halt.
 
-- **L1 Setup & Goal** — user states a goal once
-- **L2 Agentic Loop** — Plan → Act → Observe → Reflect, repeating for hours/days
-- **L3 Stateful Memory** — progress survives process restarts, machine reboots, and human absence
+The point isn't durability for its own sake. The point is **amortising LLM cost**: the workflow handles the repetitive cheap work (queueing, throttling, status reporting, classifying comments, retrying flakes) deterministically; the subagent fires only on the bits that need reasoning. See [ADR-0014](decisions/0014-refactor-sweep-mandate.md).
 
-`luno/workflow` already provides every primitive L3 needs (durable `RecordStore`, event log, `Callback`/`Timeout` for waiting without busy loops, `Pause` for stuck runs, role scheduling for horizontal scale, web UI for inspection). This proposal is a thin CLI — `everflow` — that wires those primitives into the L1/L2/L3 model and ships as a **Skill** that existing AI coding tools invoke.
+## Why a workflow library for this
 
-This CLI is not a replacement for Claude Code or OpenHands. Those tools remain the user's primary interface. They *trigger* `everflow`, query its state, and feed answers back when the loop pauses for input.
+Bulk refactors have an L1/L2/L3 shape that maps cleanly onto `luno/workflow`:
 
-## L1/L2/L3 → workflow mapping
-
-| Agent concept | `luno/workflow` primitive |
-|---|---|
-| Goal statement (L1) | `Trigger(foreignID, WithInitialValue(&AgentState{Goal: "..."}))` |
-| Conversation/turn history (L1+L3) | `Run.Object.History []Turn` — durable, survives restarts |
-| Iterate loop (L2) | Single `Iterating` step that cycles to itself; the runner decides per-invocation whether it did one turn or many |
-| Wait on external tool / human (L2) | `AddCallback` at a "needs input" status |
-| Wake up on a schedule (L2) | `AddTimeout` — "rerun this step in 4h if no progress" |
-| Resumable memory (L3) | `RecordStore`; Run identity = `(workflowName, foreignID, runID)` |
-| Stuck-run escape valve | `Run.Pause()` → `RunStatePaused` → human resolves via callback |
-| Multiple concurrent agents | Each agent = one Run; `ParallelCount` shards step workers |
-| Audit trail | Event log (every status transition is a durable event) |
+| Refactor concept | `luno/workflow` primitive | ADR |
+|---|---|---|
+| The refactor goal (one-time setup) | `Trigger(WithInitialValue(&AgentState{Goal, Units, Filter, Skill}))` | [0005](decisions/0005-context-in-workflow-run.md) |
+| Throttled sequence (per-unit state machine) | Step graph with a `Working → Awaiting-merge → ...` cycle, semaphore in `AgentState` | [0015](decisions/0015-throttled-sequential-mr-flow.md) |
+| Wait for MR events (no polling, no busy loop) | `AddCallback` fired by inbound webhooks | [0014](decisions/0014-refactor-sweep-mandate.md) |
+| Resume after restart | `RecordStore`; `Run.Object` rehydrated identically | [0005](decisions/0005-context-in-workflow-run.md) |
+| Author intervention ("I'm stuck") | `Pause()` + author posts `/everflow resume` comment | [0017](decisions/0017-author-privilege-model.md) |
+| Concurrency > 1 (v2) | Parent Run + child Runs per in-flight unit, queue + semaphore in parent | [0015](decisions/0015-throttled-sequential-mr-flow.md) |
+| Audit trail | Event log + the MR thread itself | [0016](decisions/0016-mr-comments-only-channel.md) |
 
 ## Architecture
 
 ```
-                       ┌──────────────────────┐
-   user / claude  ───► │  everflow CLI  │  ◄─── everflow daemon
-                       │  (start/status/...)  │       (long-lived process)
-                       └──────────┬───────────┘                │
-                                  │                            │
-                                  ▼                            ▼
-                         ┌─────────────────────────────────────────┐
-                         │  luno/workflow runtime                  │
-                         │  - RecordStore (sqlite for v1)          │
-                         │  - EventStreamer (in-process for v1)    │
-                         │  - TimeoutStore (sqlite for v1)         │
-                         └────────────────┬────────────────────────┘
-                                          │ per step
-                                          ▼
-                         ┌─────────────────────────────────────────┐
-                         │  Step executor                          │
-                         │  - cd to ~/.everflow/wt/<runID>/  │
-                         │  - invoke configured Runner with Run    │
-                         │    state (goal, history, scratchpad)    │
-                         │  - parse runner's structured output     │
-                         │  - return next Status                   │
-                         └────────────────┬────────────────────────┘
-                                          │
-                                          ▼
-                         ┌─────────────────────────────────────────┐
-                         │  Runner (per-Run, --runner flag)        │
-                         │  - claude    → claude -p --output-format json
-                         │  - qwen      → qwen -p (JSON via prompt)│
-                         │  - openhands → openhands headless -t    │
-                         └─────────────────────────────────────────┘
+                ┌──────────────────────────────────────────┐
+   Author ───►  │   everflow CLI                           │
+   (Claude or   │   start / status / phrases promote / ... │
+    direct)     └──────────────────┬───────────────────────┘
+                                   │ trigger / inspect
+                                   ▼
+                ┌──────────────────────────────────────────┐
+                │   everflow daemon (long-lived)           │
+                │   ┌─────────────────────────────────┐    │
+                │   │ luno/workflow runtime           │    │
+                │   │  - RecordStore (sqlite)         │    │
+                │   │  - TimeoutStore (sqlite)        │    │
+                │   │  - EventStreamer (in-process)   │    │
+                │   └────────────────┬────────────────┘    │
+                │                    │                     │
+                │   ┌────────────────┴────────────────┐    │
+                │   │ Per-Run state machine           │    │
+                │   │  - Starlark filter eval         │    │
+                │   │  - Provider client (glab/gh)    │    │
+                │   │  - Runner (claude -p, ...)      │    │
+                │   │  - Worktree mgmt                │    │
+                │   └─────────────────────────────────┘    │
+                │                                          │
+                │   ┌─────────────────────────────────┐    │
+                │   │ HTTP server :8080               │    │
+                │   │  POST /webhook/{provider}/{runID}│   │
+                │   │  HMAC-verify → workflow.Callback│    │
+                │   └────────────────▲────────────────┘    │
+                └────────────────────┼─────────────────────┘
+                                     │ webhook POST
+                                     │ (via ngrok / tailscale funnel
+                                     │  / public DNS on cloud)
+                                     │
+                ┌────────────────────┴─────────────────────┐
+                │  GitLab / GitHub                         │
+                │   - MR events: notes, pipelines,         │
+                │     merge_request actions                │
+                │   - Project-scoped webhook (one per      │
+                │     project, dispatched to many Runs)    │
+                └──────────────────────────────────────────┘
 ```
 
-Decisions baked in (from prior discussion):
+### Daemon model
 
-- **Single long-lived daemon** (`everflow daemon`), not cron-driven ticks. The user runs it under `launchd`/`systemd` (or just leaves it in a tmux pane). It calls `wf.Run(ctx)` and processes events for the `agent-loop` workflow.
-- **Pluggable Runner** chosen at `start` time via `--runner` (claude | qwen | openhands). The workflow definition is shared; only the runner differs per Run. See [Runners](#runners) below.
-- **Context lives in the workflow Run**, not in a long-lived agent subprocess. Each runner invocation is a pure function of `(goal, history, scratchpad, answer)` → structured response. This is what makes L3 fall out for free — resumption is just "rehydrate the Run and re-invoke the runner."
-- **One git worktree per Run**, created at `Trigger`, destroyed (or kept for inspection) at `Completed`/`Cancelled`. The worktree is the runner's filesystem sandbox.
+- **Single long-lived process** (see [ADR-0003](decisions/0003-single-long-lived-daemon.md))
+- Hosts the workflow runtime, sqlite store, embedded HTTP server, and per-Run state machines
+- Runs under `launchd` / `systemd` / `tmux` — designed to live on a VPS or EC2 instance, not a laptop
+- Single workflow definition (`refactor-sweep`); multiple Runs per workflow
 
-## The Run shape
+### Public-URL strategy
 
-```go
-type AgentState struct {
-    Goal       string    // L1 — the user's high-level goal, set once at Trigger
-    Worktree   string    // absolute path to ~/.everflow/wt/<runID>/
-    Branch     string    // wf-<runID>
-    BaseBranch string    // usually "main"
+Webhooks need a public address. v1 takes a `--public-base-url https://...` flag at daemon start; the user provides it via whatever tunneling fits their environment:
 
-    RunnerName string    // "claude" | "qwen" | "openhands" — set at Trigger, immutable after
-    Budget     Budget    // MaxTurns, MaxTokens; enforced in iterate before invoking runner
+| Deployment | Tunnel |
+|---|---|
+| VPS / EC2 / DigitalOcean | Native public DNS; open the port in the security group |
+| Laptop (preferred) | Tailscale Funnel — free, static `*.ts.net` URL |
+| Laptop (alternative) | Cloudflare Tunnel — free with own domain |
+| Laptop (last resort) | ngrok paid for stable URL; ngrok free works with the caveat that URLs rotate |
 
-    History    []Turn    // append-only log of every runner invocation
-    Scratchpad string    // model-updatable durable notes; persists across turns
-    Question   string    // when paused: the question the runner is asking the human
-    Answer     string    // when resumed: the human's answer, fed back into next invocation
+Everflow does not auto-spawn any tunnel. Too much magic, four tools to maintain, all of them flaky in their own ways. Users pick one and configure it.
 
-    LastError  string
-    Stats      Stats     // tokens used, turns taken, wall-clock elapsed
-}
+## The state machine
 
-type Budget struct {
-    MaxTurns  int   // hard stop after N runner invocations
-    MaxTokens int   // hard stop after N total tokens across the Run
-}
+Two concentric loops: a Run-level loop that handles discovery and queue management; a per-unit lifecycle that opens and ships one MR.
 
-type Turn struct {
-    Index     int
-    Runner    string    // "claude" | "qwen" | "openhands"
-    Summary   string    // human-readable what-the-runner-did this invocation
-    StartedAt time.Time
-    EndedAt   time.Time
-    Tokens    int
-}
+### Run-level loop (concurrency = 1, v1 baseline)
 
-type AgentStatus int
-const (
-    AgentStatusUnknown   AgentStatus = 0
-    AgentStatusInitiated AgentStatus = 1   // Run created, worktree not yet built
-    AgentStatusIterating AgentStatus = 2   // runner is doing work (or about to be invoked again)
-    AgentStatusAwaiting  AgentStatus = 3   // paused, waiting on human via callback
-    AgentStatusCompleted AgentStatus = 4   // goal reached; branch ready to PR
-    AgentStatusFailed    AgentStatus = 5   // unrecoverable; worktree kept for forensics
-)
+```
+Initiated
+   │ setup: register webhook with provider, build skill mirror, run discovery
+   ▼
+Discovering ───────── discovery returned 0 ────► Completed (post final comment, exit Run)
+   │
+   │ found N units, queue them
+   ▼
+Working                                        ◄─────────────────────────┐
+   │ pop next unit from queue                                              │
+   │ check filter, run subagent, push branch, open MR                      │
+   ▼                                                                      │
+Awaiting-merge ── [see per-unit lifecycle below] ─►                        │
+                                              merged ────► slot freed ────┤
+                                              closed ────► slot freed,    │
+                                                           blacklist ─────┘
 ```
 
-## The step graph
+### Per-unit lifecycle (inside Awaiting-merge)
 
-```go
-b := workflow.NewBuilder[AgentState, AgentStatus]("agent-loop")
-
-// Build the worktree, then enter the loop
-b.AddStep(AgentStatusInitiated, setupWorktree, AgentStatusIterating)
-
-// L2 loop — Iterating cycles to itself until the runner decides otherwise
-b.AddStep(AgentStatusIterating, iterate,
-    AgentStatusIterating,  // continue the loop
-    AgentStatusAwaiting,   // runner needs human input
-    AgentStatusCompleted,  // goal reached
-    AgentStatusFailed,     // unrecoverable
-)
-
-// Human-in-the-loop: everflow resolve <runID> --input "..." fires this
-b.AddCallback(AgentStatusAwaiting, resumeFromAnswer, AgentStatusIterating)
-
-// Safety timeout — if Iterating sits for more than the runner's configured
-// max-invocation wall-clock, pause for inspection. OpenHands runners get a
-// longer ceiling than claude/qwen runners.
-b.AddTimeout(AgentStatusIterating, runnerTimeoutTimer, timeoutToAwaiting, AgentStatusAwaiting)
+```
+Awaiting-merge (sitting indefinitely, zero compute cost)
+   │
+   ├── webhook: note_added ──► filter ──► SKIP            (no cost)
+   │                                  ──► CONTROL_COMMAND (author only — execute verb)
+   │                                  ──► INVOKE_SUBAGENT (subagent reads thread, pushes fix)
+   │                                                       │
+   │                                                       └─► back to Awaiting-merge
+   │
+   ├── webhook: pipeline_failed ──► classify (Starlark)
+   │                                  ──► known flake ────► retry job, no subagent
+   │                                  ──► novel failure ──► subagent diagnose + fix
+   │                                                         │
+   │                                                         └─► back to Awaiting-merge
+   │                                  ──► subagent stuck (3 attempts, same failure)
+   │                                                         │
+   │                                                         └─► Paused, post pause comment
+   │
+   ├── webhook: merge_request action=merged ──► Done (unit), release slot, return to Discovering
+   │
+   └── webhook: merge_request action=closed ──► Failed (unit), release slot, blacklist
 ```
 
-The single `iterate` step is short: it resolves the runner from `Run.Object.RunnerName`, calls `Runner.Run(ctx, RunRequest{...})` with the durable Run state, appends a `Turn`, and maps the runner's `Decision` field onto the next workflow status. The runner decides per-invocation whether it did one logical turn or twenty.
+The `Awaiting-merge` state can hold for *hours or days* with no compute load — the workflow is genuinely idle, waiting for the platform to push it an event. This is what makes the math work for long-running refactors.
 
-### What `iterate` looks like (sketch)
+### Concurrency > 1
 
-```go
-func iterate(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
-    runner, err := runners.Get(r.Object.RunnerName)
-    if err != nil {
-        return AgentStatusFailed, err
-    }
+Out of scope for v1, but the design accommodates it. The single Run becomes a *parent* Run holding a queue + semaphore; each in-flight unit gets its own *child* Run with the per-unit lifecycle. The parent's only job is queue management; child Runs handle their own MR. See [ADR-0015](decisions/0015-throttled-sequential-mr-flow.md) for the rationale.
 
-    resp, err := runner.Run(ctx, RunRequest{
-        Worktree:   r.Object.Worktree,
-        Goal:       r.Object.Goal,
-        History:    r.Object.History,
-        Scratchpad: r.Object.Scratchpad,
-        Answer:     r.Object.Answer, // populated by resumeFromAnswer if resuming
-        Budget:     r.Object.Budget,
-    })
-    if err != nil {
-        return AgentStatusFailed, err
-    }
+## Communication model
 
-    r.Object.Answer = "" // consume the answer
-    r.Object.Scratchpad = resp.Scratchpad
-    r.Object.History = append(r.Object.History, Turn{
-        Index:     len(r.Object.History),
-        Runner:    runner.Name(),
-        Summary:   resp.Summary,
-        StartedAt: resp.Start, EndedAt: resp.End, Tokens: resp.Tokens,
-    })
+The MR thread is the only channel ([ADR-0016](decisions/0016-mr-comments-only-channel.md)). Everflow speaks by posting comments; the human speaks by replying.
 
-    switch resp.Decision {
-    case DecisionContinue:
-        return AgentStatusIterating, nil
-    case DecisionAsk:
-        r.Object.Question = resp.Question
-        return AgentStatusAwaiting, nil
-    case DecisionDone:
-        return AgentStatusCompleted, nil
-    case DecisionFail:
-        r.Object.LastError = resp.Summary
-        return AgentStatusFailed, nil
-    }
-    return AgentStatusFailed, fmt.Errorf("unknown decision: %v", resp.Decision)
-}
+### Comment classification on inbound
+
+Every `note_added` event runs through:
+
+1. **Author + `/everflow ...` prefix?** → control command, see [ADR-0017](decisions/0017-author-privilege-model.md)
+2. **Bot?** → provider-specific deterministic handler (e.g. Danger title-check → auto-fix title via `glab mr update --title`)
+3. **Otherwise** → Starlark filter, see [ADR-0018](decisions/0018-starlark-filter-and-phrase-learning.md). Cheap-skip path for emojis and known phrases; subagent invocation only on substantive content.
+
+### Author privileges
+
+Captured at Trigger via `glab api user` (or `gh api user`), stored on `AgentState.Author`. From there:
+
+- Author's `/everflow <verb>` comments → bypass the LLM, route to state transitions
+- Reviewer comments → go through the filter (substantive ones may invoke the subagent to address them)
+- Bot comments → per-source handling
+
+Verbs: `pause`, `resume`, `skip`, `retry`, `prompt <text>`, `status`, `stop`. Full semantics in [ADR-0017](decisions/0017-author-privilege-model.md).
+
+## Workflow inputs at Trigger time
+
+The author hands everflow five things at `everflow start`:
+
+| Input | What it is | Example |
+|---|---|---|
+| **Goal** | One-sentence human description | "Migrate all Go services from logrus to log/slog" |
+| **Discovery rule** | How to find units. Either a `--units` static list, or a Starlark `discover()` function, or a shell command | `discover.star` walks `services/*/go.mod` for logrus imports |
+| **Skill** | A Claude Code skill the per-unit subagent will run. Lives at `~/.everflow/runs/<runID>/SKILL.md` (mirror-symlinked into the worktree's `.claude/skills/`) | A skill file with the refactor recipe |
+| **Filter** | Starlark function. Runs on every event. Defaults to a sensible one if not specified | `note_added.star`, `pipeline_failed.star` |
+| **Provider config** | Which platform, project ID, auth token | `--provider gitlab --project lunomoney/core` |
+
+Plus a few operational flags: `--concurrency 1`, `--public-base-url https://...`, `--max-tokens 1M`, `--max-units 50`.
+
+## Per-Run filesystem layout
+
+```
+~/.everflow/
+├── runs/
+│   └── <runID>/
+│       ├── SKILL.md              # canonical skill, edited by subagent each iteration
+│       ├── discover.star         # Starlark discovery rule (if supplied)
+│       ├── note_added.star       # Starlark filter for review comments
+│       ├── pipeline_failed.star  # Starlark filter for CI events
+│       ├── phrases.yaml          # learned skip phrases (per-Run scope)
+│       └── worktree/             # the git worktree, mirror-symlinks SKILL.md from above
+├── phrases.global.yaml           # cross-Run defaults; human-curated only
+├── store.db                      # sqlite RecordStore + TimeoutStore
+└── daemon.pid
 ```
 
-The runner never sees the workflow runtime. The workflow never sees the LLM. The `Runner` interface is the only boundary.
-
-## Runners
-
-A `Runner` is the integration point between workflow and a coding agent. v1 ships three.
+## The Runner interface (unchanged from prior design)
 
 ```go
 type Runner interface {
-    Name() string                                          // "claude" | "qwen" | "openhands"
+    Name() string
     Run(ctx context.Context, req RunRequest) (RunResponse, error)
 }
 
 type RunRequest struct {
-    Worktree   string
-    Goal       string
-    History    []Turn        // prior turns this Run has done
-    Scratchpad string        // durable model notes
-    Answer     string        // if non-empty, this is a resume from Awaiting
-    Budget     Budget        // per-invocation ceiling: tokens, wall-clock
+    Worktree     string
+    SkillCommand string         // "/refactor-logrus-to-slog services/payments"
+    Goal         string
+    UnitContext  string         // bounded — only this unit's scope
+    Budget       Budget
 }
 
 type RunResponse struct {
-    Decision   Decision      // continue | ask | done | fail
-    Summary    string        // one-paragraph "what I did this invocation"
-    Scratchpad string        // updated durable notes (Run.Object.Scratchpad := this)
-    Question   string        // populated when Decision == "ask"
+    Decision   Decision         // continue | ask | done | fail
+    Summary    string
+    Question   string           // populated when Decision == ask
+    Learnings  Learnings        // { add_phrases: [...], skill_updates: "..." }
     Tokens     int
-    Start, End time.Time
 }
-
-type Decision int
-const (
-    DecisionContinue Decision = iota
-    DecisionAsk
-    DecisionDone
-    DecisionFail
-)
 ```
 
-### Built-in implementations
+Backwards-compatible with the v0 scheduled-skill code; the refactor flow just uses richer fields (Learnings, UnitContext).
 
-| Runner | Transport | Output parsing | Per-invocation wall-clock |
-|---|---|---|---|
-| `claude` | `exec.Command("claude", "-p", "--output-format", "json", ...)` | Native — Claude Code's JSON output mode | 10 min default |
-| `qwen` | `exec.Command("qwen", "-p", ...)` | Native if Qwen Code's CLI exposes structured output; otherwise prompt-suffix JSON contract | 10 min default |
-| `openhands` | `exec.Command("openhands", "headless", "-t", goal, ...)` plus reading OpenHands' session state file | Native — OpenHands writes structured session state to disk | 60 min default (it runs a whole subtask per invocation) |
+## Provider abstraction
 
-Each runner is a small package under `runners/` with its own command-line construction, environment setup (env-var passthrough for API keys), and output parser. Adding a new runner = implementing the interface and registering it in a `Registry` map.
+```go
+type Provider interface {
+    Name() string
+    AuthenticatedUser(ctx context.Context) (User, error)
+    RegisterWebhook(ctx context.Context, projectID string, url string, secret string) (webhookID string, err error)
+    DeregisterWebhook(ctx context.Context, projectID string, webhookID string) error
+    VerifySignature(headers http.Header, body []byte, secret string) bool
+    NormaliseEvent(headers http.Header, body []byte) (Event, error)
 
-### Configuration
-
-A single YAML file at `~/.everflow/config.yaml` overrides defaults:
-
-```yaml
-default_runner: claude
-runners:
-  claude:
-    command: claude
-    extra_args: ["--model", "claude-opus-4-7"]
-    timeout: 10m
-  qwen:
-    command: qwen
-    extra_args: ["--model", "qwen3-coder"]
-    timeout: 10m
-  openhands:
-    command: openhands
-    extra_args: ["--llm-model", "anthropic/claude-sonnet-4-6"]
-    timeout: 60m
+    CreateMR(ctx context.Context, branch, title, description string) (MR, error)
+    PostComment(ctx context.Context, mr MR, body string) error
+    UpdateMRTitle(ctx context.Context, mr MR, title string) error
+    RetryPipelineJob(ctx context.Context, jobID string) error
+    CloseMR(ctx context.Context, mr MR) error
+    IsBot(user User) bool
+}
 ```
 
-Per-Run override at `start` time: `everflow start --runner qwen --goal "..."`. The runner name is stored on the Run, so the same daemon can have claude, qwen, and openhands runs in flight simultaneously.
+v1 ships `gitlab.Provider`. v2 adds `github.Provider`. Implementations are ~150 LOC each.
 
-## Isolation: worktree per Run
+## What's not yet built
 
-Created at `Trigger` (inside `setupWorktree`):
+The v0 code in this repo (`agent.go`, `main.go`, etc.) implements the scheduled-skill loop from [ADR-0010](decisions/0010-scheduled-skill-poc-first.md). It's retained as reference for the workflow primitives but does *not* implement this design.
 
-```bash
-git worktree add -b wf-<runID> ~/.everflow/wt/<runID>/ <baseBranch>
-```
+The v1 implementation needs (in roughly this build order):
 
-Inside that directory, the configured runner runs in yolo mode (`claude --dangerously-skip-permissions`, `openhands` with confirmation disabled, etc. — each runner's adapter handles the equivalent flag). Yolo mode is acceptable because:
+1. **Provider abstraction + GitLab adapter** — webhook register/dispatch, MR create/comment, signature verify
+2. **HTTP server in the daemon** — `:port/webhook/{provider}/{runID}` route, HMAC verify, workflow.Callback dispatch
+3. **Sqlite store** — replace memrecordstore/memtimeoutstore so daemon restart preserves Runs
+4. **State machine for the refactor-sweep workflow** — `Discovering → Working → Awaiting-merge → ...`
+5. **Starlark filter integration** — `go.starlark.net` embedded, filter eval per event, phrase file read/append
+6. **Per-Run filesystem layout + skill mirror** — `~/.everflow/runs/<runID>/...`
+7. **Control command handler** — author-only comment commands
+8. **`everflow start` CLI** — flag parsing, validation, trigger; `everflow status`, `everflow phrases promote`
+9. **GitHub provider adapter** — second implementation to validate the Provider interface
 
-1. The user pre-authorized the agent by triggering the workflow with a goal
-2. Writes can only land in the worktree dir, not the user's main checkout
-3. Commits land on `wf-<runID>`, never on `main`
-4. The CLI explicitly does **not** grant credentials for `gh`, network deploys, `kubectl`, etc. — those remain off-limits unless the user adds them to the daemon's environment
+Rough sizing: ~2 weeks of focused work to ship the v1 baseline (concurrency = 1, GitLab only).
 
-When the runner needs something it cannot do autonomously (a credential, a design decision, a sanity check), it returns `Decision: DecisionAsk` with a populated `Question` field. The Run transitions to `AgentStatusAwaiting`; the user is notified (initially just via `everflow list --awaiting`, later via Slack/desktop notifications). The user answers via:
+## Open questions
 
-```
-everflow resolve <runID> --input "use staging API, key is in 1Password"
-```
+These don't block the architecture, but they shape implementation:
 
-That fires `workflow.Callback`, which runs `resumeFromAnswer`: it copies `--input` into `Object.Answer`, transitions back to `AgentStatusIterating`, and the next `iterate` invocation passes the answer to the runner.
+1. **Signal that learning is working** — the filter should call the LLM less often over time. What's the measurable signal? A counter of `subagent_invocations / total_events` per Run? Plotted where? Worth thinking through before we ship "the system gets smarter."
 
-## CLI surface
+2. **Subagent invocation atomicity** — when processing a unit, does one `claude -p` invocation (a) read the skill, (b) make the change, (c) open the MR, (d) update the skill with learnings, in one call? Or are those separate calls? Per-unit-one-call is cheaper; multi-call is more verifiable. Default to one call for v1; reconsider if quality is poor.
 
-```
-everflow daemon [--store sqlite:~/.everflow/db]
-    Start the long-lived process. Idempotent; second invocation exits cleanly.
+3. **What about questions in reviewer comments?** A reviewer asking "why this approach?" isn't a blocking change request. Does the subagent answer it (post a reply comment) or wait for the human? Leaning *answer* — but this lets the subagent author content, not just code. Worth a small UX experiment.
 
-everflow start --goal "<goal>" [--base main] [--runner claude|qwen|openhands]
-                     [--max-turns 50] [--max-tokens 500000]
-    Create a Run. Builds the worktree, prints the runID. --runner defaults
-    to the value in ~/.everflow/config.yaml.
+4. **Dependencies between units** — some refactors have ordering constraints (unit B depends on unit A being merged first). Do we model this? v1 says no — the discovery rule is responsible for enumerating units that *can* run in any order. If ordering matters, the author writes a discovery rule that returns the next unit when the prior is shipped, not all units up front.
 
-everflow runners
-    List configured runners and their effective settings (command, model,
-    timeout). Useful for "is the openhands binary actually on my PATH?"
+5. **Re-discovery cadence and cost** — does discovery re-run after every merge, or on a timer, or both? Cheap for grep-the-filesystem rules; expensive for "call an API to enumerate." Probably configurable.
 
-everflow status <runID>
-    Current AgentStatus, branch, worktree path, last 5 turns, current Question
-    if Awaiting.
-
-everflow list [--mine] [--awaiting] [--state running|paused|completed]
-    Tabular list. --awaiting is the "things that need me" filter.
-
-everflow resolve <runID> --input "<answer>"
-    Answer a paused agent's question. Unblocks the Run.
-
-everflow logs <runID> [--phase plan|act|observe|reflect] [--tail]
-    Stream Turn history. --tail follows live as the daemon emits new turns.
-
-everflow stop <runID> [--reason "..."]
-    Cancel a running agent. Worktree is kept for inspection until purge.
-
-everflow finalize <runID>
-    For Completed runs: prints the gh pr create command (does not run it).
-    Includes a drift summary (commits behind base).
-
-everflow purge <runID>
-    Remove the worktree and branch. Run record stays for audit.
-```
-
-## Skill integration
-
-Distribution is a Claude Code Skill so adoption requires no behavior change from the user — Claude Code discovers it the moment they install the skill bundle.
-
-```
-~/.claude/skills/everflow/SKILL.md
-~/.claude/skills/everflow/scripts/...
-```
-
-`SKILL.md` outline:
-
-```markdown
----
-name: everflow
-description: Use when the user asks for a multi-hour or multi-day autonomous task
-  (refactor, audit, "babysit this", "keep trying until X"). Spawns a durable agent
-  loop that survives session restarts.
----
-
-# When to use
-- Task estimated > 30 min OR user says "in the background", "overnight", "until it's done"
-- Task is bounded and verifiable (the agent can self-check progress)
-- Task does NOT need credentials beyond what's already in the worktree
-
-# How to use
-1. `everflow start --goal "<paraphrased user goal>"` — capture the runID
-2. Tell the user the runID and that they can check in any time via
-   `everflow status <runID>` or just ask you
-3. When re-invoked, run `everflow list --mine` to see what's in flight
-4. If status is `awaiting`: show the user the Question, get an answer,
-   call `everflow resolve <runID> --input "<answer>"`
-5. When status is `completed`: run `everflow finalize <runID>` and walk
-   the user through the PR
-```
-
-The runID does not need to live in a persistent context file — `everflow list --mine` is the source of truth. (`--mine` filters by the invoking user via `$USER` + a `created_by` column.)
-
-## Drift handling (v1: don't care)
-
-Long-running workflows fall behind `main`. v1 does nothing — `finalize` prints a one-line summary (`Behind main by 14 commits, 3 files conflict`) and the human resolves at PR time. v2 may add an auto-rebase step on a timer that pauses to `Awaiting` on conflict.
-
-## What this is not
-
-- **Not** a replacement for Claude Code's interactive loop. Short tasks stay interactive.
-- **Not** a multi-tenant service. v1 is single-user, single-machine. The daemon binds to a local socket / sqlite file.
-- **Not** an LLM router or a tool dispatcher. The runner (claude/qwen/openhands) already does both. We give it a durable, resumable loop around it. Adding a new runner is implementing the `Runner` interface — about 100 lines of glue per runner.
-
-## Open questions (resolve during spike)
-
-1. **Prompt rendering** — what's the minimal context we send per invocation? Goal + last N turn summaries + scratchpad, or do we re-send all turn summaries once they grow? Each runner has different context windows; the runner adapter may need to truncate. (Different per runner — claude has 200k+, qwen and openhands depend on the underlying model.)
-2. **Qwen structured output** — does Qwen Code's CLI expose a `--output-format json` equivalent? If not, the qwen runner falls back to a prompt-suffix JSON contract ("end your response with `<workflow-decision>{...}</workflow-decision>`") and a tolerant parser. To verify during spike.
-3. **OpenHands invocation shape** — does `openhands headless -t` block until the session ends, and where does it write session state? Spike-time verification; the openhands runner adapter shape depends on this.
-4. **Notification surface** — `everflow list --awaiting` is the v1 surface for "agent needs you." Slack/desktop notifications via a `Hook` are v2.
-5. **Worktree GC** — purged at the user's command? Or auto-purge Completed runs after N days?
-6. **Web UI** — the existing `adapters/webui` already visualizes Runs. We get it for free, but should it be auto-launched by `daemon` or opt-in?
-7. **Runner-aware budgets** — `--max-turns` and `--max-tokens` are per-Run. But one openhands turn does much more than one claude turn. Do we report budgets in tokens (apples-to-apples) or in turns (intuitive but unfair across runners)? Probably tokens, with a `--max-turns` safety stop as a backstop.
-
-## Spike plan (next task)
-
-Land at the repo root with:
-
-- `main.go` — wires the workflow with in-memory adapters (sqlite store is post-spike)
-- `agent.go` — the `AgentState` type, `AgentStatus` enum, and `iterate` step
-- `runner.go` — the `Runner` interface, `Decision` enum, registry
-- `runners/claude/claude.go` — the `claude -p --output-format json` adapter
-- `runners/qwen/qwen.go` — the qwen adapter (uses prompt-suffix JSON contract until native is confirmed)
-- `runners/openhands/openhands.go` — the openhands headless adapter
-- `worktree.go` — `git worktree add/remove` helpers
-- `cmd/` — `start`, `status`, `resolve`, `runners` subcommands (skip `daemon` for the spike; run inline)
-- A README walking through a 5-minute demo: "ask the claude runner to add a test, then re-run with --runner qwen, watch both loops"
-
-Goal of the spike: prove the loop runs end-to-end against at least the claude runner, the worktree boundary holds, the Paused→Resolved round-trip works, and the `Runner` interface is the right shape (verified by getting a second runner — qwen or openhands — to drive the same workflow). Production hardening (sqlite store, launchd plist, Skill bundle, drift summary, notifications) is post-spike.
+6. **Skill mutation safety** — the subagent edits `SKILL.md` after each unit. What if it edits it badly and the next unit's subagent now does worse work? Version it (every change is a git commit on the mirror), and add `everflow skill-history <runID>` so the author can roll back.

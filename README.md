@@ -6,187 +6,132 @@
 
   <h1>everflow</h1>
 
-  <p><strong>Never polls.</strong> A token forever circling the event loop —<br/>dispatching, waiting on callbacks and timeouts, coming back around.</p>
+  <p><strong>Crunch through bulk refactors across large codebases.</strong><br/>One MR at a time, or ten — without burdening the author or overwhelming reviewers.</p>
 </div>
 
 ---
 
-Everflow is a durable, terminal-independent host for AI coding agents. It runs your Claude Code (or Qwen Code, or OpenHands) skill on a schedule, in an isolated git worktree, in a workflow that survives terminal closure, daemon restarts, and machine reboots. Designed for the work that doesn't fit a single session — multi-day CI babysitting, scheduled audits, "keep this MR green until it merges."
+Everflow drives **bulk refactor sweeps**: open an MR for one unit of work, watch it through review and CI, address feedback, ship the merge, pick up the next unit, repeat until done. Configurable concurrency (default 1) controls how many MRs are in flight at any time, so reviewers aren't drowned and merge conflicts don't pile up. The author doesn't have to babysit anything; they get pinged on the MR if everflow gets stuck.
 
-Built on [`luno/workflow`](https://github.com/luno/workflow) for the durable state machine.
+Built on [`luno/workflow`](https://github.com/luno/workflow) for the durable state machine. Designed to run on a small VPS or EC2 instance, not your laptop.
 
 ## What problem it solves
 
-Interactive AI coding tools die when their session dies. Useful long-running work — sweep all my open MRs every 30 minutes, retry CI failures, request reviewers, escalate when stuck — needs the agent loop to keep running while no human is at the keyboard.
+Standardising a pattern across a large monorepo is *almost* repetitive — same shape of change, 47 services. Almost.
 
-The current options are:
+The current options are bad:
 
-- **`/loop 30m /my-skill`** in Claude Code — requires Claude Code to stay open
-- **A shell script in cron** — loses the agent's context, no audit trail, no resumable state
-- **A custom workflow engine** — months of work
+- **Open all 47 MRs at once** — overwhelms reviewers, creates a merge-conflict bomb (each merge invalidates the others), creates social debt the team has to grind through
+- **Manually crank one at a time** — wastes your day. You're the bottleneck between "MR N just merged" and "open MR N+1." You can't go on holiday mid-refactor.
+- **Have Claude Code do it interactively** — your terminal session dies, the context blows up, and you're paying tokens for the repetitive "check status, retry, classify, move on" work that doesn't need reasoning.
 
-Everflow is the missing middle: a small Go binary that gives any Claude Code skill a durable, scheduled, terminal-independent host.
+Everflow is what's missing: a daemon that handles the cheap repetitive parts deterministically (queueing, throttling, status reporting, classifying review comments, retrying flakes) and only spawns a bounded-context subagent for the work that genuinely needs reasoning. **The workflow runs cheaply; LLM tokens fire only when they earn their keep.**
+
+## How it works
+
+```
+  Discover units                                                   ┌── merged ──► next unit
+        │                                                          │
+        ▼                                                          │
+  Working ─► open MR ─► Awaiting-merge (idle, zero cost, days OK) ─┤
+                              │                                    │
+                              ├── reviewer comment ─► filter ──────┤
+                              │       │                            │
+                              │       └── substantive? subagent  ──┘
+                              │       └── emoji/lgtm? skip         (loop)
+                              │
+                              ├── CI failed ─► classify ──► known flake: retry
+                              │                       └──► novel: subagent
+                              │
+                              └── author /everflow command ──► state transition
+```
+
+- The **MR comment thread is the only communication channel** ([ADR-0016](decisions/0016-mr-comments-only-channel.md)). Everflow posts status updates; you reply with `/everflow pause`, `/resume`, `/skip`, `/retry`, `/prompt …`, `/status`, or `/stop`.
+- A **Starlark filter** runs on every event ([ADR-0018](decisions/0018-starlark-filter-and-phrase-learning.md)). Cheap deterministic classification first; subagent only when needed. The filter learns ("`lgtm` → skip in future") within bounds.
+- **Author privileges**: control commands work only from the user who triggered the Run ([ADR-0017](decisions/0017-author-privilege-model.md)). Reviewers can't accidentally skip an MR by typing the wrong thing.
+- **Webhook-driven**: workflow sleeps idle for hours/days between events, zero compute cost. Polling is a fallback for when webhooks haven't fired in a while.
+
+Full design: [`DESIGN.md`](DESIGN.md). The decisions log under [`decisions/`](decisions/) records every meaningful trade-off.
 
 ## Status
 
-Implemented (this repo):
+**v1 design**: complete. See [`DESIGN.md`](DESIGN.md).
+**v1 implementation**: not yet — see DESIGN.md § *What's not yet built* for the build order.
 
-- **Scheduled-skill loop**: `Initiated → Idle ⇄ Running` cycle driven by `AddTimeout`, runs your skill at a fixed interval
-- **Worktree isolation**: each Run gets a `git worktree` off your base repo; the skill cannot touch your main checkout
-- **Pluggable Runner**: `claude` (shells out to `claude -p`) and `mock` (no-op) ship by default; adding a new runner is implementing one interface
-- **Single-binary daemon**: run under `launchd`, `systemd`, `tmux`, or `nohup` — no service to install, no database to provision
+**v0 (reference, in this repo)**: a scheduled-skill daemon that demonstrates the underlying workflow primitives (durable Run state, worktree isolation, runner abstraction, AddTimeout-driven cycles). Useful as a sanity check that the workflow library fits the use case; not the headline product. See [ADR-0010](decisions/0010-scheduled-skill-poc-first.md).
 
-Designed but not yet built (see [`DESIGN.md`](DESIGN.md)):
+If you want to see the workflow library in action right now, the v0 code builds and runs (see *v0 quickstart* below). For the actual v1 refactor-sweep flow, follow this repo for updates.
 
-- **Interactive `Iterating`/`Awaiting` loop** — for agents that need to ask the user and resume
-- **Persistent store** — current build uses in-memory adapters; daemon restart loses Runs
-- **`qwen` and `openhands` runners**
-- **Webhook callbacks** — react to GitLab/GitHub events within seconds instead of polling
+## What's planned
 
-## Install
+In rough build order:
 
-Requires Go 1.26+ and `git`. For the `claude` runner, also `claude` on `$PATH`.
+1. **GitLab Provider adapter** — webhook register/dispatch, MR create/comment, signature verify
+2. **HTTP server in the daemon** — `:port/webhook/...`, HMAC, workflow.Callback dispatch
+3. **Sqlite store** — daemon restart preserves Runs
+4. **Refactor-sweep state machine** — `Discovering → Working → Awaiting-merge → ...`
+5. **Starlark filter integration** — per-event evaluation, phrase-learning loop
+6. **Control command handler** — author-only `/everflow ...` in MR comments
+7. **`everflow start` CLI** + `status`, `phrases promote`
+8. **GitHub Provider adapter** — second implementation to validate the abstraction
 
-```bash
-go install github.com/andrewwormald/everflow@latest
-```
+Concurrency > 1 (parent/child Runs) is v2.
 
-Or from source:
+## v0 quickstart (current code, scheduled-skill flow)
 
-```bash
-git clone https://github.com/andrewwormald/everflow
-cd everflow && go build -o everflow .
-```
-
-## Quickstart — mock runner (no API spend)
-
-Validates the loop mechanics without invoking any LLM.
+Demonstrates the durable workflow plumbing. Not the v1 product. Useful for poking at the workflow library shape.
 
 ```bash
-everflow \
-    --skill   "/dummy"          \
-    --runner  mock              \
-    --interval 5s               \
-    --base-repo ~/dev/some-repo
+go build -o everflow .
+./everflow runners                          # → claude, mock
+
+./everflow \
+    --skill   "/dummy"           \
+    --runner  mock               \
+    --interval 5s                \
+    --base-repo ~/dev/some-repo  \
+    --root    /tmp/everflow-wt
 ```
 
-You'll see the daemon trigger a Run, set up a worktree, and start cycling:
+You'll see the daemon trigger a Run, set up a worktree off `main`, and cycle through `Idle → Running` on the interval. Ctrl-C to stop. See [v0 archive notes in DESIGN.md](DESIGN.md#whats-not-yet-built) for context.
 
-```
-triggered run 822a8d11... (foreign id: dummy-1781530647)
-  skill:    /dummy
-  runner:   mock
-  interval: 5s
-  base:     /Users/you/dev/some-repo @ main
-  worktree: /Users/you/.everflow/wt/dummy-1781530647 (branch wf-dummy-1781530647)
-press Ctrl-C to stop
-[822a8d11] setup worktree at ... (branch ..., base main)
-[822a8d11] pass #0 starting (skill: /dummy)
-[822a8d11] pass #0 done (exit 0, 1s)
-[822a8d11] pass #1 starting (skill: /dummy)
-...
-```
+## Running on a server
 
-Ctrl-C to stop. Worktree is left for inspection — remove with `git -C ~/dev/some-repo worktree remove --force ~/.everflow/wt/dummy-*`.
-
-## Quickstart — real `claude` runner
-
-Run an actual Claude Code skill every 30 minutes:
-
-```bash
-everflow \
-    --skill     "/mrs-babysit"   \
-    --runner    claude           \
-    --interval  30m              \
-    --base-repo ~/dev/core
-```
-
-The skill must be available in the base repo — typically under `.claude/skills/<skill-name>/SKILL.md`. Each pass: `git fetch && reset --hard origin/main` in the worktree, then `claude -p "/mrs-babysit" --dangerously-skip-permissions`.
-
-## Running on EC2 / a server
-
-Same binary, same flags. Wrap in a `systemd` unit:
+The natural home is a small VPS or EC2 instance, not your laptop. Webhooks need a stable public URL, and the workflow needs to keep ticking while you sleep — a server gives you both for free.
 
 ```ini
 # /etc/systemd/system/everflow.service
 [Unit]
-Description=everflow scheduled skill loop
+Description=everflow daemon
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu
-ExecStart=/usr/local/bin/everflow --skill "/mrs-babysit" --runner claude --interval 30m --base-repo /home/ubuntu/dev/core
+ExecStart=/usr/local/bin/everflow daemon \
+    --public-base-url https://everflow.example.com
 Restart=on-failure
 RestartSec=10s
 Environment=ANTHROPIC_API_KEY=...
+Environment=GITLAB_TOKEN=...
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-**Caveat for headless use**: Claude Code skills that rely on `mcp__claude_ai_*` MCP servers (Slack, Atlassian, Google, ...) authenticate via claude.ai's OAuth, which does not work on a headless box. The CI-management half of `mrs-babysit` (`glab` + GitLab MCP via API token) works; the Slack/Jira half does not.
-
-## Command reference
-
-```
-everflow runners
-    List registered runners and exit.
-
-everflow [flags]
-    Start the daemon, trigger a Run, block on signals. Ctrl-C / SIGTERM to stop.
-
-Flags:
-  --skill        slash command to invoke each pass, e.g. /mrs-babysit
-  --runner       claude | mock (default: claude)
-  --interval     5m, 30m, 1h, ... (default: 30m)
-  --base-repo    absolute path to the git repo to base the worktree off (required)
-  --base-branch  branch to base the worktree off and reset to each pass (default: main)
-  --root         where to store worktrees (default: ~/.everflow/wt)
-  --id           foreign ID for the Run (default: auto-generated from skill+timestamp)
-```
-
-## How it works
-
-```
-                 ┌─────────────┐
-   Trigger ───►  │  Initiated  │
-                 └──────┬──────┘
-                        │ setupStep (creates worktree off origin/main)
-                        ▼
-                 ┌─────────────┐
-              ┌─►│    Idle     │◄────────────┐
-              │  └──────┬──────┘             │
-              │         │ AddTimeout +Interval│
-              │         ▼                    │
-              │  ┌─────────────┐             │
-              │  │   Running   │─runPass─────┘
-              │  └─────────────┘
-              │         │
-              └─────────┘
-        cycle continues until process stops
-```
-
-Each `runPass`:
-
-1. `git fetch origin && git reset --hard origin/<base-branch>` — fresh starting point
-2. Invoke the configured `Runner` with `(worktree, skill_command, timeout)`
-3. Append a `Turn` to the Run's history; return to `Idle` and re-arm the interval timer
-
-See [`DESIGN.md`](DESIGN.md) for the full architecture, the planned interactive loop, and the `Runner` interface roadmap.
+Laptop deployment is supported but adds tunnel friction — Tailscale Funnel works best (free, stable URL on `*.ts.net`); ngrok free works with the caveat that URLs rotate; cloudflared works if you have a domain. See [`DESIGN.md`](DESIGN.md#public-url-strategy).
 
 ## Repository layout
 
-| File | Purpose |
+| Path | Purpose |
 |---|---|
-| `main.go` | CLI flag parsing, daemon entrypoint, signal handling |
-| `agent.go` | `AgentState`, `AgentStatus`, workflow builder, step functions |
-| `runner.go` | `Runner` interface, registry |
-| `claude.go` | `claude -p` runner |
-| `mock.go` | No-op runner for demos and tests |
-| `worktree.go` | `git worktree add`, `fetch && reset --hard`, removal |
-| `DESIGN.md` | Full design doc — vision, future runners, webhook plans |
+| [`README.md`](README.md) | This file |
+| [`DESIGN.md`](DESIGN.md) | Full architecture and roadmap |
+| [`AGENTS.md`](AGENTS.md) | Working rules for AI contributors (read this if you're an agent picking up the repo) |
+| [`decisions/`](decisions/) | Architecture Decision Records — every meaningful choice and its rationale |
+| [`logo/`](logo/) | Brand assets (GIF + SVG variants, dark-mode pair, favicon) |
+| `*.go` | v0 scheduled-skill implementation (reference code; v1 will largely replace) |
 
 ## License
 

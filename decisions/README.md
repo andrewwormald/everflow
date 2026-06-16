@@ -61,3 +61,8 @@ forces or unlocks.
 | 0011 | Persistent worktree, reset --hard to base each pass | Accepted | 2026-06-15 |
 | 0012 | Track all decisions as ADRs                        | Accepted | 2026-06-15 |
 | 0013 | Adopt the "Orbit" brand mark and warm-coral palette | Accepted | 2026-06-15 |
+| 0014 | Bulk-refactor sweeps are the primary use case      | Accepted | 2026-06-16 |
+| 0015 | Throttled-sequential MR flow, configurable concurrency | Accepted | 2026-06-16 |
+| 0016 | MR comments as everflow's only communication channel | Accepted | 2026-06-16 |
+| 0017 | Author-vs-reviewer privilege model + control commands | Accepted | 2026-06-16 |
+| 0018 | Starlark filter on every event, with bounded phrase learning | Accepted | 2026-06-16 |
