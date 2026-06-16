@@ -60,3 +60,4 @@ forces or unlocks.
 | 0010 | Build the scheduled-skill PoC before the interactive loop | Accepted | 2026-06-15 |
 | 0011 | Persistent worktree, reset --hard to base each pass | Accepted | 2026-06-15 |
 | 0012 | Track all decisions as ADRs                        | Accepted | 2026-06-15 |
+| 0013 | Adopt the "Orbit" brand mark and warm-coral palette | Accepted | 2026-06-15 |
