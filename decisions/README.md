@@ -66,3 +66,4 @@ forces or unlocks.
 | 0016 | MR comments as everflow's only communication channel | Accepted | 2026-06-16 |
 | 0017 | Author-vs-reviewer privilege model + control commands | Accepted | 2026-06-16 |
 | 0018 | Starlark filter on every event, with bounded phrase learning | Accepted | 2026-06-16 |
+| 0019 | Project layout: `main.go` at root, business logic under `internal/`, `_v0/` archived as own module | Accepted | 2026-06-17 |

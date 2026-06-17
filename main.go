@@ -1,179 +1,165 @@
+// Everflow — bulk-refactor sweep CLI. See README.md, DESIGN.md, and the
+// decisions/ log for the project's purpose and design.
+//
+// This file is the CLI surface; business logic lives under internal/.
 package main
 
 import (
 	"context"
 	"flag"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
-	"github.com/luno/workflow"
+	"github.com/luno/workflow/adapters/memstreamer"
+	memrolescheduler "github.com/luno/workflow/adapters/memrolescheduler"
+
+	"github.com/andrewwormald/everflow/internal/refactorsweep"
+	"github.com/andrewwormald/everflow/internal/store"
 )
 
-const workflowName = "scheduled-skill"
+const (
+	workflowName = "refactor-sweep"
+	version      = "0.0.1-scaffold"
+)
+
+var commands = map[string]command{
+	"daemon": {usage: "run the long-lived daemon", run: cmdDaemon},
+	"start":  {usage: "trigger a new refactor sweep Run", run: cmdStart},
+	"status": {usage: "show progress for a Run", run: cmdStatus},
+	"list":   {usage: "list active and completed Runs", run: cmdList},
+	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
+	"version": {usage: "print the build version", run: cmdVersion},
+}
+
+type command struct {
+	usage string
+	run   func(args []string) error
+}
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "runners" {
-		listRunners()
+	if len(os.Args) < 2 {
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
+	verb := os.Args[1]
+	if verb == "-h" || verb == "--help" || verb == "help" {
+		printUsage(os.Stdout)
 		return
 	}
-	if err := runDaemon(os.Args[1:]); err != nil {
-		log.Fatal(err)
+	cmd, ok := commands[verb]
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", verb)
+		printUsage(os.Stderr)
+		os.Exit(2)
+	}
+	if err := cmd.run(os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func listRunners() {
-	fmt.Println("Available runners:")
-	for _, n := range runnerNames() {
-		fmt.Printf("  %s\n", n)
+func printUsage(w io.Writer) {
+	fmt.Fprintf(w, "everflow — bulk-refactor sweep daemon\n\nusage: everflow <command> [flags]\n\ncommands:\n")
+	for _, name := range []string{"daemon", "start", "status", "list", "phrases", "version"} {
+		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
+	fmt.Fprintf(w, "\nrun `everflow <command> -h` for command-specific flags.\n")
 }
 
-func runDaemon(args []string) error {
-	fs := flag.NewFlagSet("everflow", flag.ExitOnError)
+func cmdDaemon(args []string) error {
+	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
-		skill      = fs.String("skill", "", "slash command to invoke each pass, e.g. /mrs-babysit --slack-request-reviews")
-		runnerName = fs.String("runner", "claude", "runner: "+strings.Join(runnerNames(), "|"))
-		interval   = fs.Duration("interval", 30*time.Minute, "wall-clock interval between passes (e.g. 5m, 30m, 1h)")
-		baseRepo   = fs.String("base-repo", "", "absolute path to the git repo to base the worktree off")
-		baseBranch = fs.String("base-branch", "main", "branch to base the worktree off and rebase to each pass")
-		root       = fs.String("root", "", "where to store worktrees (default ~/.everflow/wt)")
-		foreignID  = fs.String("id", "", "foreign ID for the Run (default: auto)")
+		storePath     = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db)")
+		listenAddr    = fs.String("listen", ":8080", "address for the webhook HTTP server")
+		publicBaseURL = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
 	)
-	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), `Usage: everflow --skill "/mrs-babysit ..." [flags]
-
-Runs a Claude Code (or any registered runner) skill on a fixed interval, in a
-durable workflow that survives terminal closure. The current process is the
-"daemon" — it stays foreground; Ctrl-C stops gracefully. Designed for use
-under launchd / systemd / a tmux pane.
-
-Subcommands:
-  runners      list registered runners and exit
-
-Flags:
-`)
-		fs.PrintDefaults()
-	}
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *skill == "" {
-		fs.Usage()
-		return fmt.Errorf("--skill is required")
-	}
-	if *baseRepo == "" {
-		return fmt.Errorf("--base-repo is required (e.g. --base-repo ~/dev/core)")
-	}
-	if _, err := getRunner(*runnerName); err != nil {
-		return err
+	if *publicBaseURL == "" {
+		return fmt.Errorf("--public-base-url is required (see DESIGN.md § Public-URL strategy)")
 	}
 
-	absBaseRepo, err := filepath.Abs(expandHome(*baseRepo))
+	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	recordStore, timeoutStore, err := store.Open(*storePath)
 	if err != nil {
-		return fmt.Errorf("resolve --base-repo: %w", err)
-	}
-	if _, err := os.Stat(filepath.Join(absBaseRepo, ".git")); err != nil {
-		return fmt.Errorf("--base-repo %q is not a git repo: %w", absBaseRepo, err)
+		return fmt.Errorf("open store: %w", err)
 	}
 
-	rootDir := *root
-	if rootDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return fmt.Errorf("home dir: %w", err)
-		}
-		rootDir = filepath.Join(home, ".everflow", "wt")
-	}
+	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
+		RecordStore:   recordStore,
+		TimeoutStore:  timeoutStore,
+		EventStreamer: memstreamer.New(),
+		RoleScheduler: memrolescheduler.New(),
+	})
 
-	fid := *foreignID
-	if fid == "" {
-		fid = fmt.Sprintf("%s-%d", sanitize(*skill), time.Now().Unix())
-	}
-
-	worktree := filepath.Join(rootDir, fid)
-	branch := "wf-" + fid
-
-	wf := BuildWorkflow(workflowName)
-
-	rootCtx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	wf.Run(rootCtx)
+	wf.Run(ctx)
 	defer wf.Stop()
 
-	state := &AgentState{
-		Goal:         fmt.Sprintf("Run %s every %s", *skill, *interval),
-		RunnerName:   *runnerName,
-		SkillCommand: *skill,
-		Interval:     *interval,
-		BaseRepo:     absBaseRepo,
-		BaseBranch:   *baseBranch,
-		Worktree:     worktree,
-		Branch:       branch,
-	}
-
-	runID, err := wf.Trigger(rootCtx, fid, workflow.WithInitialValue[AgentState, AgentStatus](state))
-	if err != nil {
-		return fmt.Errorf("trigger: %w", err)
-	}
-
-	log.Printf("triggered run %s (foreign id: %s)", runID, fid)
-	log.Printf("  skill:    %s", *skill)
-	log.Printf("  runner:   %s", *runnerName)
-	log.Printf("  interval: %s", *interval)
-	log.Printf("  base:     %s @ %s", absBaseRepo, *baseBranch)
-	log.Printf("  worktree: %s (branch %s)", worktree, branch)
-	log.Printf("press Ctrl-C to stop")
+	logger.Info("everflow daemon started",
+		"version", version,
+		"listen", *listenAddr,
+		"public_base_url", *publicBaseURL,
+		"workflow", workflowName,
+	)
+	logger.Warn("v1 scaffold — webhook server, providers, runners, and step bodies are stubs; see DESIGN.md for the build roadmap")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	<-sigCh
-	log.Printf("shutdown signal received, stopping workflow gracefully...")
-	cancel()
-	// wf.Stop is deferred above; it waits for in-flight steps.
+	logger.Info("shutdown signal received, stopping...")
 	return nil
 }
 
-func expandHome(p string) string {
-	if strings.HasPrefix(p, "~/") {
-		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, p[2:])
-		}
+func cmdStart(args []string) error {
+	fs := flag.NewFlagSet("start", flag.ExitOnError)
+	_ = fs.String("goal", "", "one-sentence description of the refactor")
+	_ = fs.String("provider", "gitlab", "provider name (gitlab | github)")
+	_ = fs.String("project", "", "provider project ID, e.g. lunomoney/core")
+	_ = fs.String("base-branch", "main", "branch to base each unit's MR off")
+	_ = fs.Int("concurrency", 1, "max in-flight MRs at once (see ADR-0015)")
+	_ = fs.String("skill", "", "path to the SKILL.md the per-unit subagent will run")
+	_ = fs.String("filter", "", "path to a Starlark filter file (defaults to a sensible one)")
+	_ = fs.String("discover", "", "path to a Starlark discovery rule (or omit to provide --units)")
+	if err := fs.Parse(args); err != nil {
+		return err
 	}
-	return p
+	return fmt.Errorf("everflow start: not implemented in scaffold; see DESIGN.md § What's not yet built (step 8)")
 }
 
-// sanitize turns "/mrs-babysit --slack-request-reviews" into a safe-ish slug
-// for a foreign ID. Lossy by design; foreign IDs need only be unique per
-// workflow, not human-readable.
-func sanitize(s string) string {
-	out := make([]rune, 0, len(s))
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			out = append(out, r)
-		case r >= 'A' && r <= 'Z':
-			out = append(out, r+32)
-		case r == '-' || r == '_':
-			out = append(out, r)
-		default:
-			if len(out) > 0 && out[len(out)-1] != '-' {
-				out = append(out, '-')
-			}
-		}
+func cmdStatus(args []string) error {
+	_ = args
+	return fmt.Errorf("everflow status: not implemented in scaffold")
+}
+
+func cmdList(args []string) error {
+	_ = args
+	return fmt.Errorf("everflow list: not implemented in scaffold")
+}
+
+func cmdPhrases(args []string) error {
+	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
+		fmt.Println("usage: everflow phrases <list|promote> [args]")
+		return nil
 	}
-	s = strings.Trim(string(out), "-")
-	if s == "" {
-		return "skill"
+	switch args[0] {
+	case "list", "promote":
+		return fmt.Errorf("everflow phrases %s: not implemented in scaffold", args[0])
+	default:
+		return fmt.Errorf("unknown subcommand %q (try list, promote)", args[0])
 	}
-	if len(s) > 40 {
-		s = s[:40]
-	}
-	return s
+}
+
+func cmdVersion(_ []string) error {
+	fmt.Println(strings.TrimSpace(version))
+	return nil
 }
