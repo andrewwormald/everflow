@@ -15,11 +15,14 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/luno/workflow/adapters/memrolescheduler"
 	"github.com/luno/workflow/adapters/memstreamer"
-	memrolescheduler "github.com/luno/workflow/adapters/memrolescheduler"
 
+	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/everflow/internal/provider/gitlab"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/store"
+	"github.com/andrewwormald/everflow/internal/webhook"
 )
 
 const (
@@ -28,10 +31,10 @@ const (
 )
 
 var commands = map[string]command{
-	"daemon": {usage: "run the long-lived daemon", run: cmdDaemon},
-	"start":  {usage: "trigger a new refactor sweep Run", run: cmdStart},
-	"status": {usage: "show progress for a Run", run: cmdStatus},
-	"list":   {usage: "list active and completed Runs", run: cmdList},
+	"daemon":  {usage: "run the long-lived daemon", run: cmdDaemon},
+	"start":   {usage: "trigger a new refactor sweep Run", run: cmdStart},
+	"status":  {usage: "show progress for a Run", run: cmdStatus},
+	"list":    {usage: "list active and completed Runs", run: cmdList},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
@@ -77,6 +80,7 @@ func cmdDaemon(args []string) error {
 		storePath     = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db)")
 		listenAddr    = fs.String("listen", ":8080", "address for the webhook HTTP server")
 		publicBaseURL = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
+		gitlabBaseURL = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -86,6 +90,18 @@ func cmdDaemon(args []string) error {
 	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
+
+	providers, err := buildProviders(*gitlabBaseURL)
+	if err != nil {
+		return fmt.Errorf("provider setup: %w", err)
+	}
+	if len(providers) == 0 {
+		logger.Warn("no providers configured — set GITLAB_TOKEN (or future GITHUB_TOKEN) to enable a provider")
+	} else {
+		for name := range providers {
+			logger.Info("provider registered", "name", name)
+		}
+	}
 
 	recordStore, timeoutStore, err := store.Open(*storePath)
 	if err != nil {
@@ -105,19 +121,58 @@ func cmdDaemon(args []string) error {
 	wf.Run(ctx)
 	defer wf.Stop()
 
+	secrets := webhook.NewSecretRegistry()
+	dispatcher := func(_ context.Context, runID string, ev provider.Event) error {
+		logger.Info("webhook received",
+			"run_id", runID,
+			"kind", ev.Kind,
+			"mr_iid", ev.MR.IID,
+			"author", ev.Author.Handle,
+		)
+		// Scaffold: real wiring goes through workflow.Callback once step bodies
+		// can consume Events. For now, log and drop.
+		return nil
+	}
+	srv := webhook.NewServer(providers, dispatcher, secrets)
+	srvErrCh := make(chan error, 1)
+	go func() {
+		srvErrCh <- srv.Listen(ctx, *listenAddr)
+	}()
+
 	logger.Info("everflow daemon started",
 		"version", version,
 		"listen", *listenAddr,
 		"public_base_url", *publicBaseURL,
 		"workflow", workflowName,
 	)
-	logger.Warn("v1 scaffold — webhook server, providers, runners, and step bodies are stubs; see DESIGN.md for the build roadmap")
+	logger.Warn("v1 scaffold — runners, step bodies, and CLI commands are stubs; see DESIGN.md for the build roadmap")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	<-sigCh
-	logger.Info("shutdown signal received, stopping...")
+	select {
+	case <-sigCh:
+		logger.Info("shutdown signal received, stopping...")
+	case err := <-srvErrCh:
+		if err != nil {
+			return fmt.Errorf("webhook server: %w", err)
+		}
+	}
 	return nil
+}
+
+// buildProviders registers providers based on env-var credentials. Empty map
+// is valid — the daemon still starts; it just can't accept webhooks until at
+// least one provider is configured.
+func buildProviders(gitlabBase string) (map[string]provider.Provider, error) {
+	out := map[string]provider.Provider{}
+	if tok := os.Getenv("GITLAB_TOKEN"); tok != "" {
+		p, err := gitlab.New(gitlab.Config{BaseURL: gitlabBase, Token: tok})
+		if err != nil {
+			return nil, err
+		}
+		out[p.Name()] = p
+	}
+	return out, nil
 }
 
 func cmdStart(args []string) error {
