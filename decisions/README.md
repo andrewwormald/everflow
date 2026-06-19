@@ -68,3 +68,4 @@ forces or unlocks.
 | 0018 | Starlark filter on every event, with bounded phrase learning | Accepted | 2026-06-16 |
 | 0019 | Project layout: `main.go` at root, business logic under `internal/`, `_v0/` archived as own module | Accepted | 2026-06-17 |
 | 0020 | GitLab provider — hand-rolled REST client, bare-token webhooks  | Accepted | 2026-06-18 |
+| 0021 | GitHub provider — HMAC webhooks, three comment events collapse to one | Accepted | 2026-06-19 |

@@ -19,6 +19,7 @@ import (
 	"github.com/luno/workflow/adapters/memstreamer"
 
 	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/everflow/internal/provider/github"
 	"github.com/andrewwormald/everflow/internal/provider/gitlab"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/store"
@@ -81,6 +82,7 @@ func cmdDaemon(args []string) error {
 		listenAddr    = fs.String("listen", ":8080", "address for the webhook HTTP server")
 		publicBaseURL = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
 		gitlabBaseURL = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
+		githubBaseURL = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -91,12 +93,12 @@ func cmdDaemon(args []string) error {
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	providers, err := buildProviders(*gitlabBaseURL)
+	providers, err := buildProviders(*gitlabBaseURL, *githubBaseURL)
 	if err != nil {
 		return fmt.Errorf("provider setup: %w", err)
 	}
 	if len(providers) == 0 {
-		logger.Warn("no providers configured — set GITLAB_TOKEN (or future GITHUB_TOKEN) to enable a provider")
+		logger.Warn("no providers configured — set GITLAB_TOKEN or GITHUB_TOKEN to enable a provider")
 	} else {
 		for name := range providers {
 			logger.Info("provider registered", "name", name)
@@ -163,10 +165,17 @@ func cmdDaemon(args []string) error {
 // buildProviders registers providers based on env-var credentials. Empty map
 // is valid — the daemon still starts; it just can't accept webhooks until at
 // least one provider is configured.
-func buildProviders(gitlabBase string) (map[string]provider.Provider, error) {
+func buildProviders(gitlabBase, githubBase string) (map[string]provider.Provider, error) {
 	out := map[string]provider.Provider{}
 	if tok := os.Getenv("GITLAB_TOKEN"); tok != "" {
 		p, err := gitlab.New(gitlab.Config{BaseURL: gitlabBase, Token: tok})
+		if err != nil {
+			return nil, err
+		}
+		out[p.Name()] = p
+	}
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		p, err := github.New(github.Config{BaseURL: githubBase, Token: tok})
 		if err != nil {
 			return nil, err
 		}
