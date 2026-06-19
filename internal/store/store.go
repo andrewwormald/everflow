@@ -1,7 +1,7 @@
 // Package store provides the durable record + timeout stores wired into
-// the luno/workflow runtime. v1-scaffold uses the in-memory adapters; a
-// follow-up commit swaps in sqlite-backed implementations (see DESIGN.md
-// "What's not yet built" step 3).
+// the luno/workflow runtime. The sqlite backend (in this package) is the
+// default; the in-memory adapters from luno/workflow are used only when
+// path is empty (test harness).
 package store
 
 import (
@@ -11,7 +11,15 @@ import (
 )
 
 // Open returns a (RecordStore, TimeoutStore) pair for the daemon to use.
-// The signature lets us swap in sqlite later without touching callers.
-func Open(_ string) (workflow.RecordStore, workflow.TimeoutStore, error) {
-	return memrecordstore.New(), memtimeoutstore.New(), nil
+// path == "" → in-memory adapters (volatile; for tests and the v0 scaffold).
+// path != "" → sqlite Backend at that path (durable across restarts).
+func Open(path string) (workflow.RecordStore, workflow.TimeoutStore, error) {
+	if path == "" {
+		return memrecordstore.New(), memtimeoutstore.New(), nil
+	}
+	b, err := OpenSqlite(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return b.RecordStore(), b.TimeoutStore(), nil
 }

@@ -78,7 +78,7 @@ func printUsage(w io.Writer) {
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
-		storePath     = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db)")
+		storePath     = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db; pass ':memory:' for volatile)")
 		listenAddr    = fs.String("listen", ":8080", "address for the webhook HTTP server")
 		publicBaseURL = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
 		gitlabBaseURL = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
@@ -86,6 +86,13 @@ func cmdDaemon(args []string) error {
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *storePath == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("home dir: %w", err)
+		}
+		*storePath = home + "/.everflow/store.db"
 	}
 	if *publicBaseURL == "" {
 		return fmt.Errorf("--public-base-url is required (see DESIGN.md § Public-URL strategy)")
@@ -146,6 +153,7 @@ func cmdDaemon(args []string) error {
 		"listen", *listenAddr,
 		"public_base_url", *publicBaseURL,
 		"workflow", workflowName,
+		"store", *storePath,
 	)
 	logger.Warn("v1 scaffold — runners, step bodies, and CLI commands are stubs; see DESIGN.md for the build roadmap")
 

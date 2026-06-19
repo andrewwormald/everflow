@@ -69,3 +69,4 @@ forces or unlocks.
 | 0019 | Project layout: `main.go` at root, business logic under `internal/`, `_v0/` archived as own module | Accepted | 2026-06-17 |
 | 0020 | GitLab provider — hand-rolled REST client, bare-token webhooks  | Accepted | 2026-06-18 |
 | 0021 | GitHub provider — HMAC webhooks, three comment events collapse to one | Accepted | 2026-06-19 |
+| 0022 | Sqlite-backed RecordStore + TimeoutStore (pure-Go driver)       | Accepted | 2026-06-19 |
