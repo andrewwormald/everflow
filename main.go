@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -117,11 +118,22 @@ func cmdDaemon(args []string) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 
+	// Per-Run filesystem layout sits next to the store file. If --store is
+	// /tmp/x/store.db, runs root is /tmp/x/runs/. Both happily live under
+	// ~/.everflow/ when --store takes its default.
+	runsRoot := filepath.Join(filepath.Dir(*storePath), "runs")
+
+	secrets := webhook.NewSecretRegistry()
+
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
 		TimeoutStore:  timeoutStore,
 		EventStreamer: memstreamer.New(),
 		RoleScheduler: memrolescheduler.New(),
+		Providers:     providers,
+		Secrets:       secrets,
+		PublicBaseURL: *publicBaseURL,
+		RunsRoot:      runsRoot,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -130,7 +142,6 @@ func cmdDaemon(args []string) error {
 	wf.Run(ctx)
 	defer wf.Stop()
 
-	secrets := webhook.NewSecretRegistry()
 	dispatcher := func(_ context.Context, runID string, ev provider.Event) error {
 		logger.Info("webhook received",
 			"run_id", runID,
@@ -142,6 +153,8 @@ func cmdDaemon(args []string) error {
 		// can consume Events. For now, log and drop.
 		return nil
 	}
+	// The webhook server reuses the same SecretRegistry the workflow
+	// populates from setup() — single source of truth.
 	srv := webhook.NewServer(providers, dispatcher, secrets)
 	srvErrCh := make(chan error, 1)
 	go func() {
@@ -154,6 +167,7 @@ func cmdDaemon(args []string) error {
 		"public_base_url", *publicBaseURL,
 		"workflow", workflowName,
 		"store", *storePath,
+		"runs_root", runsRoot,
 	)
 	logger.Warn("v1 scaffold — runners, step bodies, and CLI commands are stubs; see DESIGN.md for the build roadmap")
 
