@@ -6,9 +6,35 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/andrewwormald/everflow/internal/refactorsweep"
 )
+
+// Decision is what a runner invocation tells the workflow to do next.
+// The runner produces structured output (ADR-0008) that maps onto these.
+// Defined here (not in refactorsweep) to avoid an import cycle: the runner
+// is a leaf that other packages depend on.
+type Decision int
+
+const (
+	DecisionUnknown  Decision = 0
+	DecisionContinue Decision = 1 // make progress; stay in current macro-state
+	DecisionAsk      Decision = 2 // pause and ask the author via MR comment
+	DecisionDone     Decision = 3 // unit complete; ship the MR
+	DecisionFail     Decision = 4 // unit unrecoverable; blacklist + move on
+	DecisionNoChange Decision = 5 // nothing to do this invocation (e.g. conversational comment)
+)
+
+func (d Decision) String() string {
+	return [...]string{"Unknown", "Continue", "Ask", "Done", "Fail", "NoChange"}[d]
+}
+
+// Budget caps a Run's cumulative cost. Hit any of these and the Run pauses.
+// Same reason as Decision for living in this package — refactorsweep
+// references it, refactorsweep imports runner, runner can't import back.
+type Budget struct {
+	MaxUnits   int           `json:"max_units"`
+	MaxTokens  int           `json:"max_tokens"`
+	MaxRuntime time.Duration `json:"max_runtime"`
+}
 
 type Runner interface {
 	Name() string
@@ -29,13 +55,13 @@ type Request struct {
 	CIFailure   string // populated for fix-CI invocations (last ~2KB of log)
 
 	Timeout time.Duration
-	Budget  refactorsweep.Budget
+	Budget  Budget
 }
 
 // Response is what a runner reports back. Maps onto the workflow's next state
 // transition via Decision.
 type Response struct {
-	Decision  refactorsweep.Decision
+	Decision  Decision
 	Summary   string                 // one-paragraph "what I did this invocation"
 	Question  string                 // populated when Decision == Ask
 	Learnings Learnings              // see ADR-0018; populated when the subagent surfaces patterns worth caching

@@ -23,6 +23,7 @@ import (
 	"github.com/andrewwormald/everflow/internal/provider/github"
 	"github.com/andrewwormald/everflow/internal/provider/gitlab"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
+	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/store"
 	"github.com/andrewwormald/everflow/internal/webhook"
 )
@@ -124,6 +125,11 @@ func cmdDaemon(args []string) error {
 	runsRoot := filepath.Join(filepath.Dir(*storePath), "runs")
 
 	secrets := webhook.NewSecretRegistry()
+	runners := runner.NewRegistry()
+	// TODO: register claude / qwen / openhands runners here once the
+	// adapters land (next commit). For now the registry is empty; any
+	// `everflow start --runner X` would fail at work() time with
+	// "unknown runner X" — which is the correct behaviour.
 
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
@@ -131,6 +137,7 @@ func cmdDaemon(args []string) error {
 		EventStreamer: memstreamer.New(),
 		RoleScheduler: memrolescheduler.New(),
 		Providers:     providers,
+		Runners:       runners,
 		Secrets:       secrets,
 		PublicBaseURL: *publicBaseURL,
 		RunsRoot:      runsRoot,

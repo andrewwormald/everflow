@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/everflow/internal/runner"
 )
 
 // AgentStatus enumerates the workflow states. Cycles allowed:
@@ -43,10 +44,12 @@ type AgentState struct {
 	Goal            string         `json:"goal"`
 	ProviderName    string         `json:"provider_name"`     // "gitlab" | "github"
 	ProjectID       string         `json:"project_id"`
+	BaseRepo        string         `json:"base_repo"`         // local path to a git checkout the daemon can clone worktrees off
 	BaseBranch      string         `json:"base_branch"`
+	RunnerName      string         `json:"runner_name"`       // "claude" | "qwen" | "openhands" — see ADR-0007
+	Budget          runner.Budget  `json:"budget"`
 	Author          provider.User  `json:"author"`            // see ADR-0017
 	Concurrency     int            `json:"concurrency"`       // semaphore size; v1 = 1
-	Budget          Budget         `json:"budget"`
 	SkillPath       string         `json:"skill_path"`        // ~/.everflow/runs/<runID>/SKILL.md
 	FilterPath      string         `json:"filter_path"`       // ~/.everflow/runs/<runID>/note_added.star
 	DiscoveryPath   string         `json:"discovery_path"`    // optional discovery rule
@@ -68,14 +71,6 @@ type AgentState struct {
 	EventsSeen           int `json:"events_seen"`
 	EventsSkippedByFilter int `json:"events_skipped_by_filter"`
 	SubagentInvocations  int `json:"subagent_invocations"`
-}
-
-// Budget caps a Run's cumulative cost. Hit any of these and the Run pauses
-// (StatusPaused) for author intervention.
-type Budget struct {
-	MaxUnits  int `json:"max_units"`   // total units processed (shipped + blacklisted)
-	MaxTokens int `json:"max_tokens"`  // cumulative across all subagent invocations
-	MaxRuntime time.Duration `json:"max_runtime"`
 }
 
 // CompletedUnit records a shipped MR.
@@ -109,21 +104,14 @@ type Turn struct {
 	Error     string    `json:"error,omitempty"`
 }
 
-// Decision is what a runner invocation tells the workflow to do next.
-// Mapped from the Runner's structured output ([ADR-0008](../../decisions/0008-native-structured-output.md)).
-type Decision int
+// Decision is re-exported from internal/runner as an alias so step-body
+// callers within refactorsweep don't have to type-qualify everywhere.
+type Decision = runner.Decision
 
 const (
-	DecisionUnknown    Decision = 0
-	DecisionContinue   Decision = 1 // make progress; stay in current macro-state
-	DecisionAsk        Decision = 2 // pause and ask the author via MR comment
-	DecisionDone       Decision = 3 // unit complete; ship the MR
-	DecisionFail       Decision = 4 // unit unrecoverable; blacklist + move on
-	DecisionNoChange   Decision = 5 // nothing to do this invocation (e.g. comment was conversational)
+	DecisionContinue = runner.DecisionContinue
+	DecisionAsk      = runner.DecisionAsk
+	DecisionDone     = runner.DecisionDone
+	DecisionFail     = runner.DecisionFail
+	DecisionNoChange = runner.DecisionNoChange
 )
-
-func (d Decision) String() string {
-	return [...]string{
-		"Unknown", "Continue", "Ask", "Done", "Fail", "NoChange",
-	}[d]
-}
