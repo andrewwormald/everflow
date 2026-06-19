@@ -8,7 +8,6 @@ package filter
 
 import (
 	"github.com/andrewwormald/everflow/internal/provider"
-	"github.com/andrewwormald/everflow/internal/refactorsweep"
 )
 
 // Outcome is what the filter tells the workflow to do with the event.
@@ -29,8 +28,13 @@ func (o Outcome) String() string {
 // Filter evaluates a per-event decision. v1 implementations:
 //   - StarlarkFilter: load a .star file, evaluate filter(event, state, phrases)
 //   - StubFilter: hardcoded for tests and for the scaffold commit
+//
+// state is the workflow's AgentState passed as `any` to avoid an import
+// cycle (refactorsweep imports filter; filter would otherwise import
+// refactorsweep). The Starlark adapter will marshal it into a dict; the
+// StubFilter ignores it.
 type Filter interface {
-	Eval(event provider.Event, state *refactorsweep.AgentState, phrases PhraseSet) (Outcome, error)
+	Eval(event provider.Event, state any, phrases PhraseSet) (Outcome, error)
 }
 
 // PhraseSet is the per-Run skip-phrase store. Read-only from the filter's
@@ -46,7 +50,7 @@ type PhraseSet interface {
 // Starlark eval lands.
 type StubFilter struct{}
 
-func (StubFilter) Eval(event provider.Event, _ *refactorsweep.AgentState, _ PhraseSet) (Outcome, error) {
+func (StubFilter) Eval(event provider.Event, _ any, _ PhraseSet) (Outcome, error) {
 	if event.Kind == provider.EventNoteAdded && event.IsAuthor &&
 		len(event.Note.Body) > 0 && event.Note.Body[0] == '/' {
 		return OutcomeControlCommand, nil

@@ -5,7 +5,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -149,17 +151,37 @@ func cmdDaemon(args []string) error {
 	wf.Run(ctx)
 	defer wf.Stop()
 
-	dispatcher := func(_ context.Context, runID string, ev provider.Event) error {
+	dispatcher := func(ctx context.Context, runID string, ev provider.Event) error {
 		logger.Info("webhook received",
 			"run_id", runID,
 			"kind", ev.Kind,
 			"mr_iid", ev.MR.IID,
 			"author", ev.Author.Handle,
 		)
-		// Scaffold: real wiring goes through workflow.Callback once step bodies
-		// can consume Events. For now, log and drop.
+		// Look up the Run's foreignID + current status so we can route the
+		// callback through the workflow library, which loads the Run by
+		// (workflowName, foreignID) and only fires the callback if status
+		// matches.
+		rec, err := recordStore.Lookup(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("dispatcher: lookup run %s: %w", runID, err)
+		}
+		buf, err := json.Marshal(ev)
+		if err != nil {
+			return fmt.Errorf("dispatcher: marshal event: %w", err)
+		}
+		status := refactorsweep.AgentStatus(rec.Status)
+		if err := wf.Callback(ctx, rec.ForeignID, status, bytes.NewReader(buf)); err != nil {
+			return fmt.Errorf("dispatcher: workflow.Callback: %w", err)
+		}
 		return nil
 	}
+	// TODO: secret rehydration on daemon restart. Currently if the daemon
+	// restarts, the in-memory SecretRegistry is empty until each Run's
+	// setup() runs again — which it won't, because Runs past Initiated
+	// don't re-enter setup. Inbound webhooks will be rejected as
+	// "unknown runID" until a follow-up commit iterates the store at
+	// startup and re-populates the registry from AgentState.WebhookSecret.
 	// The webhook server reuses the same SecretRegistry the workflow
 	// populates from setup() — single source of truth.
 	srv := webhook.NewServer(providers, dispatcher, secrets)

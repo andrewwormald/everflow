@@ -1,7 +1,9 @@
 package refactorsweep
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -560,6 +562,264 @@ func TestWork_UnknownRunner(t *testing.T) {
 	}
 	if next != StatusFailed {
 		t.Errorf("want Failed, got %v", next)
+	}
+}
+
+// --- resume() tests ---
+
+// payloadOf JSON-encodes the event in the same shape the daemon's dispatcher
+// will produce.
+func payloadOf(t *testing.T, ev provider.Event) *bytes.Reader {
+	t.Helper()
+	buf, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal event: %v", err)
+	}
+	return bytes.NewReader(buf)
+}
+
+// awaitingRun returns a Run already in StatusAwaitingMerge with one unit
+// in flight against the given MR. Mirrors the state work() leaves behind.
+func awaitingRun(t *testing.T, unitID string, mr provider.MR) *workflow.Run[AgentState, AgentStatus] {
+	t.Helper()
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    mr.ProjectID,
+		RunnerName:   "fake-runner",
+		Goal:         "test goal",
+		Author:       provider.User{Handle: "andreww"},
+		CurrentUnit:  unitID,
+		InFlight:     map[string]provider.MR{unitID: mr},
+	})
+	r.Status = StatusAwaitingMerge
+	return r
+}
+
+func TestResume_MRMerged_MovesToCompleted(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "lunomoney/core", IID: 42, URL: "https://x/42"}
+	r := awaitingRun(t, "svc-a", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventMRMerged,
+		MR:   mr,
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("want Discovering, got %v", next)
+	}
+	if _, still := r.Object.InFlight["svc-a"]; still {
+		t.Errorf("unit should be removed from InFlight after merge")
+	}
+	if len(r.Object.Completed) != 1 || r.Object.Completed[0].UnitID != "svc-a" {
+		t.Errorf("svc-a should be in Completed; got %+v", r.Object.Completed)
+	}
+}
+
+func TestResume_MRClosed_MovesToBlacklisted(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "svc-x", mr)
+
+	ev := provider.Event{Kind: provider.EventMRClosed, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("want Discovering, got %v", next)
+	}
+	if len(r.Object.Blacklisted) != 1 {
+		t.Fatalf("svc-x should be blacklisted; got %+v", r.Object.Blacklisted)
+	}
+	if !strings.Contains(r.Object.Blacklisted[0].Reason, "closed without merge") {
+		t.Errorf("Blacklisted.Reason should mention close: %q", r.Object.Blacklisted[0].Reason)
+	}
+}
+
+func TestResume_PipelineSucceeded_NoOp(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{Kind: provider.EventPipelineSucceeded, MR: mr}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge (no-op), got %v", next)
+	}
+	if r.Object.SubagentInvocations != 0 {
+		t.Errorf("no subagent should fire on pipeline success; got %d invocations", r.Object.SubagentInvocations)
+	}
+}
+
+func TestResume_NoteAdded_InvokesSubagent_DecisionDone(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "Addressed: renamed Foo to Bar as requested",
+		Tokens:   500,
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 100, Body: "please rename Foo to Bar"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should be called once; got %d calls", len(fr.calls))
+	}
+	if !strings.Contains(fr.calls[0].CommentBody, "rename Foo to Bar") {
+		t.Errorf("CommentBody not propagated to runner: %q", fr.calls[0].CommentBody)
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "Addressed") {
+		t.Errorf("status comment should be posted on DecisionDone; got %+v", fp.comments)
+	}
+}
+
+func TestResume_NoteAdded_DecisionAsk_PausesWithQuestion(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionAsk,
+		Question: "Should I delete the deprecated method or just mark it //Deprecated:?",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded,
+		MR:   mr, Author: provider.User{Handle: "reviewer"},
+		Note: provider.Note{Body: "what about the deprecated method?"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("want Paused on DecisionAsk, got %v", next)
+	}
+	if !strings.Contains(r.Object.PauseReason, "deprecated method") {
+		t.Errorf("PauseReason should carry the question: %q", r.Object.PauseReason)
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/everflow resume") {
+		t.Errorf("pause comment should mention how to resume: %+v", fp.comments)
+	}
+}
+
+func TestResume_PipelineFailed_InvokesSubagent(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "Fixed flaky test",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventPipelineFailed,
+		MR:   mr,
+		Pipeline: provider.Pipeline{
+			ID: 99, Status: "failed",
+			FailedJobs: []provider.Job{
+				{ID: 1, Name: "test 3/5", Stage: "test", Status: "failed"},
+			},
+		},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should be called; got %d calls", len(fr.calls))
+	}
+	if !strings.Contains(fr.calls[0].CIFailure, "test 3/5") {
+		t.Errorf("CIFailure should mention failed job: %q", fr.calls[0].CIFailure)
+	}
+}
+
+func TestResume_ControlCommandFromAuthor_DeferredToNextCommit(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "andreww"}, // matches r.Object.Author
+		Note:   provider.Note{Body: "/everflow pause"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	// For this commit we just route to a TODO. Either Status is acceptable
+	// — the important thing is no subagent invocation and the event was
+	// detected as a control command (no fallthrough to filter).
+	if r.Object.SubagentInvocations != 0 {
+		t.Errorf("control commands should not invoke subagent; got %d", r.Object.SubagentInvocations)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("expected to stay in current status; got %v", next)
+	}
+}
+
+func TestResume_PausedRun_DropsNonControlEvents(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded,
+		MR:   mr, Author: provider.User{Handle: "reviewer"},
+		Note: provider.Note{Body: "any chance you can also look at this"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("paused Run should stay paused on non-control event, got %v", next)
+	}
+	if r.Object.SubagentInvocations != 0 {
+		t.Errorf("no subagent should fire while paused; got %d", r.Object.SubagentInvocations)
+	}
+}
+
+func TestResume_UnknownMR_Dropped(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+
+	// Event arrives for a completely different MR (cross-talk via shared
+	// project webhook).
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded,
+		MR:   provider.MR{ProjectID: "x/y", IID: 99},
+		Note: provider.Note{Body: "hello"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("unknown MR should be silently dropped; got %v", next)
+	}
+	if r.Object.SubagentInvocations != 0 {
+		t.Errorf("no subagent for unknown MR")
 	}
 }
 
