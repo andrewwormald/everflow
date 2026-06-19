@@ -119,6 +119,10 @@ type fakeRunner struct {
 	resp  runner.Response
 	err   error
 	calls []runner.Request
+
+	// If non-nil, called after Run() returns. Useful for tests that want
+	// to simulate the runner having modified files in the worktree.
+	onRun func(req runner.Request)
 }
 
 func (f *fakeRunner) Name() string { return "fake-runner" }
@@ -126,8 +130,77 @@ func (f *fakeRunner) Run(_ context.Context, req runner.Request) (runner.Response
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, req)
+	if f.onRun != nil {
+		f.onRun(req)
+	}
 	return f.resp, f.err
 }
+
+// --- Test fake: git.Git ---
+
+// fakeGit records calls and returns canned results. Default: dirty=true on
+// HasChanges (so tests don't have to remember to opt in). Override with
+// the explicit fields when a test needs different behaviour.
+type fakeGit struct {
+	mu sync.Mutex
+
+	ensureErr  error
+	commitErr  error
+	pushErr    error
+	hasChanges *bool // nil → default true; set to a bool pointer for explicit
+	hasChErr   error
+
+	ensures  []ensureCall
+	commits  []string
+	pushes   []string
+	removes  []string
+}
+
+type ensureCall struct {
+	Dir, BaseRepo, BaseBranch, Branch string
+}
+
+func (g *fakeGit) EnsureBranch(_ context.Context, dir, baseRepo, baseBranch, branch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ensures = append(g.ensures, ensureCall{dir, baseRepo, baseBranch, branch})
+	return g.ensureErr
+}
+
+func (g *fakeGit) HasChanges(_ context.Context, _ string) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.hasChErr != nil {
+		return false, g.hasChErr
+	}
+	if g.hasChanges != nil {
+		return *g.hasChanges, nil
+	}
+	return true, nil // default: assume runner did make changes
+}
+
+func (g *fakeGit) Commit(_ context.Context, _, msg string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.commits = append(g.commits, msg)
+	return g.commitErr
+}
+
+func (g *fakeGit) Push(_ context.Context, _, branch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.pushes = append(g.pushes, branch)
+	return g.pushErr
+}
+
+func (g *fakeGit) RemoveWorktree(_ context.Context, _, dir string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.removes = append(g.removes, dir)
+	return nil
+}
+
+func boolPtr(b bool) *bool { return &b }
 
 // --- Helpers ---
 
@@ -137,10 +210,18 @@ func newDeps(t *testing.T, p provider.Provider) *Deps {
 	return &Deps{
 		Providers:     map[string]provider.Provider{p.Name(): p},
 		Runners:       reg,
+		Git:           &fakeGit{},
 		Secrets:       webhook.NewSecretRegistry(),
 		PublicBaseURL: "https://everflow.test",
 		RunsRoot:      t.TempDir(),
 	}
+}
+
+// withGit replaces the default fakeGit with a tailored one so tests can
+// override individual behaviours (e.g. push fails, no changes detected).
+func (d *Deps) withGit(g *fakeGit) *fakeGit {
+	d.Git = g
+	return g
 }
 
 // withRunner adds a runner to Deps.Runners and returns the typed fake so the
@@ -546,6 +627,145 @@ func TestWork_CreateMRFails(t *testing.T) {
 	}
 	if _, ok := r.Object.InFlight["svc-x"]; ok {
 		t.Errorf("InFlight should not contain unit when CreateMR failed")
+	}
+}
+
+func TestWork_RunnerDoneButCleanWorktree_BlacklistsAndMovesOn(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "ok"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(false)})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("clean-worktree Done should go to Discovering, got %v", next)
+	}
+	if len(fp.createMRCalls) != 0 {
+		t.Errorf("no MR should be opened when nothing changed; got %d", len(fp.createMRCalls))
+	}
+	if len(r.Object.Blacklisted) != 1 || r.Object.Blacklisted[0].UnitID != "svc-x" {
+		t.Errorf("svc-x should be blacklisted; got %+v", r.Object.Blacklisted)
+	}
+	if !strings.Contains(r.Object.Blacklisted[0].Reason, "no changes") {
+		t.Errorf("Blacklisted.Reason should mention no changes: %q", r.Object.Blacklisted[0].Reason)
+	}
+}
+
+func TestWork_PushFails(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "ok"}})
+	d.withGit(&fakeGit{pushErr: errors.New("remote rejected: branch protection")})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err == nil {
+		t.Fatalf("want error from push failure")
+	}
+	if next != StatusFailed {
+		t.Errorf("want Failed on push fail, got %v", next)
+	}
+	if len(fp.createMRCalls) != 0 {
+		t.Errorf("no MR should be opened when push failed; got %d", len(fp.createMRCalls))
+	}
+	if !strings.Contains(r.Object.LastError, "branch protection") {
+		t.Errorf("LastError should propagate push error: %q", r.Object.LastError)
+	}
+}
+
+func TestWork_EnsureBranchFails(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	d.withGit(&fakeGit{ensureErr: errors.New("base branch 'release/v9' does not exist")})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err == nil {
+		t.Fatalf("want error from EnsureBranch failure")
+	}
+	if next != StatusFailed {
+		t.Errorf("want Failed, got %v", next)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner should NOT be invoked when worktree setup fails; got %d calls", len(fr.calls))
+	}
+}
+
+func TestResume_NoteAdded_DoneButCleanWorktree_PostsInfoComment(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Already correct"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(false)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "are you sure about Foo?"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("clean-worktree Done in comment phase should stay AwaitingMerge, got %v", next)
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "No code changes") {
+		t.Errorf("expected an info-only comment; got %+v", fp.comments)
+	}
+}
+
+func TestResume_NoteAdded_PushFails_Pauses(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "fixed"}})
+	d.withGit(&fakeGit{pushErr: errors.New("auth required")})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("push failure in comment phase should Pause (MR exists for recovery), got %v", next)
+	}
+	if !strings.Contains(r.Object.PauseReason, "Push") {
+		t.Errorf("PauseReason should mention push: %q", r.Object.PauseReason)
+	}
+}
+
+func TestResume_MRMerged_CleansUpWorktree(t *testing.T) {
+	g := &fakeGit{}
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	d.withGit(g)
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "svc-a", mr)
+	r.Object.BaseRepo = "/some/repo"
+
+	ev := provider.Event{Kind: provider.EventMRMerged, MR: mr}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(g.removes) != 1 {
+		t.Errorf("expected one RemoveWorktree call on merge, got %d", len(g.removes))
+	}
+	if !strings.Contains(g.removes[0], "svc-a") {
+		t.Errorf("removed worktree should be svc-a's, got %q", g.removes[0])
 	}
 }
 

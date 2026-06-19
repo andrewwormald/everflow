@@ -21,6 +21,7 @@ import (
 	"github.com/luno/workflow"
 
 	"github.com/andrewwormald/everflow/internal/filter"
+	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/webhook"
@@ -40,6 +41,7 @@ type Deps struct {
 	Providers     map[string]provider.Provider // by name; populated at daemon start
 	Runners       *runner.Registry             // by name; agents (claude, qwen, openhands)
 	Filter        filter.Filter                // Starlark filter; nil = StubFilter
+	Git           git.Git                      // git CLI wrapper; required for work() + invokeForEvent
 	Secrets       *webhook.SecretRegistry      // per-(provider, runID) HMAC/token secrets
 	PublicBaseURL string                       // e.g. https://everflow.example.com
 	RunsRoot      string                       // e.g. ~/.everflow/runs
@@ -58,8 +60,9 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	)
 
 	b.AddStep(StatusWorking, d.work,
-		StatusAwaitingMerge,
-		StatusFailed,
+		StatusAwaitingMerge, // MR opened, await events
+		StatusDiscovering,   // runner returned Done but worktree clean → blacklist + next unit
+		StatusFailed,        // unrecoverable (runner err, MR create err, push err)
 	)
 	// Note: StatusPaused not yet a destination from Working. Once an MR
 	// exists in InFlight, the resume callback owns pause/retry/skip; work()
@@ -217,26 +220,23 @@ func (d *Deps) discover(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 }
 
 // work invokes the runner against the current unit and, on success,
-// opens an MR via the provider. The MR is stored in InFlight so the
-// resume callback can dispatch incoming webhook events to the right unit.
+// opens an MR via the provider.
 //
-// What's done in this commit:
-//   - Looks up the runner (by AgentState.RunnerName) and provider
-//   - Builds a bounded RunRequest with the unit's scope
-//   - Invokes the runner, appends a Turn to history
-//   - On DecisionDone: calls Provider.CreateMR, records the MR in InFlight,
-//     posts an initial status comment, transitions to AwaitingMerge
-//   - On error / DecisionFail before MR creation: returns StatusFailed
-//     (no MR exists yet, so there's no recovery surface for the author —
-//     a future ADR may add a pre-MR pause+retry path)
+// Full flow:
+//   1. Resolve runner + provider
+//   2. Git: EnsureBranch creates the worktree on a per-unit branch off
+//      origin/<BaseBranch>
+//   3. Invoke runner; runner writes files inside the worktree
+//   4. Git: HasChanges. If clean, runner returned Done without doing
+//      anything → blacklist the unit ("no changes needed") and back to
+//      Discovering
+//   5. Git: Commit + Push the new branch
+//   6. Provider: CreateMR; store in InFlight; post initial comment
+//   7. → StatusAwaitingMerge
 //
-// What's NOT done in this commit (TODO before production use):
-//   - Setting up a git worktree at <RunsRoot>/<runID>/worktrees/<unitID>/
-//   - Running git fetch / branch / commit / push on the runner's output
-//   - Loading SkillPath + FilterPath into the runner's environment
-//   The next commit lands these; until then Provider.CreateMR is called
-//   with a branch name that doesn't exist on the remote — real GitLab/GitHub
-//   would reject it, but the fake provider in tests accepts anything.
+// Any error before MR creation → StatusFailed. The Run terminates; the
+// user starts a new one. (A future ADR may add a pre-MR pause+retry path;
+// for v1 we keep work() linear.)
 func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
 	if r.Object.CurrentUnit == "" {
 		return StatusFailed, fmt.Errorf("work: no CurrentUnit set")
@@ -248,6 +248,9 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	if d.Runners == nil {
 		return StatusFailed, fmt.Errorf("work: no Runners configured")
 	}
+	if d.Git == nil {
+		return StatusFailed, fmt.Errorf("work: no Git configured")
+	}
 	rn, err := d.Runners.Get(r.Object.RunnerName)
 	if err != nil {
 		return StatusFailed, fmt.Errorf("work: runner: %w", err)
@@ -256,7 +259,15 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	unitID := r.Object.CurrentUnit
 	branch := branchName(r.RunID, unitID)
 	worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID)
+	baseBranch := defaultIfEmpty(r.Object.BaseBranch, "main")
 
+	// 1. Set up worktree off origin/<base>.
+	if err := d.Git.EnsureBranch(ctx, worktree, r.Object.BaseRepo, baseBranch, branch); err != nil {
+		r.Object.LastError = err.Error()
+		return StatusFailed, fmt.Errorf("work: git EnsureBranch: %w", err)
+	}
+
+	// 2. Invoke runner inside the worktree.
 	req := runner.Request{
 		Worktree:     worktree,
 		SkillCommand: fmt.Sprintf("/everflow-unit %s", unitID), // overridden once SkillPath integration lands
@@ -289,16 +300,43 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 
 	switch resp.Decision {
 	case DecisionDone:
-		// Real impl: at this point the runner's changes are committed in
-		// the local worktree; we git-push, then open the MR. Until git ops
-		// land in the next commit, CreateMR is called with a branch name
-		// that doesn't yet exist remotely.
+		// 3. Did the runner actually change anything?
+		dirty, err := d.Git.HasChanges(ctx, worktree)
+		if err != nil {
+			r.Object.LastError = err.Error()
+			return StatusFailed, fmt.Errorf("work: git HasChanges: %w", err)
+		}
+		if !dirty {
+			// Runner claims Done but didn't touch anything. Treat as a
+			// no-op: blacklist with reason, cleanup, move to next unit.
+			r.Object.Blacklisted = append(r.Object.Blacklisted, BlacklistedUnit{
+				UnitID: unitID, Reason: "runner returned Done with no changes",
+				At: time.Now(),
+			})
+			r.Object.CurrentUnit = ""
+			_ = d.Git.RemoveWorktree(ctx, r.Object.BaseRepo, worktree) // best-effort
+			return StatusDiscovering, nil
+		}
+
+		// 4. Commit + push.
+		commitMsg := fmt.Sprintf("%s: %s\n\nGenerated by everflow run %s.\n",
+			r.Object.Goal, unitID, shortRunID(r.RunID))
+		if err := d.Git.Commit(ctx, worktree, commitMsg); err != nil {
+			r.Object.LastError = err.Error()
+			return StatusFailed, fmt.Errorf("work: git Commit: %w", err)
+		}
+		if err := d.Git.Push(ctx, worktree, branch); err != nil {
+			r.Object.LastError = err.Error()
+			return StatusFailed, fmt.Errorf("work: git Push: %w", err)
+		}
+
+		// 5. Open the MR.
 		mr, err := p.CreateMR(ctx, r.Object.ProjectID, provider.MRDraft{
 			Branch:       branch,
-			TargetBranch: defaultIfEmpty(r.Object.BaseBranch, "main"),
+			TargetBranch: baseBranch,
 			Title:        fmt.Sprintf("%s: %s", r.Object.Goal, unitID),
 			Description:  resp.Summary,
-			Labels:       []string{"everflow", "everflow:" + r.RunID[:8]},
+			Labels:       []string{"everflow", "everflow:" + shortRunID(r.RunID)},
 		})
 		if err != nil {
 			r.Object.LastError = err.Error()
@@ -306,8 +344,9 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		}
 		r.Object.InFlight[unitID] = mr
 
-		// Initial status comment so the author can see who's driving the MR.
-		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/everflow status` for progress, or `/everflow skip` to abandon.", r.RunID[:8], unitID)
+		// 6. Initial status comment so the author can see who's driving.
+		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/everflow status` for progress, or `/everflow skip` to abandon.",
+			shortRunID(r.RunID), unitID)
 		if err := p.PostComment(ctx, r.Object.ProjectID, mr.IID, body); err != nil {
 			// Comment failure is non-fatal — the MR exists, the run continues.
 			r.Object.LastError = fmt.Sprintf("post initial comment: %v", err)
@@ -379,9 +418,9 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// Lifecycle events bypass the filter.
 	switch ev.Kind {
 	case provider.EventMRMerged:
-		return d.markUnitMerged(r, unitID, ev.MR), nil
+		return d.markUnitMerged(ctx, r, unitID, ev.MR), nil
 	case provider.EventMRClosed:
-		return d.markUnitBlacklisted(r, unitID, ev.MR, "MR closed without merge"), nil
+		return d.markUnitBlacklisted(ctx, r, unitID, ev.MR, "MR closed without merge"), nil
 	case provider.EventMRUpdated, provider.EventPipelineSucceeded:
 		return StatusAwaitingMerge, nil // informational; runner doesn't care
 	}
@@ -486,8 +525,39 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 
 	switch resp.Decision {
 	case DecisionDone:
-		// TODO(next-commit): git commit + push the runner's changes.
-		// Until git ops land, the comment is for visibility only.
+		// Did the runner change anything?
+		dirty, gErr := d.Git.HasChanges(ctx, req.Worktree)
+		if gErr != nil {
+			r.Object.PauseReason = fmt.Sprintf("git HasChanges error after %s: %v", phase, gErr)
+			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/everflow retry`.", phase, gErr))
+			return StatusPaused, nil
+		}
+		if !dirty {
+			// Runner thought it addressed the feedback but didn't actually
+			// change anything. Note that on the MR and stay AwaitingMerge —
+			// the reviewer can clarify if needed.
+			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+			return StatusAwaitingMerge, nil
+		}
+
+		// Commit + push the additional changes onto the existing branch.
+		branch := branchName(r.RunID, unitID)
+		commitMsg := buildCommitMessage(phase, unitID, ev, r.RunID)
+		if gErr := d.Git.Commit(ctx, req.Worktree, commitMsg); gErr != nil {
+			r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
+			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
+			return StatusPaused, nil
+		}
+		if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
+			r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
+			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/everflow retry` after fixing.", phase, gErr))
+			return StatusPaused, nil
+		}
+
 		_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
 			fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary))
 		return StatusAwaitingMerge, nil
@@ -511,7 +581,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 
 // --- resume helpers ---
 
-func (d *Deps) markUnitMerged(r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR) AgentStatus {
+func (d *Deps) markUnitMerged(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR) AgentStatus {
 	delete(r.Object.InFlight, unitID)
 	r.Object.Completed = append(r.Object.Completed, CompletedUnit{
 		UnitID:   unitID,
@@ -521,10 +591,11 @@ func (d *Deps) markUnitMerged(r *workflow.Run[AgentState, AgentStatus], unitID s
 	if r.Object.CurrentUnit == unitID {
 		r.Object.CurrentUnit = ""
 	}
+	d.cleanupWorktree(ctx, r, unitID)
 	return StatusDiscovering
 }
 
-func (d *Deps) markUnitBlacklisted(r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR, reason string) AgentStatus {
+func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string, mr provider.MR, reason string) AgentStatus {
 	delete(r.Object.InFlight, unitID)
 	r.Object.Blacklisted = append(r.Object.Blacklisted, BlacklistedUnit{
 		UnitID: unitID,
@@ -535,7 +606,19 @@ func (d *Deps) markUnitBlacklisted(r *workflow.Run[AgentState, AgentStatus], uni
 	if r.Object.CurrentUnit == unitID {
 		r.Object.CurrentUnit = ""
 	}
+	d.cleanupWorktree(ctx, r, unitID)
 	return StatusDiscovering
+}
+
+// cleanupWorktree is best-effort — failure here doesn't block the Run.
+// Orphaned worktrees can be cleaned up out-of-band via a future `everflow
+// gc` command.
+func (d *Deps) cleanupWorktree(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], unitID string) {
+	if d.Git == nil || r.Object.BaseRepo == "" {
+		return
+	}
+	worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID)
+	_ = d.Git.RemoveWorktree(ctx, r.Object.BaseRepo, worktree)
 }
 
 // unitForMR matches an inbound MR to the unitID that owns it in InFlight.
@@ -604,11 +687,35 @@ func providerNames(m map[string]provider.Provider) []string {
 // `everflow/<short-runID>/<unitID>`. Short runID keeps the branch readable
 // while staying unique across concurrent refactors.
 func branchName(runID, unitID string) string {
-	short := runID
-	if len(short) > 8 {
-		short = short[:8]
+	return fmt.Sprintf("everflow/%s/%s", shortRunID(runID), unitID)
+}
+
+// shortRunID is used in branch names, commit footers, and labels.
+func shortRunID(runID string) string {
+	if len(runID) > 8 {
+		return runID[:8]
 	}
-	return fmt.Sprintf("everflow/%s/%s", short, unitID)
+	return runID
+}
+
+// buildCommitMessage produces a commit message for a follow-up commit
+// (addressing a review comment or fixing CI). Includes the event's source
+// so the audit trail in `git log` matches the MR conversation.
+func buildCommitMessage(phase, unitID string, ev provider.Event, runID string) string {
+	var subject string
+	switch phase {
+	case "address_comment":
+		who := ev.Author.Handle
+		if who == "" {
+			who = "reviewer"
+		}
+		subject = fmt.Sprintf("Address review feedback on %s from @%s", unitID, who)
+	case "fix_ci":
+		subject = fmt.Sprintf("Fix CI on %s (pipeline %d)", unitID, ev.Pipeline.ID)
+	default:
+		subject = fmt.Sprintf("%s on %s", phase, unitID)
+	}
+	return fmt.Sprintf("%s\n\nGenerated by everflow run %s.\n", subject, shortRunID(runID))
 }
 
 func defaultIfEmpty(s, fallback string) string {

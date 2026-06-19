@@ -21,6 +21,7 @@ import (
 	"github.com/luno/workflow/adapters/memrolescheduler"
 	"github.com/luno/workflow/adapters/memstreamer"
 
+	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/provider/github"
 	"github.com/andrewwormald/everflow/internal/provider/gitlab"
@@ -129,9 +130,14 @@ func cmdDaemon(args []string) error {
 	secrets := webhook.NewSecretRegistry()
 	runners := runner.NewRegistry()
 	// TODO: register claude / qwen / openhands runners here once the
-	// adapters land (next commit). For now the registry is empty; any
-	// `everflow start --runner X` would fail at work() time with
-	// "unknown runner X" — which is the correct behaviour.
+	// adapters land. For now the registry is empty; any `everflow start
+	// --runner X` would fail at work() time with "unknown runner X" —
+	// which is the correct behaviour.
+
+	gitClient := git.NewExec(
+		"everflow",                       // author name on commits; falls back to host .gitconfig if empty
+		"everflow@noreply.invalid",       // author email
+	)
 
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
@@ -140,6 +146,7 @@ func cmdDaemon(args []string) error {
 		RoleScheduler: memrolescheduler.New(),
 		Providers:     providers,
 		Runners:       runners,
+		Git:           gitClient,
 		Secrets:       secrets,
 		PublicBaseURL: *publicBaseURL,
 		RunsRoot:      runsRoot,

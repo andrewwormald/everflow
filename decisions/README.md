@@ -70,3 +70,4 @@ forces or unlocks.
 | 0020 | GitLab provider — hand-rolled REST client, bare-token webhooks  | Accepted | 2026-06-18 |
 | 0021 | GitHub provider — HMAC webhooks, three comment events collapse to one | Accepted | 2026-06-19 |
 | 0022 | Sqlite-backed RecordStore + TimeoutStore (pure-Go driver)       | Accepted | 2026-06-19 |
+| 0023 | Git operations — shell out to `git`, host-managed auth, local BaseRepo for v1 | Accepted | 2026-06-19 |
