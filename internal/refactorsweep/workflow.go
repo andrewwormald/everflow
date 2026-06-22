@@ -174,15 +174,27 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 	return StatusDiscovering, nil
 }
 
-// discover picks the next unit from the queue, deduping against units
-// already completed, blacklisted, or in-flight. When the queue is empty AND
-// nothing is in-flight, the Run is done.
+// discover picks the next unit to work on. Branches on Mode:
 //
-// v1: queue is populated at Trigger from the user's static --units list.
-// Future: a Starlark discovery rule (DiscoveryPath, ADR-0018) re-runs each
-// pass and appends newly-found units. The dedup logic below is forward-
-// compatible — it ignores units we've already processed.
+//   sweep: pop from the static Queue, dedup against Completed + Blacklisted
+//          + InFlight. Terminal when queue + in-flight are both empty.
+//
+//   spec:  invoke the runner with a planning prompt (spec body + plan
+//          history); the runner returns either the next increment to do
+//          or a Done signal. See ADR-0025.
+//
+// Empty Mode is treated as sweep for backwards compatibility with v1 Runs
+// triggered before the Mode field existed.
 func (d *Deps) discover(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
+	if r.Object.IsSpecMode() {
+		return d.discoverSpec(ctx, r)
+	}
+	return d.discoverSweep(ctx, r)
+}
+
+// discoverSweep is the mechanical-sweep path: queue.Pop with dedup. Unchanged
+// from v1.
+func (d *Deps) discoverSweep(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
 	// Build the set of units we no longer need to consider.
 	seen := make(map[string]struct{}, len(r.Object.Completed)+len(r.Object.Blacklisted)+len(r.Object.InFlight))
 	for _, c := range r.Object.Completed {
@@ -219,6 +231,152 @@ func (d *Deps) discover(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 	r.Object.CurrentUnit = r.Object.Queue[0]
 	r.Object.Queue = r.Object.Queue[1:]
 	return StatusWorking, nil
+}
+
+// discoverSpec asks the runner to plan the next increment. The runner
+// receives the spec body, the history of merged/blacklisted increments,
+// and any pending /everflow prompt injection. It returns:
+//
+//   DecisionContinue → there's more work; we generate a unitID
+//                      (increment-N), append to Plan, set CurrentUnit
+//   DecisionDone     → the spec is fully implemented → StatusCompleted
+//   DecisionAsk      → the planner needs human input → StatusPaused
+//   DecisionFail     → planning failed unrecoverably → StatusFailed
+//   DecisionNoChange → equivalent to Continue with no work right now;
+//                      we treat as Completed (planner found nothing actionable)
+//
+// We don't validate the runner's *output* against the codebase here; that
+// happens implicitly in work() (the runner does the change, git checks
+// HasChanges, the gate proves it's real).
+func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
+	if d.Runners == nil {
+		return StatusFailed, fmt.Errorf("discover: no Runners configured (spec mode requires a planner)")
+	}
+	rn, err := d.Runners.Get(r.Object.RunnerName)
+	if err != nil {
+		return StatusFailed, fmt.Errorf("discover: runner: %w", err)
+	}
+
+	// Build the planning prompt: spec body + plan history. The prompt
+	// injection (if any) takes priority — it represents the author's
+	// latest steering.
+	goal := buildPlanningPrompt(r.Object)
+	if r.Object.PromptInjection != "" {
+		goal = r.Object.PromptInjection + "\n\n---\n\n" + goal
+		r.Object.PromptInjection = "" // consume single-use
+	}
+
+	req := runner.Request{
+		Worktree:     filepath.Join(d.RunsRoot, r.RunID, "planning"),
+		SkillCommand: "/everflow-plan",
+		Goal:         goal,
+		UnitID:       "", // planning is not unit-scoped
+		Budget:       r.Object.Budget,
+	}
+
+	resp, runErr := rn.Run(ctx, req)
+	turn := Turn{
+		Index:     len(r.Object.History),
+		UnitID:    "", // planning turns have no unit
+		Runner:    rn.Name(),
+		Phase:     "plan",
+		Summary:   resp.Summary,
+		Tokens:    resp.Tokens,
+		StartedAt: orNow(resp.StartedAt),
+		EndedAt:   orNow(resp.EndedAt),
+	}
+	if runErr != nil {
+		turn.Error = runErr.Error()
+	}
+	r.Object.History = append(r.Object.History, turn)
+	r.Object.SubagentInvocations++
+
+	if runErr != nil {
+		r.Object.LastError = runErr.Error()
+		return StatusFailed, fmt.Errorf("discover: planner: %w", runErr)
+	}
+
+	switch resp.Decision {
+	case DecisionDone, DecisionNoChange:
+		// Planner says we're done (Done) or there's nothing actionable
+		// right now (NoChange). Either way: terminate the Run.
+		return StatusCompleted, nil
+
+	case DecisionAsk:
+		// Planner needs the author's input. Park; the answer will arrive
+		// via comment on the most recent MR (or a new comment thread).
+		r.Object.PauseReason = "planner asks: " + resp.Question
+		return StatusPaused, nil
+
+	case DecisionFail:
+		r.Object.LastError = "planner failed: " + resp.Summary
+		return StatusFailed, nil
+
+	case DecisionContinue:
+		// New increment to do. Generate a stable unit ID and record the
+		// rationale.
+		unitID := fmt.Sprintf("increment-%d", len(r.Object.Plan)+1)
+		r.Object.Plan = append(r.Object.Plan, PlannedIncrement{
+			UnitID:    unitID,
+			Rationale: resp.Summary,
+			PlannedAt: time.Now(),
+			Outcome:   "in_flight",
+		})
+		r.Object.CurrentUnit = unitID
+		return StatusWorking, nil
+
+	default:
+		r.Object.LastError = fmt.Sprintf("planner returned unexpected decision %q", resp.Decision)
+		return StatusFailed, nil
+	}
+}
+
+// buildPlanningPrompt assembles the input the planner sees each iteration:
+// the spec body + history of plan entries (what was decided, what
+// happened). Short by design — bounded context — even after many merges.
+func buildPlanningPrompt(s *AgentState) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "# Goal\n\n%s\n\n", s.Goal)
+	if s.SpecBody != "" {
+		fmt.Fprintf(&b, "# Spec\n\n%s\n\n", s.SpecBody)
+	}
+	if len(s.Plan) > 0 {
+		fmt.Fprintf(&b, "# Plan history (last %d entries)\n\n", len(s.Plan))
+		for _, p := range s.Plan {
+			outcome := p.Outcome
+			if outcome == "" {
+				outcome = "(pending)"
+			}
+			fmt.Fprintf(&b, "- **%s** [%s]: %s\n", p.UnitID, outcome, p.Rationale)
+		}
+		fmt.Fprintln(&b)
+	}
+	if len(s.Completed) > 0 || len(s.Blacklisted) > 0 {
+		fmt.Fprintf(&b, "# Merged so far: %d. Blacklisted: %d.\n\n",
+			len(s.Completed), len(s.Blacklisted))
+	}
+	b.WriteString(`# Your task
+
+Decide the next increment toward implementing this spec.
+
+Return Decision=Continue with a one-line rationale (Summary) describing the
+next increment, OR Decision=Done if the spec is fully implemented, OR
+Decision=Ask with a Question if you need the author's input before deciding,
+OR Decision=Fail if planning is impossible.
+`)
+	return b.String()
+}
+
+// updatePlanOutcome marks a planned increment's outcome (completed/
+// blacklisted). Called from markUnitMerged / markUnitBlacklisted so the
+// planner sees fresh outcomes on the next iteration.
+func updatePlanOutcome(s *AgentState, unitID, outcome string) {
+	for i := range s.Plan {
+		if s.Plan[i].UnitID == unitID {
+			s.Plan[i].Outcome = outcome
+			return
+		}
+	}
 }
 
 // work invokes the runner against the current unit and, on success,
@@ -319,6 +477,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 				UnitID: unitID, Reason: "runner returned Done with no changes",
 				At: time.Now(),
 			})
+			updatePlanOutcome(r.Object, unitID, "blacklisted")
 			r.Object.CurrentUnit = ""
 			_ = d.Git.RemoveWorktree(ctx, r.Object.BaseRepo, worktree) // best-effort
 			return StatusDiscovering, nil
@@ -596,6 +755,7 @@ func (d *Deps) markUnitMerged(ctx context.Context, r *workflow.Run[AgentState, A
 		MR:       mr,
 		MergedAt: time.Now(),
 	})
+	updatePlanOutcome(r.Object, unitID, "completed")
 	if r.Object.CurrentUnit == unitID {
 		r.Object.CurrentUnit = ""
 	}
@@ -611,6 +771,7 @@ func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentSta
 		Reason: reason,
 		At:     time.Now(),
 	})
+	updatePlanOutcome(r.Object, unitID, "blacklisted")
 	if r.Object.CurrentUnit == unitID {
 		r.Object.CurrentUnit = ""
 	}

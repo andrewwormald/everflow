@@ -72,3 +72,4 @@ forces or unlocks.
 | 0022 | Sqlite-backed RecordStore + TimeoutStore (pure-Go driver)       | Accepted | 2026-06-19 |
 | 0023 | Git operations — shell out to `git`, host-managed auth, local BaseRepo for v1 | Accepted | 2026-06-19 |
 | 0024 | Spec as Run; sweep + spec modes coexist on one workflow definition | Accepted | 2026-06-22 |
+| 0025 | Planner-driven `discover()` for spec mode                       | Accepted | 2026-06-22 |
