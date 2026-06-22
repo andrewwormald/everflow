@@ -51,6 +51,13 @@ type AgentState struct {
 	Budget          runner.Budget  `json:"budget"`
 	Author          provider.User  `json:"author"`            // see ADR-0017
 	Concurrency     int            `json:"concurrency"`       // semaphore size; v1 = 1
+
+	// Mode picks how discover() behaves: sweep (queue-pop) or spec (planner).
+	// See ADR-0024. Empty == ModeSweep for backwards compatibility.
+	Mode            string         `json:"mode"`              // "" | "sweep" | "spec"
+	SpecPath        string         `json:"spec_path"`         // populated in spec mode
+	SpecBody        string         `json:"spec_body"`         // markdown body the planner reads each iteration
+
 	SkillPath       string         `json:"skill_path"`        // ~/.everflow/runs/<runID>/SKILL.md
 	FilterPath      string         `json:"filter_path"`       // ~/.everflow/runs/<runID>/note_added.star
 	DiscoveryPath   string         `json:"discovery_path"`    // optional discovery rule
@@ -59,7 +66,8 @@ type AgentState struct {
 	WebhookURL      string         `json:"webhook_url"`       // public URL we registered
 
 	// Mutated through the Run's lifecycle:
-	Queue            []string             `json:"queue"`              // unit IDs awaiting processing
+	Queue            []string             `json:"queue"`              // unit IDs awaiting processing (sweep mode only)
+	Plan             []PlannedIncrement   `json:"plan"`               // planner history (spec mode only) — ADR-0025
 	InFlight         map[string]provider.MR `json:"in_flight"`        // unit ID → MR
 	Completed        []CompletedUnit      `json:"completed"`
 	Blacklisted      []BlacklistedUnit    `json:"blacklisted"`
@@ -73,6 +81,31 @@ type AgentState struct {
 	EventsSeen           int `json:"events_seen"`
 	EventsSkippedByFilter int `json:"events_skipped_by_filter"`
 	SubagentInvocations  int `json:"subagent_invocations"`
+}
+
+// Mode values for AgentState.Mode. Empty Mode behaves as ModeSweep for
+// backwards compatibility with v1 Runs created before this field existed.
+const (
+	ModeSweep = "sweep"
+	ModeSpec  = "spec"
+)
+
+// IsSpecMode reports whether this Run plans each increment via the runner
+// (spec mode) rather than popping a static queue (sweep mode). Empty Mode
+// is treated as sweep.
+func (s *AgentState) IsSpecMode() bool {
+	return s.Mode == ModeSpec
+}
+
+// PlannedIncrement is one entry in the planner's audit trail. Each entry
+// records a unit the planner chose, the rationale, and the eventual
+// outcome — useful both for debugging "why did the agent pick this?" and
+// for re-priming the planner on the next iteration.
+type PlannedIncrement struct {
+	UnitID    string    `json:"unit_id"`
+	Rationale string    `json:"rationale"`            // the planner's stated reason for this increment
+	PlannedAt time.Time `json:"planned_at"`
+	Outcome   string    `json:"outcome,omitempty"`    // "in_flight" | "completed" | "blacklisted" | ""
 }
 
 // CompletedUnit records a shipped MR.
