@@ -75,3 +75,4 @@ forces or unlocks.
 | 0025 | Planner-driven `discover()` for spec mode                       | Accepted | 2026-06-22 |
 | 0026 | Abandonment-with-confirmation (two-tap stop)                    | Accepted | 2026-06-22 |
 | 0027 | Claude runner adapter — prompt-marker protocol for Decision     | Accepted | 2026-06-22 |
+| 0028 | `everflow start` triggers via a localhost-only HTTP endpoint    | Accepted | 2026-06-22 |

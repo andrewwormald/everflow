@@ -10,13 +10,12 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/andrewwormald/everflow/internal/provider"
 )
 
-// Server is the HTTP front for webhook ingestion. Mount it under any HTTP
-// router or use Listen() directly.
+// Server is the HTTP front for webhook ingestion. Mount it onto an
+// http.ServeMux via Mount(); the daemon owns the http.Server lifecycle.
 //
 // Routing: POST /webhook/{providerName}/{runID}
 //   - Looks up the registered runID + secret
@@ -28,8 +27,7 @@ type Server struct {
 	dispatcher Dispatcher
 	secrets    *SecretRegistry
 
-	srv *http.Server
-	mu  sync.Mutex
+	mu sync.Mutex
 }
 
 // Dispatcher receives normalised events bound for a specific runID.
@@ -76,40 +74,16 @@ func NewServer(providers map[string]provider.Provider, dispatcher Dispatcher, se
 	}
 }
 
-// Listen blocks serving until ctx is cancelled.
-func (s *Server) Listen(ctx context.Context, addr string) error {
-	mux := http.NewServeMux()
+// Mount registers the webhook server's routes (/webhook/{provider}/{runID}
+// and /health) on the provided mux. The caller owns the http.Server. This
+// lets the daemon mount other routes (e.g. /trigger on a separate listener)
+// without webhook-coupling its lifecycle.
+func (s *Server) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/webhook/", s.handleWebhook)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
-
-	s.mu.Lock()
-	s.srv = &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	s.mu.Unlock()
-
-	errCh := make(chan error, 1)
-	go func() {
-		err := s.srv.ListenAndServe()
-		if err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-		close(errCh)
-	}()
-
-	select {
-	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		return s.srv.Shutdown(shutdownCtx)
-	case err := <-errCh:
-		return err
-	}
 }
 
 func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
