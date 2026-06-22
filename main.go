@@ -137,6 +137,9 @@ func cmdDaemon(args []string) error {
 	runsRoot := filepath.Join(filepath.Dir(*storePath), "runs")
 
 	secrets := webhook.NewSecretRegistry()
+	if err := rehydrateSecrets(context.Background(), recordStore, secrets, logger); err != nil {
+		logger.Warn("secret rehydration encountered errors; some Runs may have empty registry entries", "err", err)
+	}
 	runners := runner.NewRegistry()
 	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
 
@@ -257,6 +260,71 @@ func cmdDaemon(args []string) error {
 	_ = publicSrv.Shutdown(shutdownCtx)
 	_ = localSrv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// rehydrateSecrets iterates active Runs in the record store and re-populates
+// the in-memory SecretRegistry from AgentState.WebhookSecret. Required on
+// daemon restart — the registry lives in memory, so without this every
+// inbound webhook for an existing Run would 401 after a restart.
+//
+// "Active" means: not terminal (Completed/Failed/Cancelled) AND has a
+// non-empty WebhookSecret. Runs whose secret somehow ended up empty are
+// logged and skipped (rather than failing the whole startup).
+//
+// See ADR-0029.
+func rehydrateSecrets(ctx context.Context, store workflow.RecordStore, secrets *webhook.SecretRegistry, logger *slog.Logger) error {
+	const pageSize = 200
+	var offset int64
+	rehydrated := 0
+	for {
+		records, err := store.List(ctx, workflowName, offset, pageSize, workflow.OrderTypeAscending)
+		if err != nil {
+			return fmt.Errorf("list records at offset %d: %w", offset, err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		for _, rec := range records {
+			if rec.RunState.Finished() {
+				continue
+			}
+			status := refactorsweep.AgentStatus(rec.Status)
+			if !isActiveStatus(status) {
+				continue
+			}
+			var state refactorsweep.AgentState
+			if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+				logger.Warn("rehydrate: unmarshal AgentState failed; skipping",
+					"run_id", rec.RunID, "err", err)
+				continue
+			}
+			if state.WebhookSecret == "" || state.ProviderName == "" {
+				continue
+			}
+			secrets.Set(state.ProviderName, rec.RunID, state.WebhookSecret)
+			rehydrated++
+		}
+		if int64(len(records)) < pageSize {
+			break
+		}
+		offset += int64(len(records))
+	}
+	if rehydrated > 0 {
+		logger.Info("rehydrated webhook secrets from store", "count", rehydrated)
+	}
+	return nil
+}
+
+// isActiveStatus reports whether a Run in this state is expected to receive
+// further webhook callbacks. Used by rehydrateSecrets to skip terminals.
+func isActiveStatus(s refactorsweep.AgentStatus) bool {
+	switch s {
+	case refactorsweep.StatusCompleted,
+		refactorsweep.StatusFailed,
+		refactorsweep.StatusCancelled:
+		return false
+	}
+	return true
 }
 
 // buildProviders registers providers based on env-var credentials. Empty map
