@@ -73,14 +73,34 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		StatusDiscovering,
 		StatusPaused,
 		StatusFailed,
-		StatusCancelled, // /everflow stop
+		StatusCancelled,              // /everflow stop
+		StatusAwaitingAbandonConfirm, // /everflow abandon (first tap)
 	)
 
 	b.AddCallback(StatusPaused, d.resume,
 		StatusAwaitingMerge,
 		StatusDiscovering,
 		StatusFailed,
-		StatusCancelled, // /everflow stop from paused
+		StatusCancelled,              // /everflow stop from paused
+		StatusAwaitingAbandonConfirm, // /everflow abandon (first tap) from paused
+	)
+
+	// AwaitingAbandonConfirm: only a second /everflow abandon confirms;
+	// anything else drops back to AwaitingMerge. Same resume() handler;
+	// it dispatches based on r.Status.
+	b.AddCallback(StatusAwaitingAbandonConfirm, d.resume,
+		StatusAwaitingMerge, // any other activity = abandon cancelled
+		StatusCancelled,     // confirmed
+	)
+
+	// 12-hour confirmation window. When the timer fires, drop back to
+	// AwaitingMerge with a comment so the author sees the window closed.
+	b.AddTimeout(StatusAwaitingAbandonConfirm,
+		func(_ context.Context, _ *workflow.Run[AgentState, AgentStatus], now time.Time) (time.Time, error) {
+			return now.Add(12 * time.Hour), nil
+		},
+		d.onAbandonConfirmTimeout,
+		StatusAwaitingMerge,
 	)
 
 	return b.Build(
@@ -557,6 +577,20 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	r.Object.EventsSeen++
 	ev.IsAuthor = isFromAuthor(ev.Author, r.Object.Author)
 
+	// AwaitingAbandonConfirm has the most restrictive semantics: only a
+	// second /everflow abandon from the author confirms; ANY other event
+	// drops the confirmation window. Handle before the generic control-
+	// command path so cmdAbandon sees r.Status == AwaitingAbandonConfirm.
+	if r.Status == StatusAwaitingAbandonConfirm {
+		if ev.IsAuthor && ev.Kind == provider.EventNoteAdded {
+			verb, _ := parseControlVerb(ev.Note.Body)
+			if verb == "abandon" {
+				return d.handleControlCommand(ctx, r, ev)
+			}
+		}
+		return d.dropAbandonConfirm(ctx, r, ev), nil
+	}
+
 	// Control commands from the author always take priority. Real
 	// dispatcher: parseControlVerb + handleControlCommand.
 	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded &&
@@ -777,6 +811,35 @@ func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentSta
 	}
 	d.cleanupWorktree(ctx, r, unitID)
 	return StatusDiscovering
+}
+
+// dropAbandonConfirm is the "any non-abandon activity" handler for the
+// 12h confirmation window. Clears AbandonRequestedAt, posts an ack
+// comment, returns AwaitingMerge. The event that triggered the drop is
+// itself dropped — the author re-comments if they want it processed.
+func (d *Deps) dropAbandonConfirm(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) AgentStatus {
+	r.Object.AbandonRequestedAt = time.Time{}
+	if p, ok := d.Providers[r.Object.ProviderName]; ok {
+		_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+			"ℹ️ Activity detected during the abandon confirmation window — abandon cancelled; watching for events again.")
+	}
+	return StatusAwaitingMerge
+}
+
+// onAbandonConfirmTimeout fires 12h after the /everflow abandon was
+// requested. Posts a comment so the author sees the window closed, then
+// drops back to AwaitingMerge. Comment is best-effort against whatever
+// in-flight MR we can find (there's at most one in v1 with concurrency=1).
+func (d *Deps) onAbandonConfirmTimeout(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], _ time.Time) (AgentStatus, error) {
+	r.Object.AbandonRequestedAt = time.Time{}
+	if p, ok := d.Providers[r.Object.ProviderName]; ok {
+		for _, mr := range r.Object.InFlight {
+			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				"⏰ Abandon confirmation window (12h) expired — staying with the Run.")
+			break
+		}
+	}
+	return StatusAwaitingMerge, nil
 }
 
 // cleanupWorktree is best-effort — failure here doesn't block the Run.

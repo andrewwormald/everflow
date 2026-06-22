@@ -20,21 +20,23 @@ import (
 type AgentStatus int
 
 const (
-	StatusUnknown       AgentStatus = 0
-	StatusInitiated     AgentStatus = 1 // Run created; webhook not yet registered
-	StatusDiscovering   AgentStatus = 2 // looking for the next unit
-	StatusWorking       AgentStatus = 3 // subagent making the change + opening MR
-	StatusAwaitingMerge AgentStatus = 4 // MR open; webhook-driven idle
-	StatusPaused        AgentStatus = 5 // author intervention required
-	StatusCompleted     AgentStatus = 6 // refactor done; no units left
-	StatusFailed        AgentStatus = 7 // unrecoverable; worktree kept for forensics
-	StatusCancelled     AgentStatus = 8 // author stopped the Run (/everflow stop or /abandon-confirm)
+	StatusUnknown                AgentStatus = 0
+	StatusInitiated              AgentStatus = 1 // Run created; webhook not yet registered
+	StatusDiscovering            AgentStatus = 2 // looking for the next unit
+	StatusWorking                AgentStatus = 3 // subagent making the change + opening MR
+	StatusAwaitingMerge          AgentStatus = 4 // MR open; webhook-driven idle
+	StatusPaused                 AgentStatus = 5 // author intervention required
+	StatusCompleted              AgentStatus = 6 // refactor done; no units left
+	StatusFailed                 AgentStatus = 7 // unrecoverable; worktree kept for forensics
+	StatusCancelled              AgentStatus = 8 // author stopped the Run (/everflow stop or /abandon-confirm)
+	StatusAwaitingAbandonConfirm AgentStatus = 9 // /everflow abandon issued; awaiting second tap within 12h (ADR-0026)
 )
 
 func (s AgentStatus) String() string {
 	return [...]string{
 		"Unknown", "Initiated", "Discovering", "Working",
 		"AwaitingMerge", "Paused", "Completed", "Failed", "Cancelled",
+		"AwaitingAbandonConfirm",
 	}[s]
 }
 
@@ -73,9 +75,10 @@ type AgentState struct {
 	Blacklisted      []BlacklistedUnit    `json:"blacklisted"`
 	CurrentUnit      string               `json:"current_unit"`       // populated while StatusWorking | StatusAwaitingMerge
 	History          []Turn               `json:"history"`
-	LastError        string               `json:"last_error"`
-	PauseReason      string               `json:"pause_reason"`       // populated when StatusPaused
-	PromptInjection  string               `json:"prompt_injection"`   // /everflow prompt <text>; consumed by next runner call
+	LastError          string             `json:"last_error"`
+	PauseReason        string             `json:"pause_reason"`         // populated when StatusPaused
+	PromptInjection    string             `json:"prompt_injection"`     // /everflow prompt <text>; consumed by next runner call
+	AbandonRequestedAt time.Time          `json:"abandon_requested_at"` // populated when StatusAwaitingAbandonConfirm (ADR-0026)
 
 	// Counters for the "is learning working?" signal (DESIGN.md open question 1):
 	EventsSeen           int `json:"events_seen"`

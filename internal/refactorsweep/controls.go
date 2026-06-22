@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/luno/workflow"
 
@@ -63,11 +64,52 @@ func (d *Deps) handleControlCommand(ctx context.Context, r *workflow.Run[AgentSt
 		return d.cmdStatus(ctx, r, ev, args)
 	case "stop":
 		return d.cmdStop(ctx, r, ev, args)
+	case "abandon":
+		return d.cmdAbandon(ctx, r, ev, args)
 	case "":
 		return d.cmdHelp(ctx, r, ev)
 	default:
 		return d.cmdUnknown(ctx, r, ev, verb)
 	}
+}
+
+// cmdAbandon is the two-tap "are you sure?" stop. First /everflow abandon
+// transitions to StatusAwaitingAbandonConfirm with a confirmation prompt;
+// a second /everflow abandon within 12h confirms and transitions to
+// StatusCancelled (closing in-flight MRs along the way). Anything else
+// during the 12h window cancels the abandon — see resume()'s
+// AwaitingAbandonConfirm branch and dropAbandonConfirm.
+//
+// Difference vs /everflow stop: /stop is one-tap, no confirmation. Use
+// /stop when you're sure; /abandon when you want a moment to reconsider.
+// See ADR-0026.
+func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
+	p := d.Providers[r.Object.ProviderName]
+
+	if r.Status == StatusAwaitingAbandonConfirm {
+		// Confirmation tap. Mirror /everflow stop's terminal flow.
+		body := fmt.Sprintf("🛑 Confirmed abandonment by @%s. Closing in-flight MRs; run cancelled.", ev.Author.Handle)
+		if args != "" {
+			body = fmt.Sprintf("%s\n\nReason: %s", body, args)
+		}
+		_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, body)
+		for unitID, mr := range r.Object.InFlight {
+			_ = p.CloseMR(ctx, mr.ProjectID, mr.IID)
+			d.cleanupWorktree(ctx, r, unitID)
+		}
+		r.Object.LastError = fmt.Sprintf("abandoned by @%s (confirmed)", ev.Author.Handle)
+		return StatusCancelled, nil
+	}
+
+	// First tap — request confirmation.
+	r.Object.AbandonRequestedAt = time.Now()
+	body := fmt.Sprintf("⚠️ @%s requested to abandon this Run. **Are you sure?**\n\nReply `/everflow abandon` again within 12h to confirm; any other activity cancels.",
+		ev.Author.Handle)
+	if args != "" {
+		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
+	}
+	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, body)
+	return StatusAwaitingAbandonConfirm, nil
 }
 
 // cmdPause halts forward progress. Inbound webhook events while paused
@@ -210,7 +252,8 @@ const helpMessage = "**everflow control verbs** (author only)\n\n" +
 	"- `/everflow retry` — clear pause; re-trigger by next webhook event\n" +
 	"- `/everflow prompt <text>` — inject into the next subagent call\n" +
 	"- `/everflow status` — post a progress summary\n" +
-	"- `/everflow stop` — cancel the whole Run, close in-flight MRs\n"
+	"- `/everflow stop` — cancel the whole Run, close in-flight MRs (no confirmation)\n" +
+	"- `/everflow abandon` — request abandonment with a 12h confirmation window\n"
 
 // cmdUnknown handles unrecognised verbs with a polite error pointing at help.
 func (d *Deps) cmdUnknown(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, verb string) (AgentStatus, error) {
