@@ -101,6 +101,51 @@ func TestExecGit_FullLifecycle(t *testing.T) {
 	}
 }
 
+func TestExecGit_HardReset_DiscardsLocalChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "v1\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "v1")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/plan/abc"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	// Plant a local modification and an untracked file.
+	writeFile(t, worktreeDir, "README.md", "tampered\n")
+	writeFile(t, worktreeDir, "untracked.txt", "should be gone\n")
+
+	if err := g.HardReset(ctx, worktreeDir, "main"); err != nil {
+		t.Fatalf("HardReset: %v", err)
+	}
+
+	// README.md should be back to the original; untracked.txt should be gone.
+	readme, err := os.ReadFile(filepath.Join(worktreeDir, "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	if string(readme) != "v1\n" {
+		t.Errorf("README.md not restored: %q", readme)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, "untracked.txt")); !os.IsNotExist(err) {
+		t.Errorf("untracked.txt should have been removed; err=%v", err)
+	}
+}
+
 func TestExecGit_GIT_TERMINAL_PROMPT_DisablesPrompting(t *testing.T) {
 	// We can't really test that the env var is set without intercepting
 	// the subprocess. Smoke-check that the runner sets it by reading it

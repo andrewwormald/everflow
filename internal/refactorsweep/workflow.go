@@ -277,6 +277,23 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 		return StatusFailed, fmt.Errorf("discover: runner: %w", err)
 	}
 
+	// Planning worktree: a stable per-Run checkout the planner can inspect
+	// for codebase state. EnsureBranch creates it on first call; HardReset
+	// refreshes it to origin/<base> before every subsequent planning call
+	// so the planner always sees fresh state. Local commits the planner
+	// might leave behind are wiped — planning is read-only by convention.
+	planningDir := filepath.Join(d.RunsRoot, r.RunID, "planning")
+	baseBranch := defaultIfEmpty(r.Object.BaseBranch, "main")
+	planBranch := "everflow/plan/" + shortRunID(r.RunID)
+	if d.Git != nil && r.Object.BaseRepo != "" {
+		if err := d.Git.EnsureBranch(ctx, planningDir, r.Object.BaseRepo, baseBranch, planBranch); err != nil {
+			return StatusFailed, fmt.Errorf("discover: planning worktree setup: %w", err)
+		}
+		if err := d.Git.HardReset(ctx, planningDir, baseBranch); err != nil {
+			return StatusFailed, fmt.Errorf("discover: refresh planning worktree: %w", err)
+		}
+	}
+
 	// Build the planning prompt: spec body + plan history. The prompt
 	// injection (if any) takes priority — it represents the author's
 	// latest steering.
@@ -287,7 +304,7 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 	}
 
 	req := runner.Request{
-		Worktree:     filepath.Join(d.RunsRoot, r.RunID, "planning"),
+		Worktree:     planningDir,
 		SkillCommand: "/everflow-plan",
 		Goal:         goal,
 		UnitID:       "", // planning is not unit-scoped

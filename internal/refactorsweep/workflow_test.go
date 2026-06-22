@@ -158,15 +158,17 @@ type fakeGit struct {
 	mu sync.Mutex
 
 	ensureErr  error
+	resetErr   error
 	commitErr  error
 	pushErr    error
 	hasChanges *bool // nil → default true; set to a bool pointer for explicit
 	hasChErr   error
 
-	ensures  []ensureCall
-	commits  []string
-	pushes   []string
-	removes  []string
+	ensures []ensureCall
+	resets  []string
+	commits []string
+	pushes  []string
+	removes []string
 }
 
 type ensureCall struct {
@@ -178,6 +180,13 @@ func (g *fakeGit) EnsureBranch(_ context.Context, dir, baseRepo, baseBranch, bra
 	defer g.mu.Unlock()
 	g.ensures = append(g.ensures, ensureCall{dir, baseRepo, baseBranch, branch})
 	return g.ensureErr
+}
+
+func (g *fakeGit) HardReset(_ context.Context, dir, baseBranch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resets = append(g.resets, dir+"@"+baseBranch)
+	return g.resetErr
 }
 
 func (g *fakeGit) HasChanges(_ context.Context, _ string) (bool, error) {

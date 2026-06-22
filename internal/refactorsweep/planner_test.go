@@ -261,6 +261,54 @@ func TestMarkUnitMerged_UpdatesPlanOutcome(t *testing.T) {
 	}
 }
 
+func TestDiscover_SpecMode_SetsUpPlanningWorktree(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	g := d.withGit(&fakeGit{})
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionContinue, Summary: "next slice"}})
+
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = "/some/repo"
+	r.Object.BaseBranch = "main"
+
+	if _, err := d.discover(t.Context(), r); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(g.ensures) != 1 {
+		t.Fatalf("EnsureBranch should be called once for the planning worktree; got %d", len(g.ensures))
+	}
+	ec := g.ensures[0]
+	if !strings.Contains(ec.Dir, "planning") {
+		t.Errorf("planning dir should be under 'planning'; got %q", ec.Dir)
+	}
+	if !strings.HasPrefix(ec.Branch, "everflow/plan/") {
+		t.Errorf("plan branch should be everflow/plan/<id>; got %q", ec.Branch)
+	}
+	if ec.BaseBranch != "main" {
+		t.Errorf("BaseBranch: want main, got %q", ec.BaseBranch)
+	}
+	if len(g.resets) != 1 {
+		t.Errorf("HardReset should be called once to refresh planning worktree; got %d", len(g.resets))
+	}
+}
+
+func TestDiscover_SpecMode_SkipsWorktreeWhenBaseRepoEmpty(t *testing.T) {
+	// Tests that don't care about git (most existing planner tests) pass
+	// BaseRepo="". The worktree setup should be skipped in that case so
+	// fakes don't have to handle it.
+	d := newDeps(t, &fakeProvider{})
+	g := d.withGit(&fakeGit{})
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	r := specRunInDiscover(t, nil)
+	r.Object.BaseRepo = ""
+
+	if _, err := d.discover(t.Context(), r); err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(g.ensures) != 0 || len(g.resets) != 0 {
+		t.Errorf("worktree setup should be skipped when BaseRepo=''")
+	}
+}
+
 func TestMarkUnitBlacklisted_UpdatesPlanOutcome(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	d.withRunner(t, &fakeRunner{})

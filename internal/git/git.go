@@ -25,6 +25,12 @@ type Git interface {
 	// safe to call when the worktree already exists (validates and uses it).
 	EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, branchName string) error
 
+	// HardReset fetches origin/baseBranch and forces `dir` to match it,
+	// discarding any local commits or working-tree changes. Used by the
+	// planning worktree to refresh between iterations so the planner
+	// always sees the current state of base.
+	HardReset(ctx context.Context, dir, baseBranch string) error
+
 	// HasChanges reports whether the worktree at `dir` has uncommitted
 	// modifications (staged or unstaged, including untracked files).
 	HasChanges(ctx context.Context, dir string) (bool, error)
@@ -95,6 +101,19 @@ func (g *ExecGit) EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, b
 	args := []string{"worktree", "add", "-b", branchName, dir, "origin/" + baseBranch}
 	if err := g.run(ctx, baseRepo, args...); err != nil {
 		return fmt.Errorf("EnsureBranch: worktree add: %w", err)
+	}
+	return nil
+}
+
+func (g *ExecGit) HardReset(ctx context.Context, dir, baseBranch string) error {
+	if err := g.run(ctx, dir, "fetch", "origin", baseBranch); err != nil {
+		return fmt.Errorf("HardReset: fetch: %w", err)
+	}
+	if err := g.run(ctx, dir, "reset", "--hard", "origin/"+baseBranch); err != nil {
+		return fmt.Errorf("HardReset: reset: %w", err)
+	}
+	if err := g.run(ctx, dir, "clean", "-fdx"); err != nil {
+		return fmt.Errorf("HardReset: clean: %w", err)
 	}
 	return nil
 }
