@@ -28,12 +28,13 @@ const (
 	StatusPaused        AgentStatus = 5 // author intervention required
 	StatusCompleted     AgentStatus = 6 // refactor done; no units left
 	StatusFailed        AgentStatus = 7 // unrecoverable; worktree kept for forensics
+	StatusCancelled     AgentStatus = 8 // author stopped the Run (/everflow stop or /abandon-confirm)
 )
 
 func (s AgentStatus) String() string {
 	return [...]string{
 		"Unknown", "Initiated", "Discovering", "Working",
-		"AwaitingMerge", "Paused", "Completed", "Failed",
+		"AwaitingMerge", "Paused", "Completed", "Failed", "Cancelled",
 	}[s]
 }
 
@@ -66,6 +67,7 @@ type AgentState struct {
 	History          []Turn               `json:"history"`
 	LastError        string               `json:"last_error"`
 	PauseReason      string               `json:"pause_reason"`       // populated when StatusPaused
+	PromptInjection  string               `json:"prompt_injection"`   // /everflow prompt <text>; consumed by next runner call
 
 	// Counters for the "is learning working?" signal (DESIGN.md open question 1):
 	EventsSeen           int `json:"events_seen"`

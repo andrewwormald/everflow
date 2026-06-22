@@ -73,12 +73,14 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		StatusDiscovering,
 		StatusPaused,
 		StatusFailed,
+		StatusCancelled, // /everflow stop
 	)
 
 	b.AddCallback(StatusPaused, d.resume,
 		StatusAwaitingMerge,
 		StatusDiscovering,
 		StatusFailed,
+		StatusCancelled, // /everflow stop from paused
 	)
 
 	return b.Build(
@@ -275,6 +277,10 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		UnitID:       unitID,
 		Budget:       r.Object.Budget,
 	}
+	if r.Object.PromptInjection != "" {
+		req.Goal = r.Object.PromptInjection + "\n\n---\n\n" + req.Goal
+		r.Object.PromptInjection = "" // consume single-use
+	}
 
 	resp, runErr := rn.Run(ctx, req)
 	turn := Turn{
@@ -392,13 +398,11 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	r.Object.EventsSeen++
 	ev.IsAuthor = isFromAuthor(ev.Author, r.Object.Author)
 
-	// Control commands from the author always take priority. Detected here;
-	// parsed + executed in the next commit (ADR-0017).
+	// Control commands from the author always take priority. Real
+	// dispatcher: parseControlVerb + handleControlCommand.
 	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded &&
 		strings.HasPrefix(strings.TrimSpace(ev.Note.Body), "/everflow") {
-		// TODO(next-commit): parse "/everflow {pause,resume,skip,retry,prompt,status,stop}"
-		// and dispatch to the corresponding state transition.
-		return r.Status, nil
+		return d.handleControlCommand(ctx, r, ev)
 	}
 
 	// While paused, only control commands progress the Run. All other
@@ -492,6 +496,10 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		phase = "fix_ci"
 	default:
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unexpected event kind %s", ev.Kind)
+	}
+	if r.Object.PromptInjection != "" {
+		req.Goal = r.Object.PromptInjection + "\n\n---\n\n" + req.Goal
+		r.Object.PromptInjection = "" // consume single-use
 	}
 
 	resp, runErr := rn.Run(ctx, req)

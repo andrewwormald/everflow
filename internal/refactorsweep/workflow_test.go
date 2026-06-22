@@ -41,6 +41,14 @@ type fakeProvider struct {
 
 	commentErr error
 	comments   []postedComment
+
+	closeErr error
+	closes   []closedMR
+}
+
+type closedMR struct {
+	ProjectID string
+	IID       int
 }
 
 type postedComment struct {
@@ -106,7 +114,12 @@ func (f *fakeProvider) PostComment(_ context.Context, projectID string, mrIID in
 	return f.commentErr
 }
 func (f *fakeProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
-func (f *fakeProvider) CloseMR(_ context.Context, _ string, _ int) error                 { return nil }
+func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.closes = append(f.closes, closedMR{ProjectID: projectID, IID: iid})
+	return f.closeErr
+}
 func (f *fakeProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error      { return nil }
 func (f *fakeProvider) IsBot(u provider.User) bool                                       { return u.Bot }
 
@@ -971,32 +984,7 @@ func TestResume_PipelineFailed_InvokesSubagent(t *testing.T) {
 	}
 }
 
-func TestResume_ControlCommandFromAuthor_DeferredToNextCommit(t *testing.T) {
-	d := newDeps(t, &fakeProvider{})
-	d.withRunner(t, &fakeRunner{})
-	mr := provider.MR{ProjectID: "x/y", IID: 1}
-	r := awaitingRun(t, "u", mr)
-
-	ev := provider.Event{
-		Kind:   provider.EventNoteAdded,
-		MR:     mr,
-		Author: provider.User{Handle: "andreww"}, // matches r.Object.Author
-		Note:   provider.Note{Body: "/everflow pause"},
-	}
-	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
-	if err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	// For this commit we just route to a TODO. Either Status is acceptable
-	// — the important thing is no subagent invocation and the event was
-	// detected as a control command (no fallthrough to filter).
-	if r.Object.SubagentInvocations != 0 {
-		t.Errorf("control commands should not invoke subagent; got %d", r.Object.SubagentInvocations)
-	}
-	if next != StatusAwaitingMerge {
-		t.Errorf("expected to stay in current status; got %v", next)
-	}
-}
+// Control-command dispatch is covered in controls_test.go.
 
 func TestResume_PausedRun_DropsNonControlEvents(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
