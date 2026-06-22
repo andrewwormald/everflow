@@ -27,6 +27,7 @@ import (
 	"github.com/andrewwormald/everflow/internal/provider/gitlab"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/runner"
+	"github.com/andrewwormald/everflow/internal/runner/claude"
 	"github.com/andrewwormald/everflow/internal/store"
 	"github.com/andrewwormald/everflow/internal/webhook"
 )
@@ -129,10 +130,7 @@ func cmdDaemon(args []string) error {
 
 	secrets := webhook.NewSecretRegistry()
 	runners := runner.NewRegistry()
-	// TODO: register claude / qwen / openhands runners here once the
-	// adapters land. For now the registry is empty; any `everflow start
-	// --runner X` would fail at work() time with "unknown runner X" —
-	// which is the correct behaviour.
+	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
 
 	gitClient := git.NewExec(
 		"everflow",                       // author name on commits; falls back to host .gitconfig if empty
