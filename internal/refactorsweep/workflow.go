@@ -183,6 +183,27 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 		return StatusFailed, fmt.Errorf("setup: mkdir run dir: %w", err)
 	}
 
+	// Default filter file. If the user supplied a custom .star, FilterPath
+	// is already set; otherwise write the default + record the path.
+	if r.Object.FilterPath == "" {
+		filterPath := filepath.Join(runDir, "note_added.star")
+		if _, err := os.Stat(filterPath); os.IsNotExist(err) {
+			if err := os.WriteFile(filterPath, filter.DefaultStarlark(), 0o644); err != nil {
+				return StatusFailed, fmt.Errorf("setup: write default filter: %w", err)
+			}
+		}
+		r.Object.FilterPath = filterPath
+	}
+
+	// Empty phrases file — append-only via Learnings.AddPhrases. Created
+	// here so `Add` doesn't have to MkdirAll on its first call.
+	phrasesPath := filepath.Join(runDir, "phrases.yaml")
+	if _, err := os.Stat(phrasesPath); os.IsNotExist(err) {
+		if err := os.WriteFile(phrasesPath, []byte("version: 1\nphrases: []\n"), 0o644); err != nil {
+			return StatusFailed, fmt.Errorf("setup: write phrases.yaml: %w", err)
+		}
+	}
+
 	// Defaults.
 	if r.Object.Concurrency <= 0 {
 		r.Object.Concurrency = 1
@@ -639,12 +660,12 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		return StatusAwaitingMerge, nil // informational; runner doesn't care
 	}
 
-	// NoteAdded / PipelineFailed go through the cheap filter.
-	f := d.Filter
-	if f == nil {
-		f = filter.StubFilter{}
-	}
-	outcome, err := f.Eval(ev, r.Object, nil) // TODO: per-Run PhraseSet (ADR-0018)
+	// NoteAdded / PipelineFailed go through the cheap filter. Filter
+	// loaded from the per-Run .star path (set by setup); falls back to
+	// StubFilter for tests that don't set FilterPath.
+	f := d.resolveFilter(r)
+	ps := d.loadPhrases(r) // PhraseSet for the filter; nil-safe
+	outcome, err := f.Eval(ev, stateToMap(r.Object), ps)
 	if err != nil {
 		return StatusAwaitingMerge, fmt.Errorf("resume: filter eval: %w", err)
 	}
@@ -730,6 +751,20 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	r.Object.SubagentInvocations++
 
 	mr := r.Object.InFlight[unitID]
+
+	// Phrase learning: runner can return phrases it judged safe to skip
+	// next time. Appended to the per-Run YAML; capped at MaxPerRunEntries
+	// before we surface a warning (ADR-0018 §4.2).
+	if len(resp.Learnings.AddPhrases) > 0 {
+		if ps, ok := d.loadPhrases(r).(*filter.YAMLPhraseSet); ok && ps != nil {
+			if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
+				if ps.OverCap() {
+					_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+						fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `everflow phrases promote` or trim by hand.", filter.MaxPerRunEntries))
+				}
+			}
+		}
+	}
 
 	if runErr != nil {
 		// Runner had an infrastructure-level error (timeout, API down).
@@ -922,6 +957,57 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(buf), nil
+}
+
+// resolveFilter picks the Filter to use for this Run. Priority:
+//   1. Test override via Deps.Filter
+//   2. Starlark filter loaded from AgentState.FilterPath
+//   3. StubFilter (defensive — should never be reached after setup())
+func (d *Deps) resolveFilter(r *workflow.Run[AgentState, AgentStatus]) filter.Filter {
+	if d.Filter != nil {
+		return d.Filter
+	}
+	if r.Object.FilterPath != "" {
+		return filter.NewStarlarkFilter(r.Object.FilterPath)
+	}
+	return filter.StubFilter{}
+}
+
+// loadPhrases loads the per-Run + global phrase files. Returns nil if
+// loading fails (the filter handles a nil PhraseSet gracefully). Per-Run
+// path is <RunsRoot>/<runID>/phrases.yaml; global path is
+// <parent(RunsRoot)>/phrases.global.yaml.
+func (d *Deps) loadPhrases(r *workflow.Run[AgentState, AgentStatus]) filter.PhraseSet {
+	if d.RunsRoot == "" {
+		return nil
+	}
+	perRun := filepath.Join(d.RunsRoot, r.RunID, "phrases.yaml")
+	global := filepath.Join(filepath.Dir(d.RunsRoot), "phrases.global.yaml")
+	ps, err := filter.LoadYAMLPhrases(perRun, global)
+	if err != nil {
+		return nil
+	}
+	return ps
+}
+
+// stateToMap exposes a curated subset of AgentState to the Starlark
+// filter. We keep this conservative — only fields a filter author
+// plausibly needs to make a decision. Adding fields is easy; removing
+// them is a breaking change for users with custom filters.
+func stateToMap(s *AgentState) map[string]any {
+	return map[string]any{
+		"goal":              s.Goal,
+		"mode":              s.Mode,
+		"provider":          s.ProviderName,
+		"project":           s.ProjectID,
+		"completed_count":   int64(len(s.Completed)),
+		"blacklisted_count": int64(len(s.Blacklisted)),
+		"in_flight_count":   int64(len(s.InFlight)),
+		"queue_count":       int64(len(s.Queue)),
+		"plan_count":        int64(len(s.Plan)),
+		"events_seen":       int64(s.EventsSeen),
+		"subagent_invocations": int64(s.SubagentInvocations),
+	}
 }
 
 func providerNames(m map[string]provider.Provider) []string {
