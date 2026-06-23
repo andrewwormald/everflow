@@ -560,6 +560,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 			Title:        fmt.Sprintf("%s: %s", r.Object.Goal, unitID),
 			Description:  resp.Summary,
 			Labels:       []string{"everflow", "everflow:" + shortRunID(r.RunID)},
+			Draft:        r.Object.DraftMRs,
 		})
 		if err != nil {
 			r.Object.LastError = err.Error()

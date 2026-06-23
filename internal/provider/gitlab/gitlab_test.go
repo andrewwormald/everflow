@@ -1,8 +1,12 @@
 package gitlab
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
+
+	"github.com/andrewwormald/everflow/internal/provider"
 )
 
 func TestVerifySignature(t *testing.T) {
@@ -46,5 +50,46 @@ func TestVerifySignature_BodyIgnored(t *testing.T) {
 	}
 	if !p.VerifySignature(h, []byte("entirely different body B"), "secret") {
 		t.Errorf("body B should also verify — GitLab does not sign the body")
+	}
+}
+
+func TestCreateMR_DraftPrefix(t *testing.T) {
+	// We can't hit a real GitLab; assert the title-prefix logic via the
+	// body assembly. Reuses the http.Client interception pattern by
+	// pointing the Provider at a test server.
+	var seenTitle string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// httptest decodes URL paths; check the suffix only.
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		seenTitle, _ = body["title"].(string)
+		_, _ = w.Write([]byte(`{"iid":1,"web_url":"https://gitlab/x/-/merge_requests/1"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+
+	// Without Draft → title unchanged
+	_, _ = p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "b", TargetBranch: "main", Title: "Migrate logger",
+	})
+	if seenTitle != "Migrate logger" {
+		t.Errorf("plain title: want %q, got %q", "Migrate logger", seenTitle)
+	}
+
+	// With Draft → prefix added
+	_, _ = p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "b", TargetBranch: "main", Title: "Migrate logger", Draft: true,
+	})
+	if seenTitle != "Draft: Migrate logger" {
+		t.Errorf("draft title: want %q, got %q", "Draft: Migrate logger", seenTitle)
+	}
+
+	// Already-prefixed → not double-prefixed
+	_, _ = p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "b", TargetBranch: "main", Title: "Draft: already", Draft: true,
+	})
+	if seenTitle != "Draft: already" {
+		t.Errorf("double-draft: want %q, got %q", "Draft: already", seenTitle)
 	}
 }

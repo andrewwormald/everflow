@@ -138,6 +138,7 @@ func (p *Provider) CreateMR(ctx context.Context, projectID string, draft provide
 		"base":  draft.TargetBranch,
 		"title": draft.Title,
 		"body":  draft.Description,
+		"draft": draft.Draft, // GitHub honours this field on create
 	}
 	var resp struct {
 		Number  int    `json:"number"`

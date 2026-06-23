@@ -135,12 +135,18 @@ func (p *Provider) VerifySignature(headers http.Header, _ []byte, secret string)
 	return subtle.ConstantTimeCompare([]byte(got), []byte(secret)) == 1
 }
 
-// CreateMR → POST /api/v4/projects/:id/merge_requests.
+// CreateMR → POST /api/v4/projects/:id/merge_requests. GitLab signals
+// Draft MRs via a "Draft: " title prefix (the modern replacement for
+// "WIP:"); we add it here when the caller asks for one.
 func (p *Provider) CreateMR(ctx context.Context, projectID string, draft provider.MRDraft) (provider.MR, error) {
+	title := draft.Title
+	if draft.Draft && !strings.HasPrefix(title, "Draft:") && !strings.HasPrefix(title, "WIP:") {
+		title = "Draft: " + title
+	}
 	body := map[string]any{
 		"source_branch": draft.Branch,
 		"target_branch": draft.TargetBranch,
-		"title":         draft.Title,
+		"title":         title,
 		"description":   draft.Description,
 	}
 	if len(draft.Labels) > 0 {

@@ -32,7 +32,8 @@ type Spec struct {
 	BaseRepo    string `yaml:"base_repo"`
 	BaseBranch  string `yaml:"base_branch"`
 	Concurrency int    `yaml:"concurrency"`
-	Status      string `yaml:"status"` // "draft" | "ready" | "in_progress" | "compressed"; everflow only acts on "ready"
+	Status      string `yaml:"status"`     // "draft" | "ready" | "in_progress" | "compressed"; everflow only acts on "ready"
+	DraftMRs    bool   `yaml:"draft_mrs"`  // opens MRs as Draft / WIP — spike safety net
 
 	// Populated by the parser:
 	Body string `yaml:"-"` // markdown body after the frontmatter

@@ -365,6 +365,7 @@ type triggerRequest struct {
 	Units        []string `json:"units,omitempty"`     // sweep mode
 	SpecPath     string   `json:"spec_path,omitempty"` // spec mode
 	SpecBody     string   `json:"spec_body,omitempty"` // spec mode
+	DraftMRs     bool     `json:"draft_mrs,omitempty"` // open MRs as Draft / WIP
 	ForeignID    string   `json:"foreign_id,omitempty"`
 }
 
@@ -424,6 +425,7 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 			Queue:        req.Units,
 			SpecPath:     req.SpecPath,
 			SpecBody:     req.SpecBody,
+			DraftMRs:     req.DraftMRs,
 			InFlight:     map[string]provider.MR{},
 		}
 
@@ -455,6 +457,7 @@ func cmdStart(args []string) error {
 		baseBranch  = fs.String("base-branch", "", "base branch (default: main, or spec's `base_branch:`)")
 		baseRepo    = fs.String("base-repo", "", "local path to a git checkout with origin remote (required)")
 		concurrency = fs.Int("concurrency", 0, "max in-flight MRs (default 1, or spec's `concurrency:`)")
+		draftMRs    = fs.Bool("draft-mrs", false, "open MRs as Draft / WIP (recommended for spikes against shared repos)")
 		daemonURL   = fs.String("daemon", "http://127.0.0.1:8081", "daemon trigger endpoint")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -472,6 +475,7 @@ func cmdStart(args []string) error {
 		BaseRepo:     *baseRepo,
 		BaseBranch:   *baseBranch,
 		Concurrency:  *concurrency,
+		DraftMRs:     *draftMRs,
 	}
 
 	if *specPath != "" {
@@ -482,6 +486,7 @@ func cmdStart(args []string) error {
 		req.Mode = refactorsweep.ModeSpec
 		req.SpecPath = sp.Path
 		req.SpecBody = sp.Body
+		req.DraftMRs = sp.DraftMRs
 		// Spec frontmatter is authoritative unless explicitly overridden via flag.
 		if req.Goal == "" {
 			req.Goal = sp.Goal

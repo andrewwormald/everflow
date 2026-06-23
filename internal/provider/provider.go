@@ -75,11 +75,15 @@ type User struct {
 
 // MRDraft is what we hand the provider when opening a new MR.
 type MRDraft struct {
-	Branch        string
-	TargetBranch  string
-	Title         string
-	Description   string
-	Labels        []string
+	Branch       string
+	TargetBranch string
+	Title        string
+	Description  string
+	Labels       []string
+	// Draft, when true, signals the platform to open the MR as Draft /
+	// Work-in-Progress so it isn't accidentally reviewed or merged. GitLab
+	// uses a "Draft: " title prefix; GitHub uses the draft field on create.
+	Draft bool
 }
 
 // MR is a created MR's identity. Stored on AgentState alongside the unit it

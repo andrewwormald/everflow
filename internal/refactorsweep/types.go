@@ -59,6 +59,7 @@ type AgentState struct {
 	Mode            string         `json:"mode"`              // "" | "sweep" | "spec"
 	SpecPath        string         `json:"spec_path"`         // populated in spec mode
 	SpecBody        string         `json:"spec_body"`         // markdown body the planner reads each iteration
+	DraftMRs        bool           `json:"draft_mrs"`         // when true, opened MRs are marked Draft / WIP (Luno spike safety net)
 
 	SkillPath       string         `json:"skill_path"`        // ~/.everflow/runs/<runID>/SKILL.md
 	FilterPath      string         `json:"filter_path"`       // ~/.everflow/runs/<runID>/note_added.star
