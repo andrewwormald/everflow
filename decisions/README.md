@@ -78,3 +78,4 @@ forces or unlocks.
 | 0028 | `everflow start` triggers via a localhost-only HTTP endpoint    | Accepted | 2026-06-22 |
 | 0029 | Secret rehydration on daemon startup                            | Accepted | 2026-06-22 |
 | 0030 | Starlark filter — embedded default, per-Run override, YAML phrases | Accepted | 2026-06-22 |
+| 0031 | Polling as the primary event source; webhooks opt-in            | Accepted | 2026-06-23 |
