@@ -28,6 +28,7 @@ import (
 	"github.com/luno/workflow/adapters/memstreamer"
 
 	"github.com/andrewwormald/everflow/internal/git"
+	"github.com/andrewwormald/everflow/internal/poller"
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/provider/github"
 	"github.com/andrewwormald/everflow/internal/provider/gitlab"
@@ -110,22 +111,19 @@ func cmdDaemon(args []string) error {
 		}
 		*storePath = home + "/.everflow/store.db"
 	}
-	if *publicBaseURL == "" {
-		return fmt.Errorf("--public-base-url is required (see DESIGN.md § Public-URL strategy)")
-	}
+	// --public-base-url is only required for webhook-mode Runs. Poll mode
+	// (the default since ADR-0031) doesn't need a public URL. If a webhook
+	// Run is triggered and this is empty, setup() will fail with a clear
+	// error referencing this flag.
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, nil))
 
-	providers, err := buildProviders(*gitlabBaseURL, *githubBaseURL)
+	providers, err := buildProviders(logger, *gitlabBaseURL, *githubBaseURL)
 	if err != nil {
 		return fmt.Errorf("provider setup: %w", err)
 	}
 	if len(providers) == 0 {
-		logger.Warn("no providers configured — set GITLAB_TOKEN or GITHUB_TOKEN to enable a provider")
-	} else {
-		for name := range providers {
-			logger.Info("provider registered", "name", name)
-		}
+		logger.Warn("no providers configured — set GITLAB_TOKEN / GITHUB_TOKEN or run `glab auth login`")
 	}
 
 	recordStore, timeoutStore, err := store.Open(*storePath)
@@ -236,6 +234,19 @@ func cmdDaemon(args []string) error {
 		}
 	}()
 
+	// Start the polling loop — ingests events for Runs whose EventSource
+	// is "poll" (the default; ADR-0031). Web-hook-mode Runs co-exist;
+	// the poller's RunSource just iterates active Runs and the poller
+	// only acts on the ones with InFlight MRs.
+	pollerLoop := &poller.Loop{
+		Interval:   30 * time.Second,
+		Providers:  providers,
+		Source:     &poller.StoreSource{Store: recordStore, WorkflowName: workflowName, Decode: decodeActiveRun},
+		Dispatcher: dispatcher,
+		Logger:     logger,
+	}
+	go pollerLoop.Run(ctx)
+
 	logger.Info("everflow daemon started",
 		"version", version,
 		"listen", *listenAddr,
@@ -263,6 +274,31 @@ func cmdDaemon(args []string) error {
 	_ = publicSrv.Shutdown(shutdownCtx)
 	_ = localSrv.Shutdown(shutdownCtx)
 	return nil
+}
+
+// decodeActiveRun turns a workflow.Record into a poller.ActiveRun by
+// unmarshalling AgentState and projecting the fields the poller needs.
+// Returns false for inactive / undecodable / non-poll Runs so they're
+// silently skipped.
+func decodeActiveRun(object []byte) (poller.ActiveRun, bool) {
+	var s refactorsweep.AgentState
+	if err := workflow.Unmarshal(object, &s); err != nil {
+		return poller.ActiveRun{}, false
+	}
+	if !s.IsPollMode() {
+		return poller.ActiveRun{}, false // webhook-mode Runs handled by the HTTP server
+	}
+	if len(s.InFlight) == 0 {
+		return poller.ActiveRun{}, false // nothing to poll
+	}
+	return poller.ActiveRun{
+		Provider:        s.ProviderName,
+		ProjectID:       s.ProjectID,
+		Author:          s.Author,
+		InFlight:        s.InFlight,
+		LastSeenNoteIDs: s.LastSeenNoteIDs,
+		LastMRStates:    s.LastMRStates,
+	}, true
 }
 
 // rehydrateSecrets iterates active Runs in the record store and re-populates
@@ -330,24 +366,39 @@ func isActiveStatus(s refactorsweep.AgentStatus) bool {
 	return true
 }
 
-// buildProviders registers providers based on env-var credentials. Empty map
-// is valid — the daemon still starts; it just can't accept webhooks until at
-// least one provider is configured.
-func buildProviders(gitlabBase, githubBase string) (map[string]provider.Provider, error) {
+// buildProviders registers providers from credentials. For GitLab we try
+// GITLAB_TOKEN env first (PAT, sent as PRIVATE-TOKEN); if absent, fall
+// back to the user's `glab auth login` token from the glab config
+// (OAuth, sent as Bearer). The fallback is what lets a personal-laptop
+// spike work without minting a separate PAT — ADR-0031.
+func buildProviders(logger *slog.Logger, gitlabBase, githubBase string) (map[string]provider.Provider, error) {
 	out := map[string]provider.Provider{}
+
 	if tok := os.Getenv("GITLAB_TOKEN"); tok != "" {
-		p, err := gitlab.New(gitlab.Config{BaseURL: gitlabBase, Token: tok})
+		p, err := gitlab.New(gitlab.Config{BaseURL: gitlabBase, Token: tok, AuthMode: gitlab.AuthPAT})
 		if err != nil {
 			return nil, err
 		}
 		out[p.Name()] = p
+		logger.Info("provider registered", "name", "gitlab", "auth", "private-token")
+	} else if tok, err := gitlab.LoadGlabToken(""); err == nil {
+		p, err := gitlab.New(gitlab.Config{BaseURL: gitlabBase, Token: tok, AuthMode: gitlab.AuthBearer})
+		if err != nil {
+			return nil, err
+		}
+		out[p.Name()] = p
+		logger.Info("provider registered", "name", "gitlab", "auth", "glab-oauth")
+	} else if !errors.Is(err, gitlab.ErrGlabNotConfigured) {
+		return nil, fmt.Errorf("gitlab: load glab token: %w", err)
 	}
+
 	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
 		p, err := github.New(github.Config{BaseURL: githubBase, Token: tok})
 		if err != nil {
 			return nil, err
 		}
 		out[p.Name()] = p
+		logger.Info("provider registered", "name", "github")
 	}
 	return out, nil
 }

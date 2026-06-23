@@ -44,6 +44,10 @@ type Provider interface {
 	UpdateMRTitle(ctx context.Context, projectID string, mrIID int, title string) error
 	CloseMR(ctx context.Context, projectID string, mrIID int) error
 
+	// Polling support (used when EventSource=poll instead of webhook).
+	GetMRState(ctx context.Context, projectID string, mrIID int) (state string, err error)
+	ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]NotePoll, error)
+
 	// CI/job control.
 	RetryPipelineJob(ctx context.Context, projectID string, jobID int64) error
 
@@ -114,6 +118,15 @@ type Event struct {
 type Note struct {
 	ID   int64
 	Body string
+}
+
+// NotePoll is the per-comment shape returned by ListNotesSince — used by
+// the poller to synthesise note_added events. Includes the author so we
+// can populate Event.Author / IsAuthor / IsBot.
+type NotePoll struct {
+	ID     int64
+	Body   string
+	Author User
 }
 
 // Pipeline is the CI payload on pipeline events.

@@ -114,6 +114,10 @@ func (f *fakeProvider) PostComment(_ context.Context, projectID string, mrIID in
 	return f.commentErr
 }
 func (f *fakeProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (string, error)    { return "opened", nil }
+func (f *fakeProvider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) ([]provider.NotePoll, error) {
+	return nil, nil
+}
 func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -281,6 +285,7 @@ func TestSetup_HappyPath(t *testing.T) {
 	r := newRun(t, &AgentState{
 		ProviderName: "fake",
 		ProjectID:    "lunomoney/core",
+		EventSource:  EventSourceWebhook, // explicit — default is now poll (ADR-0031)
 	})
 
 	next, err := d.setup(t.Context(), r)
@@ -446,7 +451,7 @@ func TestSetup_RegisterWebhookFails(t *testing.T) {
 		regErr:     errors.New("403 forbidden — token lacks admin:repo_hook"),
 	}
 	d := newDeps(t, fp)
-	r := newRun(t, &AgentState{ProviderName: "fake", ProjectID: "x/y"})
+	r := newRun(t, &AgentState{ProviderName: "fake", ProjectID: "x/y", EventSource: EventSourceWebhook})
 
 	next, err := d.setup(t.Context(), r)
 	if err == nil {
@@ -1048,7 +1053,7 @@ func TestSetup_SubscribesToExpectedEvents(t *testing.T) {
 		webhookID:  "wh-1",
 	}
 	d := newDeps(t, fp)
-	r := newRun(t, &AgentState{ProviderName: "fake", ProjectID: "x/y"})
+	r := newRun(t, &AgentState{ProviderName: "fake", ProjectID: "x/y", EventSource: EventSourceWebhook})
 
 	if _, err := d.setup(t.Context(), r); err != nil {
 		t.Fatalf("setup: %v", err)

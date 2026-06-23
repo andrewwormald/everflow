@@ -194,6 +194,20 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 	return p.doJSON(ctx, http.MethodPatch, path, map[string]any{"state": "closed"}, nil)
 }
 
+// GetMRState reads the PR's state ("open" | "closed"; merged is "closed"
+// with merged_at set). Returns the GitLab-style state vocabulary mapping
+// for callers that don't care about the merged-vs-just-closed distinction.
+// Polling not wired for GitHub in v1 — this is a parity stub that fails
+// with a clear error.
+func (p *Provider) GetMRState(_ context.Context, _ string, _ int) (string, error) {
+	return "", fmt.Errorf("github: polling not yet implemented (v1 uses webhooks for GitHub; use GitLab for the polling path)")
+}
+
+// ListNotesSince — see GetMRState. Polling not wired for GitHub in v1.
+func (p *Provider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) ([]provider.NotePoll, error) {
+	return nil, fmt.Errorf("github: polling not yet implemented (v1 uses webhooks for GitHub; use GitLab for the polling path)")
+}
+
 // RetryPipelineJob → POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun.
 // Works only for GitHub Actions workflow jobs; external CI (Jenkins, Circle)
 // emits check_run events but does not support rerun via this endpoint. In

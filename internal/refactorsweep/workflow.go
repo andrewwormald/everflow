@@ -147,6 +147,17 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 		r.Object.Author = user
 	}
 
+	// Poll-mode Runs don't register a webhook at all — the daemon's
+	// poller loop ingests events. Skip the rest of webhook setup.
+	if r.Object.IsPollMode() {
+		// Initialise polling state maps so the poller can write into them.
+		if r.Object.LastSeenNoteIDs == nil {
+			r.Object.LastSeenNoteIDs = map[int]int64{}
+		}
+		if r.Object.LastMRStates == nil {
+			r.Object.LastMRStates = map[int]string{}
+		}
+	} else // webhook mode: register on the provider as before
 	// Webhook registration. Skip if already done (retry / restart).
 	if r.Object.WebhookID == "" {
 		secret, err := randomHex(32)
@@ -615,6 +626,29 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	}
 	r.Object.EventsSeen++
 	ev.IsAuthor = isFromAuthor(ev.Author, r.Object.Author)
+
+	// Polling watermarks — keep monotonic so the next poll won't re-fire
+	// already-handled events. Safe to update unconditionally; webhook
+	// events use the same fields with the same semantics.
+	switch ev.Kind {
+	case provider.EventNoteAdded:
+		if r.Object.LastSeenNoteIDs == nil {
+			r.Object.LastSeenNoteIDs = map[int]int64{}
+		}
+		if ev.Note.ID > r.Object.LastSeenNoteIDs[ev.MR.IID] {
+			r.Object.LastSeenNoteIDs[ev.MR.IID] = ev.Note.ID
+		}
+	case provider.EventMRMerged:
+		if r.Object.LastMRStates == nil {
+			r.Object.LastMRStates = map[int]string{}
+		}
+		r.Object.LastMRStates[ev.MR.IID] = "merged"
+	case provider.EventMRClosed:
+		if r.Object.LastMRStates == nil {
+			r.Object.LastMRStates = map[int]string{}
+		}
+		r.Object.LastMRStates[ev.MR.IID] = "closed"
+	}
 
 	// AwaitingAbandonConfirm has the most restrictive semantics: only a
 	// second /everflow abandon from the author confirms; ANY other event

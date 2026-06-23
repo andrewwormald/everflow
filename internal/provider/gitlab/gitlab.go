@@ -21,16 +21,28 @@ import (
 
 // Provider is the GitLab implementation of provider.Provider.
 type Provider struct {
-	baseURL string       // e.g. https://gitlab.com
-	token   string       // personal/project/group access token with api scope
-	hc      *http.Client
+	baseURL  string // e.g. https://gitlab.com
+	token    string // personal/project/group access token, OR an OAuth bearer
+	authMode AuthMode
+	hc       *http.Client
 }
+
+// AuthMode picks the HTTP header GitLab uses to authenticate. PATs go in
+// PRIVATE-TOKEN; OAuth tokens (e.g. from `glab` config) go in
+// Authorization: Bearer.
+type AuthMode int
+
+const (
+	AuthPAT    AuthMode = 0 // PRIVATE-TOKEN: <pat>      (default; backwards-compatible)
+	AuthBearer AuthMode = 1 // Authorization: Bearer <oauth-token>
+)
 
 // Config wires a Provider.
 type Config struct {
-	BaseURL string        // defaults to https://gitlab.com
-	Token   string        // required
-	Timeout time.Duration // defaults to 30s per request
+	BaseURL  string        // defaults to https://gitlab.com
+	Token    string        // required
+	AuthMode AuthMode      // defaults to AuthPAT (the v1 behaviour)
+	Timeout  time.Duration // defaults to 30s per request
 }
 
 // New constructs a Provider. Returns an error if Token is empty so callers
@@ -48,9 +60,10 @@ func New(cfg Config) (*Provider, error) {
 		timeout = 30 * time.Second
 	}
 	return &Provider{
-		baseURL: base,
-		token:   cfg.Token,
-		hc:      &http.Client{Timeout: timeout},
+		baseURL:  base,
+		token:    cfg.Token,
+		authMode: cfg.AuthMode,
+		hc:       &http.Client{Timeout: timeout},
 	}, nil
 }
 
@@ -189,6 +202,66 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 	return p.doJSON(ctx, http.MethodPut, path, map[string]any{"state_event": "close"}, nil)
 }
 
+// GetMRState → GET /api/v4/projects/:id/merge_requests/:iid. Returns the
+// MR's current `state` field ("opened" | "closed" | "merged" | "locked").
+// Used by the poller to detect lifecycle transitions.
+func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) (string, error) {
+	var resp struct {
+		State string `json:"state"`
+	}
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",
+		url.PathEscape(projectID), mrIID)
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &resp); err != nil {
+		return "", err
+	}
+	return resp.State, nil
+}
+
+// ListNotesSince → GET /api/v4/projects/:id/merge_requests/:iid/notes.
+// Returns notes whose `id` exceeds sinceNoteID (i.e. arrived since the
+// last poll). The poller stores the highest id seen on AgentState.
+func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]provider.NotePoll, error) {
+	// GitLab note IDs are monotonic per-MR; sort+order=desc and stop at
+	// sinceNoteID. We use a generous per_page (we don't expect bursts;
+	// stop early if we get there).
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/notes?sort=desc&per_page=50&order_by=id",
+		url.PathEscape(projectID), mrIID)
+	var raw []struct {
+		ID     int64 `json:"id"`
+		Body   string `json:"body"`
+		System bool   `json:"system"` // system notes (state changes etc.) — skip
+		Author struct {
+			ID       int    `json:"id"`
+			Username string `json:"username"`
+			Bot      bool   `json:"bot"`
+		} `json:"author"`
+	}
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &raw); err != nil {
+		return nil, err
+	}
+	// Filter to non-system, id > sinceNoteID; return in ascending id order.
+	out := make([]provider.NotePoll, 0, len(raw))
+	for _, n := range raw {
+		if n.System || n.ID <= sinceNoteID {
+			continue
+		}
+		out = append(out, provider.NotePoll{
+			ID:   n.ID,
+			Body: n.Body,
+			Author: provider.User{
+				ID:     fmt.Sprintf("%d", n.Author.ID),
+				Handle: n.Author.Username,
+				Bot:    n.Author.Bot,
+			},
+		})
+	}
+	// Reverse to ascending so callers process in chronological order.
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
+}
+
 // RetryPipelineJob → POST /api/v4/projects/:id/jobs/:job_id/retry. Used by
 // the deterministic CI-flake-retry path; the agent isn't involved.
 func (p *Provider) RetryPipelineJob(ctx context.Context, projectID string, jobID int64) error {
@@ -233,7 +306,12 @@ func (p *Provider) do(ctx context.Context, method, path string, in any) (*http.R
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("PRIVATE-TOKEN", p.token)
+	switch p.authMode {
+	case AuthBearer:
+		req.Header.Set("Authorization", "Bearer "+p.token)
+	default:
+		req.Header.Set("PRIVATE-TOKEN", p.token)
+	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

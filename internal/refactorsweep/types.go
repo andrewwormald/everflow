@@ -60,6 +60,7 @@ type AgentState struct {
 	SpecPath        string         `json:"spec_path"`         // populated in spec mode
 	SpecBody        string         `json:"spec_body"`         // markdown body the planner reads each iteration
 	DraftMRs        bool           `json:"draft_mrs"`         // when true, opened MRs are marked Draft / WIP (Luno spike safety net)
+	EventSource     string         `json:"event_source"`      // "poll" (default) | "webhook" — ADR-0031
 
 	SkillPath       string         `json:"skill_path"`        // ~/.everflow/runs/<runID>/SKILL.md
 	FilterPath      string         `json:"filter_path"`       // ~/.everflow/runs/<runID>/note_added.star
@@ -85,6 +86,25 @@ type AgentState struct {
 	EventsSeen           int `json:"events_seen"`
 	EventsSkippedByFilter int `json:"events_skipped_by_filter"`
 	SubagentInvocations  int `json:"subagent_invocations"`
+
+	// Polling state — populated only in poll mode (ADR-0031).
+	// Keyed by MR IID. Updated by the poller as new comments arrive and
+	// MR states transition.
+	LastSeenNoteIDs map[int]int64  `json:"last_seen_note_ids,omitempty"`
+	LastMRStates    map[int]string `json:"last_mr_states,omitempty"`
+}
+
+// EventSource values for AgentState.EventSource.
+const (
+	EventSourcePoll    = "poll"    // poll the provider periodically (default — ADR-0031)
+	EventSourceWebhook = "webhook" // register a webhook on the provider (legacy / VPS-on-stable-URL deployments)
+)
+
+// IsPollMode reports whether this Run gets events via polling rather
+// than webhooks. Empty defaults to poll for safety — no accidental
+// webhook registration on lunomoney/core.
+func (s *AgentState) IsPollMode() bool {
+	return s.EventSource == "" || s.EventSource == EventSourcePoll
 }
 
 // Mode values for AgentState.Mode. Empty Mode behaves as ModeSweep for
