@@ -97,6 +97,8 @@ func cmdDaemon(args []string) error {
 		gitlabBaseURL = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
 		githubBaseURL = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
 		triggerAddr   = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `everflow start`)")
+		commitAuthor  = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
+		commitEmail   = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -143,10 +145,11 @@ func cmdDaemon(args []string) error {
 	runners := runner.NewRegistry()
 	runners.Register(claude.NewRunner("")) // "claude" on $PATH; ADR-0004 + ADR-0027
 
-	gitClient := git.NewExec(
-		"everflow",                       // author name on commits; falls back to host .gitconfig if empty
-		"everflow@noreply.invalid",       // author email
-	)
+	// Commit author falls back to the host's git config when blank — which is
+	// what we want when pushing to a shared repo where the platform expects
+	// verified email addresses. Override via --commit-author / --commit-email
+	// (rare; useful for shared-bot deployments).
+	gitClient := git.NewExec(*commitAuthor, *commitEmail)
 
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
