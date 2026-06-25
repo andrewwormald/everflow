@@ -79,6 +79,7 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	)
 
 	b.AddCallback(StatusPaused, d.resume,
+		StatusPaused,                 // stay paused (event filtered or non-control note arrived)
 		StatusAwaitingMerge,
 		StatusDiscovering,
 		StatusFailed,
@@ -90,8 +91,9 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	// anything else drops back to AwaitingMerge. Same resume() handler;
 	// it dispatches based on r.Status.
 	b.AddCallback(StatusAwaitingAbandonConfirm, d.resume,
-		StatusAwaitingMerge, // any other activity = abandon cancelled
-		StatusCancelled,     // confirmed
+		StatusAwaitingAbandonConfirm, // stay in confirm window for unrelated events
+		StatusAwaitingMerge,          // any other activity = abandon cancelled
+		StatusCancelled,              // confirmed
 	)
 
 	// 12-hour confirmation window. When the timer fires, drop back to
@@ -849,9 +851,13 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if !dirty {
 			// Runner thought it addressed the feedback but didn't actually
 			// change anything. Note that on the MR and stay AwaitingMerge —
-			// the reviewer can clarify if needed.
+			// the reviewer can clarify if needed. Resolve the thread anyway
+			// (the comment was answered, even if not via code).
 			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
 				fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+			if discID := ev.Note.DiscussionID; discID != "" {
+				_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
+			}
 			return StatusAwaitingMerge, nil
 		}
 
@@ -859,6 +865,20 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		branch := branchName(r.RunID, unitID)
 		commitMsg := buildCommitMessage(phase, unitID, ev, r.RunID)
 		if gErr := d.Git.Commit(ctx, req.Worktree, commitMsg); gErr != nil {
+			// ErrNoChanges means HasChanges saw dirt but Commit's binary
+			// filter (or similar) found nothing stage-worthy. Same outcome
+			// as the !dirty branch above: post a note, stay AwaitingMerge.
+			// Do NOT pause — the runner addressing a comment verbally
+			// (without code change) is normal.
+			if errors.Is(gErr, git.ErrNoChanges) {
+				_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
+				// Best-effort resolve so the thread doesn't sit open.
+				if discID := ev.Note.DiscussionID; discID != "" {
+					_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
+				}
+				return StatusAwaitingMerge, nil
+			}
 			r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
 			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
 				fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
@@ -869,6 +889,19 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
 				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/everflow retry` after fixing.", phase, gErr))
 			return StatusPaused, nil
+		}
+
+		// Push landed. Resolve the originating discussion thread so the
+		// reviewer sees their comment closed automatically. Best-effort —
+		// if it fails (auth, deleted thread, provider stub), the resolve
+		// just doesn't happen and the reviewer closes manually.
+		if discID := ev.Note.DiscussionID; discID != "" {
+			if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
+				// Surface but don't fail — the change is pushed, that's
+				// what matters.
+				_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+					fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
+			}
 		}
 
 		_ = p.PostComment(ctx, mr.ProjectID, mr.IID,

@@ -228,10 +228,11 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/notes?sort=desc&per_page=50",
 		url.PathEscape(projectID), mrIID)
 	var raw []struct {
-		ID     int64 `json:"id"`
-		Body   string `json:"body"`
-		System bool   `json:"system"` // system notes (state changes etc.) — skip
-		Author struct {
+		ID           int64  `json:"id"`
+		Body         string `json:"body"`
+		System       bool   `json:"system"`        // system notes (state changes etc.) — skip
+		DiscussionID string `json:"discussion_id"` // present on regular MR notes since GitLab 13.x
+		Author       struct {
 			ID       int    `json:"id"`
 			Username string `json:"username"`
 			Bot      bool   `json:"bot"`
@@ -247,8 +248,9 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 			continue
 		}
 		out = append(out, provider.NotePoll{
-			ID:   n.ID,
-			Body: n.Body,
+			ID:           n.ID,
+			Body:         n.Body,
+			DiscussionID: n.DiscussionID,
 			Author: provider.User{
 				ID:     fmt.Sprintf("%d", n.Author.ID),
 				Handle: n.Author.Username,
@@ -269,6 +271,19 @@ func (p *Provider) RetryPipelineJob(ctx context.Context, projectID string, jobID
 	path := fmt.Sprintf("/api/v4/projects/%s/jobs/%d/retry",
 		url.PathEscape(projectID), jobID)
 	return p.doJSON(ctx, http.MethodPost, path, nil, nil)
+}
+
+// ResolveDiscussion → PUT /api/v4/projects/:id/merge_requests/:iid/discussions/:discussion_id?resolved=true.
+// Marks the thread as resolved (collapsed in the UI) — called after the
+// agent successfully pushes a change addressing a reviewer comment.
+// Empty discussionID is a no-op so callers don't need to guard.
+func (p *Provider) ResolveDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string) error {
+	if discussionID == "" {
+		return nil
+	}
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/discussions/%s?resolved=true",
+		url.PathEscape(projectID), mrIID, url.PathEscape(discussionID))
+	return p.doJSON(ctx, http.MethodPut, path, nil, nil)
 }
 
 // IsBot inspects the user.bot field set by GitLab on bot accounts.

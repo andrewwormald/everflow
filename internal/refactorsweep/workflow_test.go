@@ -14,6 +14,7 @@ import (
 
 	"github.com/luno/workflow"
 
+	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/webhook"
@@ -44,6 +45,15 @@ type fakeProvider struct {
 
 	closeErr error
 	closes   []closedMR
+
+	resolveErr error
+	resolves   []resolvedDiscussion
+}
+
+type resolvedDiscussion struct {
+	ProjectID    string
+	MRIID        int
+	DiscussionID string
 }
 
 type closedMR struct {
@@ -117,6 +127,12 @@ func (f *fakeProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ strin
 func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (string, error)    { return "opened", nil }
 func (f *fakeProvider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) ([]provider.NotePoll, error) {
 	return nil, nil
+}
+func (f *fakeProvider) ResolveDiscussion(_ context.Context, projectID string, mrIID int, discussionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resolves = append(f.resolves, resolvedDiscussion{ProjectID: projectID, MRIID: mrIID, DiscussionID: discussionID})
+	return f.resolveErr
 }
 func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) error {
 	f.mu.Lock()
@@ -751,7 +767,7 @@ func TestResume_NoteAdded_DoneButCleanWorktree_PostsInfoComment(t *testing.T) {
 	ev := provider.Event{
 		Kind: provider.EventNoteAdded, MR: mr,
 		Author: provider.User{Handle: "reviewer"},
-		Note:   provider.Note{Body: "are you sure about Foo?"},
+		Note:   provider.Note{Body: "are you sure about Foo?", DiscussionID: "disc-abc"},
 	}
 	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
 	if next != StatusAwaitingMerge {
@@ -759,6 +775,71 @@ func TestResume_NoteAdded_DoneButCleanWorktree_PostsInfoComment(t *testing.T) {
 	}
 	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "No code changes") {
 		t.Errorf("expected an info-only comment; got %+v", fp.comments)
+	}
+	// Even when no code change was needed, the discussion should be
+	// resolved — the question was answered, even if verbally.
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-abc" {
+		t.Errorf("expected ResolveDiscussion(disc-abc) on clean-worktree path; got %+v", fp.resolves)
+	}
+}
+
+// Regression: invokeForEvent must NOT pause when Commit returns ErrNoChanges
+// (e.g. the runner ran `go build`, producing only a binary artefact that
+// our staging filter excluded, so HasChanges=true but nothing was staged).
+// Previously this paused the Run with "git Commit failed during ..."; now
+// it stays AwaitingMerge with an info comment.
+func TestResume_NoteAdded_CommitReturnsNoChanges_StaysAwaitingMerge(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Considered but no code change needed"}})
+	d.withGit(&fakeGit{
+		hasChanges: boolPtr(true),       // worktree dirty (e.g. compiled binary present)
+		commitErr:  git.ErrNoChanges,    // but Commit's filter saw nothing stageable
+	})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "what about edge case Z?", DiscussionID: "disc-xyz"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("Commit ErrNoChanges in comment phase should stay AwaitingMerge, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("Run should not be paused on ErrNoChanges; PauseReason=%q", r.Object.PauseReason)
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "No code changes") {
+		t.Errorf("expected an info-only comment; got %+v", fp.comments)
+	}
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-xyz" {
+		t.Errorf("expected ResolveDiscussion(disc-xyz); got %+v", fp.resolves)
+	}
+}
+
+// Push succeeded → resolve the originating discussion thread so the
+// reviewer sees their comment marked resolved.
+func TestResume_NoteAdded_PushSucceeded_ResolvesDiscussion(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Renamed."}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "rename Foo → Bar", DiscussionID: "disc-rename"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge after successful push, got %v", next)
+	}
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-rename" {
+		t.Errorf("ResolveDiscussion(disc-rename) should be called after push; got %+v", fp.resolves)
 	}
 }
 

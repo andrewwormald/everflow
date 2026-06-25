@@ -38,6 +38,7 @@ type notePayload struct {
 		ID           int64  `json:"id"`
 		Note         string `json:"note"`
 		NoteableType string `json:"noteable_type"`
+		DiscussionID string `json:"discussion_id"`
 	} `json:"object_attributes"`
 	MergeRequest *struct {
 		IID          int    `json:"iid"`
@@ -69,8 +70,9 @@ func parseNote(body []byte, now int64) (provider.Event, error) {
 		Author: p.User.toProviderUser(),
 		IsBot:  p.User.Bot,
 		Note: provider.Note{
-			ID:   p.ObjectAttributes.ID,
-			Body: p.ObjectAttributes.Note,
+			ID:           p.ObjectAttributes.ID,
+			Body:         p.ObjectAttributes.Note,
+			DiscussionID: p.ObjectAttributes.DiscussionID,
 		},
 		Raw:        body,
 		ReceivedAt: now,

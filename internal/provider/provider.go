@@ -48,6 +48,13 @@ type Provider interface {
 	GetMRState(ctx context.Context, projectID string, mrIID int) (state string, err error)
 	ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]NotePoll, error)
 
+	// ResolveDiscussion marks a comment thread as resolved on the platform.
+	// Called by invokeForEvent after a runner-driven change has been pushed
+	// in response to a reviewer comment, so the reviewer sees the thread
+	// closed automatically. discussionID is the platform-specific identifier
+	// surfaced in Note.DiscussionID; passing an empty string is a no-op.
+	ResolveDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string) error
+
 	// CI/job control.
 	RetryPipelineJob(ctx context.Context, projectID string, jobID int64) error
 
@@ -116,17 +123,19 @@ type Event struct {
 
 // Note is the comment payload on a note_added event.
 type Note struct {
-	ID   int64
-	Body string
+	ID            int64
+	Body          string
+	DiscussionID  string // platform-specific thread identifier; pass to Provider.ResolveDiscussion
 }
 
 // NotePoll is the per-comment shape returned by ListNotesSince — used by
 // the poller to synthesise note_added events. Includes the author so we
 // can populate Event.Author / IsAuthor / IsBot.
 type NotePoll struct {
-	ID     int64
-	Body   string
-	Author User
+	ID            int64
+	Body          string
+	Author        User
+	DiscussionID  string
 }
 
 // Pipeline is the CI payload on pipeline events.

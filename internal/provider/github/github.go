@@ -208,6 +208,15 @@ func (p *Provider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) (
 	return nil, fmt.Errorf("github: polling not yet implemented (v1 uses webhooks for GitHub; use GitLab for the polling path)")
 }
 
+// ResolveDiscussion is a no-op stub for GitHub in v1. The real implementation
+// would call GraphQL `resolveReviewThread` against the thread node ID surfaced
+// via the pull-request review-thread API. For now invokeForEvent's auto-resolve
+// after a successful push silently does nothing on GitHub — the reviewer
+// resolves manually, same as before this feature shipped.
+func (p *Provider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error {
+	return nil
+}
+
 // RetryPipelineJob → POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun.
 // Works only for GitHub Actions workflow jobs; external CI (Jenkins, Circle)
 // emits check_run events but does not support rerun via this endpoint. In
