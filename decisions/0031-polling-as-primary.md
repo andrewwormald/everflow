@@ -21,8 +21,8 @@ This conflated two distinct concerns:
   involved). It buys us simplicity at the cost of a few seconds of
   latency — fine for refactor sweeps that run over hours/days.
 
-The first time we tried to set up a real spike (Luno's `lunomoney/core`),
-the webhook path's preflight cost became obvious:
+The first time we tried to set up a real spike against a production
+monorepo, the webhook path's preflight cost became obvious:
 
 - Install ngrok, mint authtoken
 - Mint a personal-access-token with `admin:repo_hook` scope
@@ -127,9 +127,9 @@ time with a clear error mentioning the flag.
 
 ## Consequences
 
-- **Spike preflight collapses**. The Luno spike no longer needs ngrok,
-  no PAT, no webhook registration on `lunomoney/core`. Just `claude -p`
-  works + `glab auth login` done + `everflow daemon`.
+- **Spike preflight collapses**. A spike against a production monorepo
+  no longer needs ngrok, no PAT, no webhook registration on the target.
+  Just `claude -p` works + `glab auth login` done + `everflow daemon`.
 - **Latency**: poll-mode events arrive at the workflow within 30s of
   occurring, vs sub-second for webhooks. For refactor sweeps that run
   over hours/days, this is invisible. For real-time pair-programming

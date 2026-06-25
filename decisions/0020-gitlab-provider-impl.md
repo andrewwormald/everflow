@@ -7,7 +7,7 @@
 
 [ADR-0014](0014-refactor-sweep-mandate.md) names refactor sweeps as the
 primary use case; the first-class provider for that is GitLab (matches the
-author's Luno work environment and the existing `mrs-babysit` skill that
+author's work environment and the existing review-babysit skill that
 inspired the project). Per [ADR-0007](0007-pluggable-runner-interface.md)
 and the `Provider` interface defined in v1 scaffold, we need a concrete
 GitLab implementation.
@@ -66,7 +66,7 @@ Inbound webhook payloads expose `project.path_with_namespace`, which we
 prefer over the numeric ID because:
 - It's stable across project moves (changing namespace updates the path;
   moving between groups changes the path but also the numeric ID).
-- It's human-readable in logs (`lunomoney/core` vs `42`).
+- It's human-readable in logs (`acme/example` vs `42`).
 - It matches what users type at `everflow start --project ...`.
 
 The `gitlabProject.idAsString()` helper picks the path when available
@@ -80,7 +80,7 @@ and falls back to numeric ID. Callers store whatever they get in
   ~200 LOC. Net negative for v1; revisit if our hand-rolled client grows
   past ~600 LOC.
 - **Require numeric project IDs only**: simpler, but a worse UX. The user
-  types `lunomoney/core`; making them look up `42` is friction.
+  types `acme/example`; making them look up `42` is friction.
 - **Use HMAC on top of GitLab's bare token**: GitLab doesn't offer this;
   we'd have to ask users to wrap their webhook in a custom proxy that
   adds HMAC. Out of scope. Per-Run secrets + TLS is enough.

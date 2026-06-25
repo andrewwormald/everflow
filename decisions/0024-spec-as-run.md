@@ -78,7 +78,7 @@ remains a primary use case; spec joins it as a co-equal sibling.
 ---
 goal: Migrate logrus to log/slog across services
 provider: gitlab
-project: lunomoney/core
+project: acme/example
 runner: claude
 base_branch: main
 base_repo: /home/everflow/repos/core

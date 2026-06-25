@@ -12,7 +12,7 @@ func TestParseBytes_Happy(t *testing.T) {
 	in := []byte(`---
 goal: Migrate logrus to log/slog across services
 provider: gitlab
-project: lunomoney/core
+project: acme/example
 runner: claude
 base_branch: main
 base_repo: /home/everflow/repos/core
@@ -38,7 +38,7 @@ Replace ` + "`github.com/sirupsen/logrus`" + ` imports with the stdlib
 	if s.Provider != "gitlab" {
 		t.Errorf("Provider: got %q", s.Provider)
 	}
-	if s.Project != "lunomoney/core" {
+	if s.Project != "acme/example" {
 		t.Errorf("Project: got %q", s.Project)
 	}
 	if s.Runner != "claude" {

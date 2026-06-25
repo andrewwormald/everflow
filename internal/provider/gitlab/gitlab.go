@@ -221,10 +221,11 @@ func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) 
 // Returns notes whose `id` exceeds sinceNoteID (i.e. arrived since the
 // last poll). The poller stores the highest id seen on AgentState.
 func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]provider.NotePoll, error) {
-	// GitLab note IDs are monotonic per-MR; sort+order=desc and stop at
-	// sinceNoteID. We use a generous per_page (we don't expect bursts;
-	// stop early if we get there).
-	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/notes?sort=desc&per_page=50&order_by=id",
+	// GitLab's /notes endpoint only accepts order_by ∈ {created_at,
+	// updated_at} (sending order_by=id returns 400). We use the default
+	// (created_at) sort=desc and filter by id > sinceNoteID client-side —
+	// note IDs are monotonic per-MR so this is equivalent.
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/notes?sort=desc&per_page=50",
 		url.PathEscape(projectID), mrIID)
 	var raw []struct {
 		ID     int64 `json:"id"`

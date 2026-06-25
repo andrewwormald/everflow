@@ -76,15 +76,19 @@ func (b *Backend) TimeoutStore() *TimeoutStore { return &TimeoutStore{b: b} }
 
 const schemaSQL = `
 CREATE TABLE IF NOT EXISTS records (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    workflow_name TEXT    NOT NULL,
-    foreign_id    TEXT    NOT NULL,
-    run_id        TEXT    NOT NULL UNIQUE,
-    run_state     INTEGER NOT NULL,
-    status        INTEGER NOT NULL,
-    object        BLOB,
-    created_at    INTEGER NOT NULL,
-    updated_at    INTEGER NOT NULL
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    workflow_name           TEXT    NOT NULL,
+    foreign_id              TEXT    NOT NULL,
+    run_id                  TEXT    NOT NULL UNIQUE,
+    run_state               INTEGER NOT NULL,
+    status                  INTEGER NOT NULL,
+    object                  BLOB,
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL,
+    meta_version            INTEGER NOT NULL DEFAULT 0,
+    meta_run_state_reason   TEXT    NOT NULL DEFAULT '',
+    meta_status_description TEXT    NOT NULL DEFAULT '',
+    meta_trace_origin       TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_records_workflow_foreign ON records(workflow_name, foreign_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_records_workflow_id ON records(workflow_name, id);
@@ -142,20 +146,33 @@ func (r *RecordStore) Store(ctx context.Context, record *workflow.Record) error 
 	record.UpdatedAt = now
 
 	// Upsert by run_id (UNIQUE). Created_at is preserved on conflict.
+	// Meta.Version is bumped by the workflow runtime before each Store call
+	// and is matched against event HeaderRecordVersion by the consumer — see
+	// /Users/andreww/dev/workflow/step.go:145. Dropping it on the floor
+	// makes every consumer error with "stale record lookup".
 	const upsert = `
-INSERT INTO records (workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO records (
+    workflow_name, foreign_id, run_id, run_state, status, object,
+    created_at, updated_at,
+    meta_version, meta_run_state_reason, meta_status_description, meta_trace_origin
+)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(run_id) DO UPDATE SET
-    workflow_name = excluded.workflow_name,
-    foreign_id    = excluded.foreign_id,
-    run_state     = excluded.run_state,
-    status        = excluded.status,
-    object        = excluded.object,
-    updated_at    = excluded.updated_at;`
+    workflow_name           = excluded.workflow_name,
+    foreign_id              = excluded.foreign_id,
+    run_state               = excluded.run_state,
+    status                  = excluded.status,
+    object                  = excluded.object,
+    updated_at              = excluded.updated_at,
+    meta_version            = excluded.meta_version,
+    meta_run_state_reason   = excluded.meta_run_state_reason,
+    meta_status_description = excluded.meta_status_description,
+    meta_trace_origin       = excluded.meta_trace_origin;`
 	if _, err := tx.ExecContext(ctx, upsert,
 		record.WorkflowName, record.ForeignID, record.RunID,
 		int(record.RunState), record.Status, record.Object,
 		record.CreatedAt.UnixNano(), record.UpdatedAt.UnixNano(),
+		int64(record.Meta.Version), record.Meta.RunStateReason, record.Meta.StatusDescription, record.Meta.TraceOrigin,
 	); err != nil {
 		return fmt.Errorf("upsert record: %w", err)
 	}
@@ -172,7 +189,8 @@ ON CONFLICT(run_id) DO UPDATE SET
 
 func (r *RecordStore) Lookup(ctx context.Context, runID string) (*workflow.Record, error) {
 	row := r.b.db.QueryRowContext(ctx, `
-SELECT workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at
+SELECT workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at,
+       meta_version, meta_run_state_reason, meta_status_description, meta_trace_origin
 FROM records WHERE run_id = ?`, runID)
 	rec, err := scanRecord(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -183,7 +201,8 @@ FROM records WHERE run_id = ?`, runID)
 
 func (r *RecordStore) Latest(ctx context.Context, workflowName, foreignID string) (*workflow.Record, error) {
 	row := r.b.db.QueryRowContext(ctx, `
-SELECT workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at
+SELECT workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at,
+       meta_version, meta_run_state_reason, meta_status_description, meta_trace_origin
 FROM records WHERE workflow_name = ? AND foreign_id = ?
 ORDER BY id DESC LIMIT 1`, workflowName, foreignID)
 	rec, err := scanRecord(row)
@@ -210,7 +229,8 @@ func (r *RecordStore) List(
 	}
 
 	rows, err := r.b.db.QueryContext(ctx, `
-SELECT workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at
+SELECT workflow_name, foreign_id, run_id, run_state, status, object, created_at, updated_at,
+       meta_version, meta_run_state_reason, meta_status_description, meta_trace_origin
 FROM records WHERE workflow_name = ? OR ? = ''
 ORDER BY id ASC`, workflowName, workflowName)
 	if err != nil {
@@ -367,20 +387,23 @@ type rowScanner interface {
 
 func scanRecord(s rowScanner) (*workflow.Record, error) {
 	var (
-		rec               workflow.Record
-		runState          int
-		created, updated  int64
+		rec              workflow.Record
+		runState         int
+		created, updated int64
+		metaVersion      int64
 	)
 	if err := s.Scan(
 		&rec.WorkflowName, &rec.ForeignID, &rec.RunID,
 		&runState, &rec.Status, &rec.Object,
 		&created, &updated,
+		&metaVersion, &rec.Meta.RunStateReason, &rec.Meta.StatusDescription, &rec.Meta.TraceOrigin,
 	); err != nil {
 		return nil, err
 	}
 	rec.RunState = workflow.RunState(runState)
 	rec.CreatedAt = time.Unix(0, created)
 	rec.UpdatedAt = time.Unix(0, updated)
+	rec.Meta.Version = uint(metaVersion)
 	return &rec, nil
 }
 

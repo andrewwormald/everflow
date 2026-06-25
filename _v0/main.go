@@ -37,7 +37,7 @@ func listRunners() {
 func runDaemon(args []string) error {
 	fs := flag.NewFlagSet("everflow", flag.ExitOnError)
 	var (
-		skill      = fs.String("skill", "", "slash command to invoke each pass, e.g. /mrs-babysit --slack-request-reviews")
+		skill      = fs.String("skill", "", "slash command to invoke each pass, e.g. /review-babysit --request-reviewers")
 		runnerName = fs.String("runner", "claude", "runner: "+strings.Join(runnerNames(), "|"))
 		interval   = fs.Duration("interval", 30*time.Minute, "wall-clock interval between passes (e.g. 5m, 30m, 1h)")
 		baseRepo   = fs.String("base-repo", "", "absolute path to the git repo to base the worktree off")
@@ -46,7 +46,7 @@ func runDaemon(args []string) error {
 		foreignID  = fs.String("id", "", "foreign ID for the Run (default: auto)")
 	)
 	fs.Usage = func() {
-		fmt.Fprintf(fs.Output(), `Usage: everflow --skill "/mrs-babysit ..." [flags]
+		fmt.Fprintf(fs.Output(), `Usage: everflow --skill "/review-babysit ..." [flags]
 
 Runs a Claude Code (or any registered runner) skill on a fixed interval, in a
 durable workflow that survives terminal closure. The current process is the
@@ -149,7 +149,7 @@ func expandHome(p string) string {
 	return p
 }
 
-// sanitize turns "/mrs-babysit --slack-request-reviews" into a safe-ish slug
+// sanitize turns "/review-babysit --request-reviewers" into a safe-ish slug
 // for a foreign ID. Lossy by design; foreign IDs need only be unique per
 // workflow, not human-readable.
 func sanitize(s string) string {

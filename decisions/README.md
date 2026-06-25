@@ -79,3 +79,5 @@ forces or unlocks.
 | 0029 | Secret rehydration on daemon startup                            | Accepted | 2026-06-22 |
 | 0030 | Starlark filter — embedded default, per-Run override, YAML phrases | Accepted | 2026-06-22 |
 | 0031 | Polling as the primary event source; webhooks opt-in            | Accepted | 2026-06-23 |
+| 0032 | Commit stages selectively; binary blobs are filtered out        | Accepted | 2026-06-24 |
+| 0033 | In-process EventStreamer with cond.Wait, not luno/workflow's memstreamer | Accepted | 2026-06-24 |

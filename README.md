@@ -105,7 +105,7 @@ The provider needs to reach the daemon. Options, in order of preference:
 ---
 goal: Replace internal/legacy with internal/v2 across services
 provider: gitlab
-project: lunomoney/core
+project: acme/example
 runner: claude
 base_branch: main
 base_repo: /home/ubuntu/dev/core
@@ -171,7 +171,7 @@ Triggered run <run_id> (foreign id: <foreign_id>, mode: spec)
 In the daemon's log:
 
 ```
-triggered run  run_id=...  mode=spec  provider=gitlab  project=lunomoney/core
+triggered run  run_id=...  mode=spec  provider=gitlab  project=acme/example
 ```
 
 The daemon's `setup` step now: (a) calls GitLab to fetch your authenticated user (Author), (b) generates a webhook secret, (c) registers a webhook at `https://everflow.<user>.ts.net/webhook/gitlab/<runID>`, (d) creates `~/.everflow/runs/<runID>/`. Then `discover` invokes the claude planner with the spec body to choose the first increment. Then `work` runs claude in a fresh worktree off `main`, commits + pushes, opens the MR, posts an initial status comment, and parks in `AwaitingMerge`.

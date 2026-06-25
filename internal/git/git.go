@@ -134,9 +134,58 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 	if !dirty {
 		return ErrNoChanges
 	}
-	if err := g.run(ctx, dir, "add", "-A"); err != nil {
-		return fmt.Errorf("Commit: add: %w", err)
+
+	// Reset the index so a previous failed commit attempt (e.g. a
+	// pre-commit hook that aborted) doesn't leave stale paths staged.
+	// We're about to re-stage everything selectively below.
+	if err := g.run(ctx, dir, "reset"); err != nil {
+		return fmt.Errorf("Commit: reset index: %w", err)
 	}
+
+	// Stage modifications to already-tracked files. `git add -u .` does
+	// not touch untracked files — those go through the binary filter below.
+	if err := g.run(ctx, dir, "add", "-u", "."); err != nil {
+		return fmt.Errorf("Commit: add tracked: %w", err)
+	}
+
+	// Stage untracked, non-ignored files — but skip blobs that look like
+	// binary build artefacts so a runner that ran `go build` doesn't get
+	// its compiled output swept into the commit. Many repos enforce this
+	// via pre-commit hooks that cap file size; we filter earlier so the
+	// hook never has to fire.
+	untracked, err := g.runOut(ctx, dir, "ls-files", "--others", "--exclude-standard")
+	if err != nil {
+		return fmt.Errorf("Commit: list untracked: %w", err)
+	}
+	var skipped []string
+	for _, name := range strings.Split(strings.TrimSpace(untracked), "\n") {
+		if name == "" {
+			continue
+		}
+		if looksLikeBinary(filepath.Join(dir, name)) {
+			skipped = append(skipped, name)
+			continue
+		}
+		if err := g.run(ctx, dir, "add", "--", name); err != nil {
+			return fmt.Errorf("Commit: add %s: %w", name, err)
+		}
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "everflow git: skipped %d untracked binary file(s): %s\n",
+			len(skipped), strings.Join(skipped, ", "))
+	}
+
+	// Anything actually staged? If the runner only produced binaries and
+	// they were all filtered, treat this as no-op rather than running a
+	// commit that errors with "nothing to commit".
+	staged, err := g.runOut(ctx, dir, "diff", "--cached", "--name-only")
+	if err != nil {
+		return fmt.Errorf("Commit: check staged: %w", err)
+	}
+	if strings.TrimSpace(staged) == "" {
+		return ErrNoChanges
+	}
+
 	args := []string{}
 	if g.AuthorName != "" && g.AuthorEmail != "" {
 		args = append(args,
@@ -149,6 +198,27 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		return fmt.Errorf("Commit: commit: %w", err)
 	}
 	return nil
+}
+
+// looksLikeBinary returns true if the first 512 bytes of `path` contain a
+// NUL byte. This is the standard "is this file binary?" heuristic git
+// itself uses for diff coloring etc. — text files essentially never
+// contain raw NULs in their leading bytes; compiled binaries (ELF / Mach-O
+// / PE) and most other binary formats do.
+func looksLikeBinary(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var buf [512]byte
+	n, _ := f.Read(buf[:])
+	for i := 0; i < n; i++ {
+		if buf[i] == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *ExecGit) Push(ctx context.Context, dir, branchName string) error {

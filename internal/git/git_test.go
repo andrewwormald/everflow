@@ -166,6 +166,114 @@ func TestExecGit_GIT_TERMINAL_PROMPT_DisablesPrompting(t *testing.T) {
 	}
 }
 
+// TestExecGit_Commit_SkipsUntrackedBinaries regression-tests the case
+// where a runner runs `go build` inside the worktree, the resulting
+// binary lands alongside the source, and `git add -A` would otherwise
+// sweep it into the commit (triggering pre-commit hooks that cap file
+// size). After the fix, Commit must stage the text file and leave the
+// binary out.
+func TestExecGit_Commit_SkipsUntrackedBinaries(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/bin"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	// Simulate the runner's output: a source file plus a compiled binary
+	// (NUL bytes in the leading 512 — `\x7fELF` is the standard Linux
+	// magic, but any NUL triggers the binary heuristic).
+	writeFile(t, worktreeDir, "main.go", "package main\nfunc main() {}\n")
+	const binName = "app"
+	if err := os.WriteFile(filepath.Join(worktreeDir, binName),
+		[]byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0, 1, 0, 0, 0}, 0o755); err != nil {
+		t.Fatalf("write binary: %v", err)
+	}
+
+	if err := g.Commit(ctx, worktreeDir, "add main.go"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// The commit should contain main.go but NOT the binary.
+	out, err := exec.Command("git", "-C", worktreeDir, "show", "--name-only", "--pretty=").Output()
+	if err != nil {
+		t.Fatalf("git show: %v", err)
+	}
+	files := strings.Fields(string(out))
+	hasMain, hasBin := false, false
+	for _, f := range files {
+		if f == "main.go" {
+			hasMain = true
+		}
+		if f == binName {
+			hasBin = true
+		}
+	}
+	if !hasMain {
+		t.Errorf("commit should include main.go, got %v", files)
+	}
+	if hasBin {
+		t.Errorf("commit must NOT include the %s binary, got %v", binName, files)
+	}
+
+	// The binary should still be present in the worktree (we skip it from
+	// staging, we don't delete it — the runner may still want to use it).
+	if _, err := os.Stat(filepath.Join(worktreeDir, binName)); err != nil {
+		t.Errorf("binary should still exist in worktree: %v", err)
+	}
+}
+
+// TestExecGit_Commit_OnlyBinaries_ReturnsNoChanges covers the edge case
+// where the runner produced nothing but binary blobs — after filtering,
+// nothing is staged and Commit should report ErrNoChanges rather than
+// invoke `git commit` with an empty index.
+func TestExecGit_Commit_OnlyBinaries_ReturnsNoChanges(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/only-bin"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(worktreeDir, "blob"),
+		[]byte{0, 0, 0, 0, 0}, 0o644); err != nil {
+		t.Fatalf("write blob: %v", err)
+	}
+	if err := g.Commit(ctx, worktreeDir, "msg"); !errors.Is(err, ErrNoChanges) {
+		t.Errorf("Commit with only-binary untracked: want ErrNoChanges, got %v", err)
+	}
+}
+
 // --- helpers ---
 
 func runMust(t *testing.T, dir string, args ...string) {

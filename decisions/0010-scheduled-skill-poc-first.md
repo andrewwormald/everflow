@@ -9,9 +9,9 @@ The full design ([DESIGN.md](../DESIGN.md)) describes an interactive
 `Iterating → Awaiting → Iterating` loop with `Decision`-based control flow
 and human-in-the-loop callbacks. That's a lot of surface to build on day one.
 
-In parallel, the user has an existing Claude Code skill (`mrs-babysit`) that
-is *already* designed for `/loop 30m /mrs-babysit` — a polling-based sweep.
-What it lacks is durability: `/loop` requires Claude Code to stay open.
+In parallel, the user has an existing Claude Code skill (a review-babysit
+loop) that is *already* designed for `/loop 30m /<skill>` — a polling-based
+sweep. What it lacks is durability: `/loop` requires Claude Code to stay open.
 
 ## Decision
 

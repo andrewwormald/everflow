@@ -28,7 +28,7 @@ the Run's lifetime. Each `runPass` starts by hard-resetting it to the
 latest `origin/<base-branch>`. Any local changes from a previous pass that
 weren't pushed to a real branch are wiped — a deliberate property; agents
 that want their work to persist must push to a real MR/PR branch (which
-mrs-babysit already does).
+the review-babysit reference skill already does).
 
 ## Alternatives considered
 

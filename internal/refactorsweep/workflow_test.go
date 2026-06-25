@@ -284,7 +284,7 @@ func TestSetup_HappyPath(t *testing.T) {
 	d := newDeps(t, fp)
 	r := newRun(t, &AgentState{
 		ProviderName: "fake",
-		ProjectID:    "lunomoney/core",
+		ProjectID:    "acme/example",
 		EventSource:  EventSourceWebhook, // explicit — default is now poll (ADR-0031)
 	})
 
@@ -302,8 +302,8 @@ func TestSetup_HappyPath(t *testing.T) {
 	}
 
 	// Webhook was registered with the right shape.
-	if fp.registered.ProjectID != "lunomoney/core" {
-		t.Errorf("RegisterWebhook ProjectID: want lunomoney/core, got %q", fp.registered.ProjectID)
+	if fp.registered.ProjectID != "acme/example" {
+		t.Errorf("RegisterWebhook ProjectID: want acme/example, got %q", fp.registered.ProjectID)
 	}
 	if !strings.HasPrefix(fp.registered.CallbackURL, "https://everflow.test/webhook/fake/") {
 		t.Errorf("CallbackURL prefix wrong: got %q", fp.registered.CallbackURL)
@@ -535,7 +535,7 @@ func TestWork_HappyPath(t *testing.T) {
 	}})
 	r := newRun(t, &AgentState{
 		ProviderName: "fake",
-		ProjectID:    "lunomoney/core",
+		ProjectID:    "acme/example",
 		RunnerName:   "fake-runner",
 		Goal:         "Migrate to slog",
 		CurrentUnit:  "svc-payments",
@@ -545,7 +545,7 @@ func TestWork_HappyPath(t *testing.T) {
 
 	// Have the fake provider return a real-shaped MR.
 	fp.createMRResult = provider.MR{
-		ProjectID: "lunomoney/core", IID: 42,
+		ProjectID: "acme/example", IID: 42,
 		URL: "https://gitlab/x/merge_requests/42", Branch: "everflow/deadbeef/svc-payments",
 	}
 
@@ -604,11 +604,14 @@ func TestWork_RunnerFails(t *testing.T) {
 	})
 
 	next, err := d.work(t.Context(), r)
-	if err == nil {
-		t.Fatalf("want error from runner failure")
+	if err != nil {
+		t.Fatalf("work: want nil err (terminal failure committed via state, not retried), got %v", err)
 	}
 	if next != StatusFailed {
 		t.Errorf("want Failed, got %v", next)
+	}
+	if !strings.Contains(r.Object.LastError, "rate limited") {
+		t.Errorf("LastError should propagate runner error: %q", r.Object.LastError)
 	}
 	if len(fp.createMRCalls) != 0 {
 		t.Errorf("CreateMR should not be called when runner errors; got %d calls", len(fp.createMRCalls))
@@ -646,11 +649,14 @@ func TestWork_CreateMRFails(t *testing.T) {
 	})
 
 	next, err := d.work(t.Context(), r)
-	if err == nil {
-		t.Fatalf("want error from CreateMR failure")
+	if err != nil {
+		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
 	}
 	if next != StatusFailed {
 		t.Errorf("want Failed, got %v", next)
+	}
+	if !strings.Contains(r.Object.LastError, "404 not found") {
+		t.Errorf("LastError should propagate CreateMR error: %q", r.Object.LastError)
 	}
 	if _, ok := r.Object.InFlight["svc-x"]; ok {
 		t.Errorf("InFlight should not contain unit when CreateMR failed")
@@ -696,8 +702,8 @@ func TestWork_PushFails(t *testing.T) {
 	})
 
 	next, err := d.work(t.Context(), r)
-	if err == nil {
-		t.Fatalf("want error from push failure")
+	if err != nil {
+		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
 	}
 	if next != StatusFailed {
 		t.Errorf("want Failed on push fail, got %v", next)
@@ -720,11 +726,14 @@ func TestWork_EnsureBranchFails(t *testing.T) {
 	})
 
 	next, err := d.work(t.Context(), r)
-	if err == nil {
-		t.Fatalf("want error from EnsureBranch failure")
+	if err != nil {
+		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
 	}
 	if next != StatusFailed {
 		t.Errorf("want Failed, got %v", next)
+	}
+	if !strings.Contains(r.Object.LastError, "release/v9") {
+		t.Errorf("LastError should propagate EnsureBranch error: %q", r.Object.LastError)
 	}
 	if len(fr.calls) != 0 {
 		t.Errorf("runner should NOT be invoked when worktree setup fails; got %d calls", len(fr.calls))
@@ -845,7 +854,7 @@ func awaitingRun(t *testing.T, unitID string, mr provider.MR) *workflow.Run[Agen
 func TestResume_MRMerged_MovesToCompleted(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	d.withRunner(t, &fakeRunner{})
-	mr := provider.MR{ProjectID: "lunomoney/core", IID: 42, URL: "https://x/42"}
+	mr := provider.MR{ProjectID: "acme/example", IID: 42, URL: "https://x/42"}
 	r := awaitingRun(t, "svc-a", mr)
 
 	ev := provider.Event{

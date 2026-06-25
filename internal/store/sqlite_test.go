@@ -82,3 +82,45 @@ func TestSqliteRestart(t *testing.T) {
 		t.Errorf("Object: want %s, got %s", rec.Object, got.Object)
 	}
 }
+
+// TestSqliteMetaRoundTrip regression-tests the bug that took the spike
+// down: the workflow runtime bumps Record.Meta.Version before each Store
+// and the consumer rejects events whose HeaderRecordVersion exceeds the
+// stored value as "stale record lookup". If the store doesn't persist
+// Meta.Version, every consumer fails on every event.
+func TestSqliteMetaRoundTrip(t *testing.T) {
+	rs := freshBackend(t).RecordStore()
+	rec := &workflow.Record{
+		WorkflowName: "refactor-sweep",
+		ForeignID:    "fid-meta",
+		RunID:        "00000000-0000-0000-0000-0000000000aa",
+		RunState:     workflow.RunStateInitiated,
+		Status:       1,
+		Object:       []byte(`{}`),
+		Meta: workflow.Meta{
+			Version:           7,
+			RunStateReason:    "paused for review",
+			StatusDescription: "Initiated",
+			TraceOrigin:       "main.go:42",
+		},
+	}
+	if err := rs.Store(t.Context(), rec); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	got, err := rs.Lookup(t.Context(), rec.RunID)
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	if got.Meta.Version != 7 {
+		t.Errorf("Meta.Version: want 7, got %d", got.Meta.Version)
+	}
+	if got.Meta.RunStateReason != "paused for review" {
+		t.Errorf("Meta.RunStateReason: want %q, got %q", "paused for review", got.Meta.RunStateReason)
+	}
+	if got.Meta.StatusDescription != "Initiated" {
+		t.Errorf("Meta.StatusDescription: want %q, got %q", "Initiated", got.Meta.StatusDescription)
+	}
+	if got.Meta.TraceOrigin != "main.go:42" {
+		t.Errorf("Meta.TraceOrigin: want %q, got %q", "main.go:42", got.Meta.TraceOrigin)
+	}
+}

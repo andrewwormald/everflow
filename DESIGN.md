@@ -176,7 +176,7 @@ The author hands everflow five things at `everflow start`:
 | **Discovery rule** | How to find units. Either a `--units` static list, or a Starlark `discover()` function, or a shell command | `discover.star` walks `services/*/go.mod` for logrus imports |
 | **Skill** | A Claude Code skill the per-unit subagent will run. Lives at `~/.everflow/runs/<runID>/SKILL.md` (mirror-symlinked into the worktree's `.claude/skills/`) | A skill file with the refactor recipe |
 | **Filter** | Starlark function. Runs on every event. Defaults to a sensible one if not specified | `note_added.star`, `pipeline_failed.star` |
-| **Provider config** | Which platform, project ID, auth token | `--provider gitlab --project lunomoney/core` |
+| **Provider config** | Which platform, project ID, auth token | `--provider gitlab --project acme/example` |
 
 Plus a few operational flags: `--concurrency 1`, `--public-base-url https://...`, `--max-tokens 1M`, `--max-units 50`.
 

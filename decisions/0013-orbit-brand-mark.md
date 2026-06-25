@@ -35,9 +35,10 @@ inventory.
 
 ## Alternatives considered
 
-- **Luno electric blue** — would give brand family resemblance to the parent.
-  Killed: everflow is a personal project, not a Luno product, and the warm
-  coral is more inviting than enterprise infrastructure-blue.
+- **Parent corporate brand colour (electric blue)** — would give brand
+  family resemblance to the author's employer. Killed: everflow is a
+  personal project, not a corporate product, and the warm coral is more
+  inviting than enterprise infrastructure-blue.
 - **Static logo only** — simpler, smaller files. Killed: the animated comet
   *is* the metaphor (a token forever circling). Losing the animation in the
   hero loses half the meaning.

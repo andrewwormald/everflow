@@ -59,7 +59,7 @@ type AgentState struct {
 	Mode            string         `json:"mode"`              // "" | "sweep" | "spec"
 	SpecPath        string         `json:"spec_path"`         // populated in spec mode
 	SpecBody        string         `json:"spec_body"`         // markdown body the planner reads each iteration
-	DraftMRs        bool           `json:"draft_mrs"`         // when true, opened MRs are marked Draft / WIP (Luno spike safety net)
+	DraftMRs        bool           `json:"draft_mrs"`         // when true, opened MRs are marked Draft / WIP (safety net for spikes against shared repos)
 	EventSource     string         `json:"event_source"`      // "poll" (default) | "webhook" — ADR-0031
 
 	SkillPath       string         `json:"skill_path"`        // ~/.everflow/runs/<runID>/SKILL.md
@@ -102,7 +102,7 @@ const (
 
 // IsPollMode reports whether this Run gets events via polling rather
 // than webhooks. Empty defaults to poll for safety — no accidental
-// webhook registration on lunomoney/core.
+// webhook registration on shared / production repos.
 func (s *AgentState) IsPollMode() bool {
 	return s.EventSource == "" || s.EventSource == EventSourcePoll
 }

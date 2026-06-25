@@ -31,7 +31,7 @@ func TestNormaliseEvent_NoteHook_MR(t *testing.T) {
 	body := []byte(`{
 		"object_kind": "note",
 		"user": {"id": 42, "name": "Andrew", "username": "andreww", "email": "a@example.com"},
-		"project": {"id": 7, "path_with_namespace": "lunomoney/core"},
+		"project": {"id": 7, "path_with_namespace": "acme/example"},
 		"object_attributes": {
 			"id": 12345,
 			"note": "please rename this method",
@@ -40,7 +40,7 @@ func TestNormaliseEvent_NoteHook_MR(t *testing.T) {
 		"merge_request": {
 			"iid": 1234,
 			"source_branch": "wf-abc",
-			"url": "https://gitlab.com/lunomoney/core/-/merge_requests/1234"
+			"url": "https://gitlab.com/acme/example/-/merge_requests/1234"
 		}
 	}`)
 	p := &Provider{}
@@ -51,8 +51,8 @@ func TestNormaliseEvent_NoteHook_MR(t *testing.T) {
 	if ev.Kind != provider.EventNoteAdded {
 		t.Errorf("Kind: want EventNoteAdded, got %v", ev.Kind)
 	}
-	if ev.ProjectID != "lunomoney/core" {
-		t.Errorf("ProjectID: want lunomoney/core, got %q", ev.ProjectID)
+	if ev.ProjectID != "acme/example" {
+		t.Errorf("ProjectID: want acme/example, got %q", ev.ProjectID)
 	}
 	if ev.MR.IID != 1234 {
 		t.Errorf("MR.IID: want 1234, got %d", ev.MR.IID)
@@ -86,7 +86,7 @@ func TestNormaliseEvent_PipelineHook_Success(t *testing.T) {
 	body := []byte(`{
 		"object_kind": "pipeline",
 		"user": {"id": 42, "username": "andreww"},
-		"project": {"id": 7, "path_with_namespace": "lunomoney/core"},
+		"project": {"id": 7, "path_with_namespace": "acme/example"},
 		"object_attributes": {"id": 999, "status": "success", "ref": "wf-abc"},
 		"merge_request": {"iid": 1234, "source_branch": "wf-abc", "url": "https://x/y/-/merge_requests/1234"},
 		"builds": [
@@ -114,7 +114,7 @@ func TestNormaliseEvent_PipelineHook_Failed_PopulatesFailedJobs(t *testing.T) {
 	body := []byte(`{
 		"object_kind": "pipeline",
 		"user": {"id": 42, "username": "andreww"},
-		"project": {"path_with_namespace": "lunomoney/core"},
+		"project": {"path_with_namespace": "acme/example"},
 		"object_attributes": {"id": 999, "status": "failed", "ref": "wf-abc"},
 		"merge_request": {"iid": 1234, "source_branch": "wf-abc", "url": "x"},
 		"builds": [
@@ -159,13 +159,13 @@ func TestNormaliseEvent_MRHook_Merged(t *testing.T) {
 	body := []byte(`{
 		"object_kind": "merge_request",
 		"user": {"id": 42, "username": "andreww"},
-		"project": {"path_with_namespace": "lunomoney/core"},
+		"project": {"path_with_namespace": "acme/example"},
 		"object_attributes": {
 			"iid": 1234,
 			"action": "merge",
 			"state": "merged",
 			"source_branch": "wf-abc",
-			"url": "https://gitlab.com/lunomoney/core/-/merge_requests/1234"
+			"url": "https://gitlab.com/acme/example/-/merge_requests/1234"
 		}
 	}`)
 	p := &Provider{}
@@ -219,7 +219,7 @@ func TestGitlabProject_idAsString_FallsBackToNumeric(t *testing.T) {
 	if g := (gitlabProject{ID: 42, PathWithNamespace: ""}).idAsString(); g != "42" {
 		t.Errorf("want %q, got %q", "42", g)
 	}
-	if g := (gitlabProject{ID: 42, PathWithNamespace: "lunomoney/core"}).idAsString(); g != "lunomoney/core" {
+	if g := (gitlabProject{ID: 42, PathWithNamespace: "acme/example"}).idAsString(); g != "acme/example" {
 		t.Errorf("want path-with-namespace, got %q", g)
 	}
 }

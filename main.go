@@ -25,8 +25,8 @@ import (
 	"github.com/luno/workflow"
 
 	"github.com/luno/workflow/adapters/memrolescheduler"
-	"github.com/luno/workflow/adapters/memstreamer"
 
+	"github.com/andrewwormald/everflow/internal/eventstream"
 	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/poller"
 	"github.com/andrewwormald/everflow/internal/provider"
@@ -152,7 +152,7 @@ func cmdDaemon(args []string) error {
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
 		TimeoutStore:  timeoutStore,
-		EventStreamer: memstreamer.New(),
+		EventStreamer: eventstream.New(),
 		RoleScheduler: memrolescheduler.New(),
 		Providers:     providers,
 		Runners:       runners,
@@ -506,7 +506,7 @@ func cmdStart(args []string) error {
 		unitsCSV    = fs.String("units", "", "comma-separated unit IDs (sweep mode; mutually exclusive with --spec)")
 		goal        = fs.String("goal", "", "one-sentence description (sweep mode; ignored in spec mode where the spec's `goal:` is used)")
 		providerArg = fs.String("provider", "", "provider name (gitlab | github)")
-		projectArg  = fs.String("project", "", "provider project ID, e.g. lunomoney/core")
+		projectArg  = fs.String("project", "", "provider project ID, e.g. acme/example")
 		runnerArg   = fs.String("runner", "claude", "runner name")
 		baseBranch  = fs.String("base-branch", "", "base branch (default: main, or spec's `base_branch:`)")
 		baseRepo    = fs.String("base-repo", "", "local path to a git checkout with origin remote (required)")

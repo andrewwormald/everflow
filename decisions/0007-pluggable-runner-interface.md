@@ -15,9 +15,9 @@ the workflow definition. They have different invocation shapes:
   inner loop for many turns, exits when *it* thinks it's done; ~tens of
   minutes per invocation
 
-We also want users to mix runners (run `mrs-babysit` via claude, run a
-different skill via openhands) without registering a separate workflow per
-runner.
+We also want users to mix runners (run a review-babysit skill via claude,
+run a different skill via openhands) without registering a separate
+workflow per runner.
 
 ## Decision
 

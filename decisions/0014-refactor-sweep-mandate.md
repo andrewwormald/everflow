@@ -48,7 +48,7 @@ Specifically:
 
 - **Generic durable agent host (the prior framing)** — too broad; couldn't
   answer "why this instead of Claude". Killed.
-- **CI babysitting as the headline use case** (the `mrs-babysit` skill
+- **CI babysitting as the headline use case** (a review-babysit skill
   shape) — also valid, but reactive in nature; less of a value
   differentiator vs `/loop`. Demoted to a secondary use case that the same
   primitives support.
@@ -68,5 +68,5 @@ Specifically:
   state-machine primitives work; it is not where the project is heading.
   The code remains in the repo as historical reference but the README and
   DESIGN.md describe the v1 refactor-sweep flow.
-- Adjacent skills like `mrs-babysit` become *applications built on top of*
-  everflow, not the project's main pitch.
+- Adjacent skills (review babysitters, on-call routers, etc.) become
+  *applications built on top of* everflow, not the project's main pitch.

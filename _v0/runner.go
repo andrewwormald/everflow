@@ -21,7 +21,7 @@ type Runner interface {
 type RunRequest struct {
 	Worktree string
 	// SkillCommand is the slash command we pass to the runner, e.g.
-	// "/mrs-babysit --slack-request-reviews".
+	// "/review-babysit --request-reviewers".
 	SkillCommand string
 	Timeout      time.Duration
 }
