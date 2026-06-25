@@ -819,6 +819,50 @@ func TestResume_NoteAdded_CommitReturnsNoChanges_StaysAwaitingMerge(t *testing.T
 	}
 }
 
+// Push succeeded but ResolveDiscussion errored → the Run must still
+// stay AwaitingMerge (the change is pushed; thread resolution is
+// best-effort). A "couldn't resolve" info comment is posted so the
+// reviewer knows to close manually.
+func TestResume_NoteAdded_ResolveDiscussionFails_StaysAwaitingMerge(t *testing.T) {
+	fp := &fakeProvider{resolveErr: errors.New("403 forbidden")}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Renamed."}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "rename Foo → Bar", DiscussionID: "disc-1"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: want nil err even when resolve fails, got %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge after push+failed-resolve, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("Run must not pause on resolve failure; PauseReason=%q", r.Object.PauseReason)
+	}
+	// ResolveDiscussion was attempted exactly once.
+	if len(fp.resolves) != 1 {
+		t.Errorf("ResolveDiscussion should be attempted once; got %d", len(fp.resolves))
+	}
+	// And an info comment was posted explaining the failure.
+	foundInfo := false
+	for _, c := range fp.comments {
+		if strings.Contains(c.Body, "couldn't resolve") || strings.Contains(c.Body, "403 forbidden") {
+			foundInfo = true
+			break
+		}
+	}
+	if !foundInfo {
+		t.Errorf("expected an info comment surfacing the resolve failure; got %+v", fp.comments)
+	}
+}
+
 // Push succeeded → resolve the originating discussion thread so the
 // reviewer sees their comment marked resolved.
 func TestResume_NoteAdded_PushSucceeded_ResolvesDiscussion(t *testing.T) {
