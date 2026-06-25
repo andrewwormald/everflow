@@ -172,9 +172,10 @@ func parsePRReview(body []byte, now int64) (provider.Event, error) {
 type prReviewCommentPayload struct {
 	Action  string `json:"action"`
 	Comment struct {
-		ID   int64  `json:"id"`
-		Body string `json:"body"`
-		User ghUser `json:"user"`
+		ID     int64  `json:"id"`
+		NodeID string `json:"node_id"` // GraphQL global ID; used by Provider.ResolveDiscussion to find the parent review thread
+		Body   string `json:"body"`
+		User   ghUser `json:"user"`
 	} `json:"comment"`
 	PullRequest struct {
 		Number  int    `json:"number"`
@@ -186,6 +187,13 @@ type prReviewCommentPayload struct {
 	Repository ghRepo `json:"repository"`
 }
 
+// parsePRReviewComment handles GitHub's inline line-comments — the only
+// comment type that lives on a *review thread* the platform considers
+// resolvable. We carry the comment's GraphQL node_id as Note.DiscussionID
+// so the (GraphQL-backed) ResolveDiscussion can map it to the parent
+// PullRequestReviewThread node and call resolveReviewThread. The other
+// two comment events (issue_comment, pull_request_review) live on the
+// PR conversation tab and have no thread to resolve.
 func parsePRReviewComment(body []byte, now int64) (provider.Event, error) {
 	var p prReviewCommentPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -206,8 +214,9 @@ func parsePRReviewComment(body []byte, now int64) (provider.Event, error) {
 		Author: p.Comment.User.toProviderUser(),
 		IsBot:  p.Comment.User.isBot(),
 		Note: provider.Note{
-			ID:   p.Comment.ID,
-			Body: p.Comment.Body,
+			ID:           p.Comment.ID,
+			Body:         p.Comment.Body,
+			DiscussionID: p.Comment.NodeID,
 		},
 		Raw:        body,
 		ReceivedAt: now,

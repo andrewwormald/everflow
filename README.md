@@ -71,7 +71,7 @@ Comments are everflow's only communication channel. Reply with `/everflow status
 - **Durable state machine.** Built on [luno/workflow](https://github.com/luno/workflow); sqlite-backed RecordStore. Survives daemon restart, can sleep idle for days between events at zero LLM cost.
 - **Event-driven.** Polls the provider every 30 seconds by default (zero token cost; ADR-0031). Webhook mode available for sub-second latency on hosts with a stable public URL.
 - **Per-unit git worktree.** Each MR's runner works in `~/.everflow/runs/<runID>/worktrees/<unitID>` — no contamination of your main checkout.
-- **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically (ADR-0034). The reviewer sees their comment close itself.
+- **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically on both GitLab and GitHub (ADR-0034). The reviewer sees their comment close itself.
 - **Pluggable runner.** Claude is the only shipping adapter today; Qwen / OpenHands / a local script all fit the `runner.Runner` interface.
 
 Full architecture: [`DESIGN.md`](DESIGN.md). Every meaningful design choice has an ADR in [`decisions/`](decisions/).

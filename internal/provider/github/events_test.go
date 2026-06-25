@@ -161,6 +161,7 @@ func TestNormaliseEvent_PRReviewComment(t *testing.T) {
 		"action": "created",
 		"comment": {
 			"id": 7777,
+			"node_id": "PRRC_kwDOABCDEF4Aabcdef",
 			"body": "could you handle the nil case here?",
 			"user": {"id": 7, "login": "reviewer", "type": "User"}
 		},
@@ -181,6 +182,40 @@ func TestNormaliseEvent_PRReviewComment(t *testing.T) {
 	}
 	if ev.Note.ID != 7777 {
 		t.Errorf("Note.ID: want 7777, got %d", ev.Note.ID)
+	}
+	// node_id is preserved as DiscussionID so the (eventual) GraphQL
+	// resolveReviewThread call has something to map onto a thread node.
+	if ev.Note.DiscussionID != "PRRC_kwDOABCDEF4Aabcdef" {
+		t.Errorf("Note.DiscussionID: want the comment's node_id, got %q", ev.Note.DiscussionID)
+	}
+}
+
+// issue_comment is on the PR conversation tab — it does NOT live on a
+// review thread, so there's nothing for ResolveDiscussion to act on.
+// DiscussionID must stay empty (a no-op for the caller).
+func TestNormaliseEvent_IssueComment_NoDiscussionID(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"comment": {
+			"id": 555,
+			"node_id": "IC_kwDOABCDEF55",
+			"body": "general PR comment",
+			"user": {"id": 7, "login": "reviewer", "type": "User"}
+		},
+		"issue": {
+			"number": 88,
+			"html_url": "https://github.com/owner/repo/pull/88",
+			"pull_request": {"url": "https://api.github.com/repos/owner/repo/pulls/88"}
+		},
+		"repository": {"full_name": "owner/repo"}
+	}`)
+	p := &Provider{}
+	ev, err := p.NormaliseEvent(header("X-GitHub-Event", "issue_comment"), body)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ev.Note.DiscussionID != "" {
+		t.Errorf("issue_comment has no review thread; DiscussionID must be empty, got %q", ev.Note.DiscussionID)
 	}
 }
 

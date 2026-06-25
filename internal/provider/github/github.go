@@ -208,13 +208,136 @@ func (p *Provider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) (
 	return nil, fmt.Errorf("github: polling not yet implemented (v1 uses webhooks for GitHub; use GitLab for the polling path)")
 }
 
-// ResolveDiscussion is a no-op stub for GitHub in v1. The real implementation
-// would call GraphQL `resolveReviewThread` against the thread node ID surfaced
-// via the pull-request review-thread API. For now invokeForEvent's auto-resolve
-// after a successful push silently does nothing on GitHub — the reviewer
-// resolves manually, same as before this feature shipped.
-func (p *Provider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error {
+// ResolveDiscussion marks a GitHub pull-request review thread as resolved
+// via the GraphQL `resolveReviewThread` mutation.
+//
+// The discussionID we receive from the inbound webhook decoder is the
+// pull_request_review_comment's GraphQL node_id (see events.go). The
+// mutation operates on the parent PullRequestReviewThread node, so we
+// first query for the comment's thread node ID, then call the mutation.
+//
+// Empty discussionID is a no-op — issue_comment and pull_request_review
+// events don't live on a thread, so DiscussionID stays empty for those
+// kinds (the only way the caller hits this method with a non-empty
+// discussionID is via a pull_request_review_comment).
+func (p *Provider) ResolveDiscussion(ctx context.Context, _ string, _ int, discussionID string) error {
+	if discussionID == "" {
+		return nil
+	}
+
+	// 1. Map comment node_id → parent review thread node_id.
+	type threadLookup struct {
+		Node struct {
+			PullRequestReviewThread struct {
+				ID string `json:"id"`
+			} `json:"pullRequestReviewThread"`
+		} `json:"node"`
+	}
+	const lookupQuery = `query($commentId: ID!) {
+  node(id: $commentId) {
+    ... on PullRequestReviewComment {
+      pullRequestReviewThread { id }
+    }
+  }
+}`
+	var lookup threadLookup
+	if err := p.doGraphQL(ctx, lookupQuery, map[string]any{"commentId": discussionID}, &lookup); err != nil {
+		return fmt.Errorf("ResolveDiscussion: lookup thread for comment %s: %w", discussionID, err)
+	}
+	threadID := lookup.Node.PullRequestReviewThread.ID
+	if threadID == "" {
+		// Comment doesn't belong to a thread (e.g. it's a review-level
+		// comment, not an inline comment). Nothing to resolve. Treat as
+		// a no-op rather than an error so the caller's best-effort
+		// resolve doesn't surface noise.
+		return nil
+	}
+
+	// 2. Resolve the thread.
+	const resolveMutation = `mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { id isResolved }
+  }
+}`
+	type resolveResp struct {
+		ResolveReviewThread struct {
+			Thread struct {
+				ID         string `json:"id"`
+				IsResolved bool   `json:"isResolved"`
+			} `json:"thread"`
+		} `json:"resolveReviewThread"`
+	}
+	var resolved resolveResp
+	if err := p.doGraphQL(ctx, resolveMutation, map[string]any{"threadId": threadID}, &resolved); err != nil {
+		return fmt.Errorf("ResolveDiscussion: resolveReviewThread(%s): %w", threadID, err)
+	}
+	if !resolved.ResolveReviewThread.Thread.IsResolved {
+		return fmt.Errorf("ResolveDiscussion: GitHub returned thread %s but isResolved=false", threadID)
+	}
 	return nil
+}
+
+// doGraphQL POSTs a query/mutation to GitHub's GraphQL endpoint and
+// decodes the `data` field into `out`. GraphQL-level errors (returned
+// in the `errors` array even when HTTP status is 200) surface as a
+// non-nil error so the caller can decide.
+func (p *Provider) doGraphQL(ctx context.Context, query string, variables map[string]any, out any) error {
+	endpoint := p.graphQLEndpoint()
+	reqBody := map[string]any{"query": query}
+	if len(variables) > 0 {
+		reqBody["variables"] = variables
+	}
+	buf, err := json.Marshal(reqBody)
+	if err != nil {
+		return fmt.Errorf("marshal graphql request: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	resp, err := p.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return &apiError{Status: resp.StatusCode, Path: "/graphql", Body: string(body)}
+	}
+	var envelope struct {
+		Data   json.RawMessage `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return fmt.Errorf("decode graphql response: %w", err)
+	}
+	if len(envelope.Errors) > 0 {
+		msgs := make([]string, 0, len(envelope.Errors))
+		for _, e := range envelope.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return fmt.Errorf("graphql errors: %s", strings.Join(msgs, "; "))
+	}
+	if out != nil && len(envelope.Data) > 0 {
+		return json.Unmarshal(envelope.Data, out)
+	}
+	return nil
+}
+
+// graphQLEndpoint converts the REST base URL into the matching GraphQL
+// endpoint. github.com REST is `https://api.github.com`, GraphQL is
+// `https://api.github.com/graphql`. GHE REST is
+// `https://<host>/api/v3`, GraphQL is `https://<host>/api/graphql`.
+func (p *Provider) graphQLEndpoint() string {
+	if strings.HasSuffix(p.baseURL, "/api/v3") {
+		return strings.TrimSuffix(p.baseURL, "/api/v3") + "/api/graphql"
+	}
+	return p.baseURL + "/graphql"
 }
 
 // RetryPipelineJob → POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun.

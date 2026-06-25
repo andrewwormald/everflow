@@ -68,10 +68,22 @@ Three independent issues compounded into the symptom:
    `NotePoll.DiscussionID` carry the platform-specific thread ID from
    webhook decode and `ListNotesSince`. After a successful push in
    `invokeForEvent`, the daemon calls `ResolveDiscussion` to close the
-   thread automatically. GitLab implements it via
-   `PUT /merge_requests/.../discussions/<id>?resolved=true`; GitHub's
-   stub is a no-op until the GraphQL `resolveReviewThread` path lands.
-   Empty `discussionID` is a no-op so callers don't need to guard.
+   thread automatically. Empty `discussionID` is a no-op so callers
+   don't need to guard.
+
+   - **GitLab**: `PUT /merge_requests/.../discussions/<id>?resolved=true`.
+     `DiscussionID` is the platform's native discussion identifier,
+     surfaced directly by the webhook payload and the `/notes` REST
+     endpoint.
+   - **GitHub**: two-step GraphQL. The webhook decoder surfaces the
+     `pull_request_review_comment`'s `node_id` as `DiscussionID`. At
+     resolve time, we run a `query($commentId: ID!)` to map the
+     comment node to its parent `PullRequestReviewThread` ID, then
+     issue the `resolveReviewThread` mutation. `issue_comment` and
+     `pull_request_review` events live on the PR conversation tab
+     (no thread), so they emit `Note.DiscussionID=""` — a no-op for
+     the resolver. GHE base URL handling: `/api/v3` REST swaps to
+     `/api/graphql`; otherwise `baseURL + "/graphql"`.
 
 ## Alternatives considered
 
@@ -109,10 +121,10 @@ Three independent issues compounded into the symptom:
   route through `resume()` and exit Paused via the appropriate next
   status. Until this ADR, those control commands would have been
   silently dropped on the dispatch-error floor.
-- GitHub gains a `ResolveDiscussion` stub but no real implementation.
-  Tracking debt: switch to the GraphQL `resolveReviewThread` mutation
-  once we surface review-thread node IDs (currently we only have note
-  IDs from the REST webhook payload).
+- GitHub now has a real `ResolveDiscussion` implementation via GraphQL
+  `resolveReviewThread`. Only `pull_request_review_comment` events
+  produce a non-empty `DiscussionID` (those are the only GitHub
+  comments that live on a resolvable thread).
 - The provider interface grew by one method. Every adapter (real and
   test fake) now needs `ResolveDiscussion`. The fakes return nil; the
   test `fakeProvider` records calls for assertion.
