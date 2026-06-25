@@ -76,18 +76,20 @@ Bulk refactors have an L1/L2/L3 shape that maps cleanly onto `luno/workflow`:
 - Runs under `launchd` / `systemd` / `tmux` — designed to live on a VPS or EC2 instance, not a laptop
 - Single workflow definition (`refactor-sweep`); multiple Runs per workflow
 
-### Public-URL strategy
+### Event ingress: poll by default, webhook opt-in
 
-Webhooks need a public address. v1 takes a `--public-base-url https://...` flag at daemon start; the user provides it via whatever tunneling fits their environment:
+Per [ADR-0031](decisions/0031-polling-as-primary.md), the default event source is **polling**: the daemon ticks every 30s and asks the provider what's new for each in-flight MR via `GetMRState` + `ListNotesSince`. Synthesised events flow through the same `workflow.Callback` path webhooks use. No public URL required; no webhook permissions needed; no tunnel; no `--public-base-url`. The "Never polls" brand promise was always about **LLM tokens** — polling a provider's REST API costs zero tokens.
+
+Webhook mode remains supported for VPS / cloud deployments that have a stable URL and want sub-second latency. Set `event_source: webhook` in the spec and pass `--public-base-url https://...`. The user provides the tunnel via whatever fits their environment:
 
 | Deployment | Tunnel |
 |---|---|
 | VPS / EC2 / DigitalOcean | Native public DNS; open the port in the security group |
-| Laptop (preferred) | Tailscale Funnel — free, static `*.ts.net` URL |
+| Laptop | Tailscale Funnel — free, static `*.ts.net` URL |
 | Laptop (alternative) | Cloudflare Tunnel — free with own domain |
 | Laptop (last resort) | ngrok paid for stable URL; ngrok free works with the caveat that URLs rotate |
 
-Everflow does not auto-spawn any tunnel. Too much magic, four tools to maintain, all of them flaky in their own ways. Users pick one and configure it.
+Everflow does not auto-spawn any tunnel.
 
 ## The state machine
 
@@ -97,7 +99,8 @@ Two concentric loops: a Run-level loop that handles discovery and queue manageme
 
 ```
 Initiated
-   │ setup: register webhook with provider, build skill mirror, run discovery
+   │ setup: capture author, build skill mirror, run discovery
+   │        (poll mode: skip webhook step; webhook mode: register + store secret)
    ▼
 Discovering ───────── discovery returned 0 ────► Completed (post final comment, exit Run)
    │
@@ -118,13 +121,13 @@ Awaiting-merge ── [see per-unit lifecycle below] ─►                     
 ```
 Awaiting-merge (sitting indefinitely, zero compute cost)
    │
-   ├── webhook: note_added ──► filter ──► SKIP            (no cost)
+   ├── event: note_added ──► filter ──► SKIP            (no cost)
    │                                  ──► CONTROL_COMMAND (author only — execute verb)
    │                                  ──► INVOKE_SUBAGENT (subagent reads thread, pushes fix)
    │                                                       │
    │                                                       └─► back to Awaiting-merge
    │
-   ├── webhook: pipeline_failed ──► classify (Starlark)
+   ├── event: pipeline_failed ──► classify (Starlark)
    │                                  ──► known flake ────► retry job, no subagent
    │                                  ──► novel failure ──► subagent diagnose + fix
    │                                                         │
@@ -133,12 +136,14 @@ Awaiting-merge (sitting indefinitely, zero compute cost)
    │                                                         │
    │                                                         └─► Paused, post pause comment
    │
-   ├── webhook: merge_request action=merged ──► Done (unit), release slot, return to Discovering
+   ├── event: merge_request action=merged ──► Done (unit), release slot, return to Discovering
    │
-   └── webhook: merge_request action=closed ──► Failed (unit), release slot, blacklist
+   └── event: merge_request action=closed ──► Failed (unit), release slot, blacklist
 ```
 
-The `Awaiting-merge` state can hold for *hours or days* with no compute load — the workflow is genuinely idle, waiting for the platform to push it an event. This is what makes the math work for long-running refactors.
+The `Awaiting-merge` state can hold for *hours or days* with no LLM cost — between events the workflow consumes only the cost of the 30s poll tick (a couple of cheap REST calls), or sub-second wakeups on a webhook delivery. This is what makes the math work for long-running refactors.
+
+Per [ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md): when the runner addresses a `note_added` event and successfully pushes the change, the originating discussion thread is auto-resolved on the platform — the reviewer sees their comment marked closed without manual action. If the runner replied without producing a code change (e.g. answered a question verbally), the thread is also resolved and the Run stays `Awaiting-merge` (no fatal pause for non-code answers).
 
 ### Concurrency > 1
 

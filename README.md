@@ -11,9 +11,9 @@
 
 ---
 
-Everflow drives **bulk refactor sweeps**: open an MR for one unit of work, watch it through review and CI, address feedback, ship the merge, pick up the next unit, repeat until done. Configurable concurrency (default 1) controls how many MRs are in flight at any time, so reviewers aren't drowned and merge conflicts don't pile up. The author doesn't have to babysit anything; they get pinged on the MR if everflow gets stuck.
+Everflow drives **bulk refactor sweeps**: open an MR for one unit of work, watch it through review and CI, address feedback (auto-resolving the comment thread once the change is pushed), ship the merge, pick up the next unit, repeat until done. Configurable concurrency (default 1) controls how many MRs are in flight at any time, so reviewers aren't drowned and merge conflicts don't pile up. The author doesn't have to babysit anything; they get pinged on the MR if everflow gets stuck.
 
-Built on [`luno/workflow`](https://github.com/luno/workflow) for the durable state machine. Designed to run on a small VPS or EC2 instance, not your laptop.
+Built on [`luno/workflow`](https://github.com/luno/workflow) for the durable state machine. Runs anywhere a Go binary runs — laptop, VPS, cloud VM. No public URL required by default.
 
 ## What problem it solves
 
@@ -49,7 +49,8 @@ Everflow is what's missing: a daemon that handles the cheap repetitive parts det
 - The **MR comment thread is the only communication channel** ([ADR-0016](decisions/0016-mr-comments-only-channel.md)). Everflow posts status updates; you reply with `/everflow pause`, `/resume`, `/skip`, `/retry`, `/prompt …`, `/status`, or `/stop`.
 - A **Starlark filter** runs on every event ([ADR-0018](decisions/0018-starlark-filter-and-phrase-learning.md)). Cheap deterministic classification first; subagent only when needed. The filter learns ("`lgtm` → skip in future") within bounds.
 - **Author privileges**: control commands work only from the user who triggered the Run ([ADR-0017](decisions/0017-author-privilege-model.md)). Reviewers can't accidentally skip an MR by typing the wrong thing.
-- **Webhook-driven**: workflow sleeps idle for hours/days between events, zero compute cost. Polling is a fallback for when webhooks haven't fired in a while.
+- **Event-driven**: poll the provider by default (zero LLM cost; ADR-0031), or register a webhook if you have a stable public URL. Either way the workflow sleeps idle between events for hours/days — LLM tokens fire only when a comment, CI failure, or merge actually arrives.
+- **Threads auto-resolve on push**: when the runner addresses a reviewer comment and lands the change, the discussion thread is marked resolved automatically (ADR-0034). The reviewer sees the conversation close itself.
 
 Full design: [`DESIGN.md`](DESIGN.md). The decisions log under [`decisions/`](decisions/) records every meaningful trade-off.
 
@@ -72,10 +73,10 @@ What's working:
 
 What's not built yet (post-spike):
 
-- Starlark filter integration (currently `StubFilter` returns `InvokeSubagent` on substantive comments + `ControlCommand` on author /everflow)
-- `everflow status <runID>` and `everflow list` CLI subcommands
-- Qwen / OpenHands runner adapters
-- Phrase-learning loop for the filter
+- `everflow status <runID>` HTTP read API (today: query sqlite directly or comment `/everflow status` on the MR)
+- Qwen / OpenHands runner adapters (interface exists; only Claude is wired)
+- `Provider.ResolveDiscussion` is a no-op on GitHub pending GraphQL `resolveReviewThread` work — GitLab resolves cleanly today (ADR-0034)
+- CLI commands for abandon/resume on stuck Runs (today: comment on the MR)
 
 ## Running a spike
 
@@ -85,19 +86,23 @@ End-to-end run against a real repo. Five steps.
 
 - Go 1.26+
 - `git` on `$PATH`
-- `claude` on `$PATH`, authenticated (i.e. `claude -p "hello"` works)
+- `claude` on `$PATH`, authenticated (i.e. `claude -p "hello"` works — interactive Claude Code login is fine; no Anthropic API key required)
 - A clone of your target repo at a path the daemon can read+write, with an `origin` remote and SSH key / credential helper that lets the daemon push
-- A `GITLAB_TOKEN` (or `GITHUB_TOKEN`) env var with API + webhook permissions (`api` scope for GitLab; `repo` + `admin:repo_hook` for GitHub)
+- Provider auth: either `GITLAB_TOKEN` (API scope) / `GITHUB_TOKEN` (`repo` scope), **or** an existing `glab auth login` — everflow reads the OAuth token from glab's config if no env var is set. For poll-mode (default) no webhook permissions are required.
 
-### 2. Public URL for inbound webhooks
+### 2. Public URL (optional — webhook mode only)
 
-The provider needs to reach the daemon. Options, in order of preference:
+In poll mode (the default — ADR-0031), everflow needs no public URL: the daemon polls the provider's API for changes on each tick. Skip this section unless you specifically want webhook ingress.
+
+If you do want webhook mode (lower latency, requires a stable URL):
 
 | Host | Recommended tunnel |
 |---|---|
 | VPS / EC2 / cloud VM | Native public DNS; open the port in your security group |
 | Laptop | **Tailscale Funnel** — free, stable `*.ts.net` URL: `tailscale funnel 8080` |
 | Laptop fallback | ngrok (free tier rotates URLs; paid is stable) |
+
+Then pass `--public-base-url https://...` to `everflow daemon` and set `event_source: webhook` in the spec.
 
 ### 3. Write a spec
 
@@ -134,25 +139,26 @@ Save it somewhere accessible — `~/specs/legacy-migration.md`.
 
 ### 4. Start the daemon
 
+Poll mode (default — no public URL needed):
+
 ```bash
 go build -o everflow .
 
-GITLAB_TOKEN=... ANTHROPIC_API_KEY=... \
-  ./everflow daemon \
-    --public-base-url https://everflow.<user>.ts.net \
-    --listen :8080 \
-    --trigger-listen 127.0.0.1:8081 \
-    --store ~/.everflow/store.db
+./everflow daemon \
+    --commit-author "Your Name" \
+    --commit-email "you@example.com"
 ```
 
 You should see:
 
 ```
-provider registered  name=gitlab
+provider registered  name=gitlab  auth=glab-oauth
 everflow daemon started  listen=:8080  trigger_listen=127.0.0.1:8081 ...
 ```
 
-The daemon is now listening for webhooks on `:8080` (public) and triggers on `:8081` (local-only).
+The daemon now polls registered providers every 30s for events and listens for `everflow start` triggers on `127.0.0.1:8081`. No Anthropic API key needed — `claude -p` uses your interactive Claude Code login.
+
+For webhook mode, add `--public-base-url https://...` and set `GITLAB_TOKEN`/`GITHUB_TOKEN` env vars with webhook permissions.
 
 ### 5. Trigger the spec
 
@@ -174,7 +180,7 @@ In the daemon's log:
 triggered run  run_id=...  mode=spec  provider=gitlab  project=acme/example
 ```
 
-The daemon's `setup` step now: (a) calls GitLab to fetch your authenticated user (Author), (b) generates a webhook secret, (c) registers a webhook at `https://everflow.<user>.ts.net/webhook/gitlab/<runID>`, (d) creates `~/.everflow/runs/<runID>/`. Then `discover` invokes the claude planner with the spec body to choose the first increment. Then `work` runs claude in a fresh worktree off `main`, commits + pushes, opens the MR, posts an initial status comment, and parks in `AwaitingMerge`.
+The daemon's `setup` step now: (a) calls the provider to fetch your authenticated user (Author), (b) creates `~/.everflow/runs/<runID>/` with a default Starlark filter, (c) in webhook mode only — generates a secret + registers a webhook. Then `discover` invokes the claude planner with the spec body to choose the first increment. Then `work` runs claude in a fresh worktree off `main`, commits + pushes (filtering binary build artefacts out of the staging — ADR-0032), opens the Draft MR, posts an initial status comment, and parks in `AwaitingMerge`. The poller picks up subsequent comments and CI events.
 
 ### Driving it via MR comments
 
@@ -191,14 +197,14 @@ Once an MR is open, reply on it:
                               second /everflow abandon within 12h confirms
 ```
 
-Any other comment, the runner addresses (via the StubFilter → claude) and pushes a follow-up commit. CI failures trigger the same path.
+Any other comment, the Starlark filter classifies (bot/short/known-phrase → skip; substantive → invoke). On invoke, the runner addresses the comment, pushes a follow-up commit, and **auto-resolves the originating discussion thread**. If the runner produced no code change (verbal reply only), the thread is still marked resolved and the Run stays `AwaitingMerge` — no fatal pause for non-code answers (ADR-0034). CI failures route through the same filter.
 
-### Known limitations of the spike
+### Known limitations
 
-- **StubFilter** invokes the subagent on every substantive comment. A future Starlark filter will let you skip "lgtm" etc deterministically.
-- **No `everflow status` CLI** yet — use `/everflow status` on an MR comment, or `sqlite3 ~/.everflow/store.db "SELECT * FROM records"`.
 - **Single concurrency** in v1; the throttled-sequential model parallelises in v2.
+- **No `everflow status` CLI** yet — use `/everflow status` on an MR comment, or `sqlite3 ~/.everflow/store.db "SELECT * FROM records"`.
 - **No retry-replay**: `/everflow retry` clears the pause but the author has to re-trigger by event (re-comment, wait for CI rerun).
+- **GitHub thread auto-resolve** is a no-op stub pending GraphQL `resolveReviewThread` work; GitLab resolves cleanly.
 
 ## Running on a server
 
@@ -215,17 +221,18 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/home/ubuntu
 ExecStart=/usr/local/bin/everflow daemon \
-    --public-base-url https://everflow.example.com
+    --commit-author "Everflow Bot" \
+    --commit-email "everflow@example.com"
 Restart=on-failure
 RestartSec=10s
-Environment=ANTHROPIC_API_KEY=...
-Environment=GITLAB_TOKEN=...
+# Optional — only for webhook mode:
+# Environment=GITLAB_TOKEN=...
 
 [Install]
 WantedBy=multi-user.target
 ```
 
-Laptop deployment is supported but adds tunnel friction — Tailscale Funnel works best (free, stable URL on `*.ts.net`); ngrok free works with the caveat that URLs rotate; cloudflared works if you have a domain. See [`DESIGN.md`](DESIGN.md#public-url-strategy).
+Laptop deployment is fully supported with poll mode — no tunnel needed. Switch to webhook mode (lower latency) by adding `--public-base-url` and a tunnel: Tailscale Funnel is the easiest (`tailscale funnel 8080`); ngrok / cloudflared also work. See [`DESIGN.md`](DESIGN.md#public-url-strategy).
 
 ## Repository layout
 
@@ -244,7 +251,9 @@ Laptop deployment is supported but adds tunnel friction — Tailscale Funnel wor
 | [`internal/store/`](internal/store/) | Sqlite-backed `workflow.RecordStore` + `TimeoutStore` |
 | [`internal/spec/`](internal/spec/) | Spec markdown parser (frontmatter + body) |
 | [`internal/webhook/`](internal/webhook/) | HTTP webhook ingress |
-| [`internal/filter/`](internal/filter/) | Event filter (StubFilter today; Starlark planned) |
+| [`internal/filter/`](internal/filter/) | Starlark event filter with per-Run override + phrase learning (ADRs 0018, 0030) |
+| [`internal/eventstream/`](internal/eventstream/) | In-process workflow.EventStreamer (cond.Wait based; ADR-0033) |
+| [`internal/poller/`](internal/poller/) | Poll-mode event ingress (ADR-0031) |
 | [`_v0/`](_v0/) | Archived scheduled-skill PoC, separate module |
 
 ## License
