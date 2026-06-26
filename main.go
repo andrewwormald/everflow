@@ -398,7 +398,16 @@ func buildProviders(logger *slog.Logger, gitlabBase, githubBase string) (map[str
 			return nil, err
 		}
 		out[p.Name()] = p
-		logger.Info("provider registered", "name", "github")
+		logger.Info("provider registered", "name", "github", "auth", "env-token")
+	} else if tok, err := github.LoadGhToken(""); err == nil {
+		p, err := github.New(github.Config{BaseURL: githubBase, Token: tok})
+		if err != nil {
+			return nil, err
+		}
+		out[p.Name()] = p
+		logger.Info("provider registered", "name", "github", "auth", "gh-oauth")
+	} else if !errors.Is(err, github.ErrGhNotConfigured) {
+		return nil, fmt.Errorf("github: load gh token: %w", err)
 	}
 	return out, nil
 }
