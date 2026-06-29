@@ -262,6 +262,151 @@ func TestResolveDiscussion_GraphQLError(t *testing.T) {
 	}
 }
 
+// --- GetMRState ---
+
+func TestGetMRState_Open(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/pulls/42" {
+			t.Errorf("path: got %s", r.URL.Path)
+		}
+		_, _ = w.Write([]byte(`{"state":"open","merged":false}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.GetMRState(t.Context(), "owner/repo", 42)
+	if err != nil {
+		t.Fatalf("GetMRState: %v", err)
+	}
+	if got != "opened" {
+		t.Errorf("open: want opened, got %q", got)
+	}
+}
+
+func TestGetMRState_Closed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"closed","merged":false}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, _ := p.GetMRState(t.Context(), "owner/repo", 42)
+	if got != "closed" {
+		t.Errorf("closed: want closed, got %q", got)
+	}
+}
+
+func TestGetMRState_Merged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"state":"closed","merged":true}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, _ := p.GetMRState(t.Context(), "owner/repo", 42)
+	if got != "merged" {
+		t.Errorf("merged: want merged, got %q", got)
+	}
+}
+
+// --- ListNotesSince ---
+
+// TestListNotesSince_MergesThreeStreams covers the headline behaviour:
+// the three GitHub comment endpoints (issue comments, inline review
+// comments, top-level reviews) are queried and merged into a single
+// chronological stream filtered by sinceNoteID.
+func TestListNotesSince_MergesThreeStreams(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues/42/comments":
+			_, _ = w.Write([]byte(`[
+				{"id": 10, "body": "old PR comment", "user": {"id":1, "login":"alice", "type":"User"}},
+				{"id": 100, "body": "new PR comment", "user": {"id":1, "login":"alice", "type":"User"}}
+			]`))
+		case "/repos/owner/repo/pulls/42/comments":
+			_, _ = w.Write([]byte(`[
+				{"id": 5, "node_id": "PRRC_old", "body": "old inline", "user": {"id":2, "login":"bob", "type":"User"}},
+				{"id": 200, "node_id": "PRRC_new", "body": "new inline", "user": {"id":2, "login":"bob", "type":"User"}}
+			]`))
+		case "/repos/owner/repo/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[
+				{"id": 150, "body": "Looks good but consider X", "state": "COMMENTED", "user": {"id":3, "login":"carol", "type":"User"}},
+				{"id": 160, "body": "", "state": "APPROVED", "user": {"id":3, "login":"carol", "type":"User"}}
+			]`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, 50)
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+
+	// sinceNoteID=50 → IDs 10 and 5 dropped (old).
+	// ID 160 dropped (body-less approval).
+	// Remaining: 100 (PR comment), 200 (inline), 150 (review).
+	// Sorted ascending: 100, 150, 200.
+	wantIDs := []int64{100, 150, 200}
+	if len(got) != 3 {
+		t.Fatalf("want 3 notes after filter, got %d: %+v", len(got), got)
+	}
+	for i, want := range wantIDs {
+		if got[i].ID != want {
+			t.Errorf("index %d: want ID %d, got %d", i, want, got[i].ID)
+		}
+	}
+
+	// Discussion ID only on the inline-comment one.
+	for _, n := range got {
+		switch n.ID {
+		case 200:
+			if n.DiscussionID != "PRRC_new" {
+				t.Errorf("inline note 200 should carry DiscussionID, got %q", n.DiscussionID)
+			}
+		case 100, 150:
+			if n.DiscussionID != "" {
+				t.Errorf("non-inline note %d should not carry DiscussionID, got %q", n.ID, n.DiscussionID)
+			}
+		}
+	}
+}
+
+// TestListNotesSince_EmptyAfterFilter covers the case where all notes
+// are older than sinceNoteID.
+func TestListNotesSince_EmptyAfterFilter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`[{"id": 1, "body": "old", "user": {"id":1, "login":"x", "type":"User"}}]`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, 1000)
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("all notes old; want empty result, got %+v", got)
+	}
+}
+
+// TestListNotesSince_ReviewWithBody includes a review that has a body
+// AND a non-approved state — must surface.
+func TestListNotesSince_ReviewWithBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/reviews") {
+			_, _ = w.Write([]byte(`[{"id": 99, "body": "needs work", "state": "CHANGES_REQUESTED", "user": {"id":1, "login":"r", "type":"User"}}]`))
+		} else {
+			_, _ = w.Write([]byte(`[]`))
+		}
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	got, _ := p.ListNotesSince(t.Context(), "owner/repo", 42, 0)
+	if len(got) != 1 || got[0].ID != 99 {
+		t.Errorf("changes-requested review with body should surface; got %+v", got)
+	}
+}
+
 // TestGraphQLEndpoint_GHE verifies the GHE path-rewrite logic.
 func TestGraphQLEndpoint_GHE(t *testing.T) {
 	p := &Provider{baseURL: "https://ghe.example.com/api/v3"}

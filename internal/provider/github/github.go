@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -197,15 +198,137 @@ func (p *Provider) CloseMR(ctx context.Context, projectID string, mrIID int) err
 // GetMRState reads the PR's state ("open" | "closed"; merged is "closed"
 // with merged_at set). Returns the GitLab-style state vocabulary mapping
 // for callers that don't care about the merged-vs-just-closed distinction.
-// Polling not wired for GitHub in v1 — this is a parity stub that fails
-// with a clear error.
-func (p *Provider) GetMRState(_ context.Context, _ string, _ int) (string, error) {
-	return "", fmt.Errorf("github: polling not yet implemented (v1 uses webhooks for GitHub; use GitLab for the polling path)")
+// GetMRState → GET /repos/{owner}/{repo}/pulls/{number}. Returns one of
+// "opened" | "closed" | "merged" to match the poller's state-event
+// vocabulary (see internal/poller/poller.go mrStateEvent).
+//
+// GitHub's REST response has a `state` field ("open"|"closed") and a
+// separate `merged` boolean; we collapse them into the same three
+// strings GitLab returns so the poller can stay provider-agnostic.
+func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) (string, error) {
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return "", err
+	}
+	var pr struct {
+		State  string `json:"state"`
+		Merged bool   `json:"merged"`
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, mrIID)
+	if err := p.doJSON(ctx, http.MethodGet, path, nil, &pr); err != nil {
+		return "", err
+	}
+	switch {
+	case pr.Merged:
+		return "merged", nil
+	case pr.State == "closed":
+		return "closed", nil
+	default:
+		return "opened", nil
+	}
 }
 
-// ListNotesSince — see GetMRState. Polling not wired for GitHub in v1.
-func (p *Provider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) ([]provider.NotePoll, error) {
-	return nil, fmt.Errorf("github: polling not yet implemented (v1 uses webhooks for GitHub; use GitLab for the polling path)")
+// ListNotesSince fetches new comments on a PR across GitHub's three
+// comment streams and returns them merged + sorted by ID ascending.
+// GitHub IDs are globally monotonic across all resources, so a single
+// int64 watermark suffices even though we're polling three endpoints:
+//
+//   - issue_comment   → /repos/.../issues/{n}/comments    (PR conversation)
+//   - pr_review       → /repos/.../pulls/{n}/reviews      (top-level reviews)
+//   - pr_review_comment → /repos/.../pulls/{n}/comments   (inline line comments)
+//
+// Only inline review comments carry a `node_id` we can hand to
+// ResolveDiscussion; the other two come back with DiscussionID="".
+// Body-less reviews ("approved" with no comment) are filtered out to
+// match NormaliseEvent's webhook semantics — no actionable content for
+// the subagent.
+//
+// Pagination cap: 100 per endpoint per tick. For dogfood / personal
+// use this is fine; if a single 30s window ever sees >100 new comments
+// across all streams we'll need to paginate.
+func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]provider.NotePoll, error) {
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]provider.NotePoll, 0)
+
+	// 1. Issue (PR conversation) comments.
+	var issueComments []struct {
+		ID   int64  `json:"id"`
+		Body string `json:"body"`
+		User ghUser `json:"user"`
+	}
+	if err := p.doJSON(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/issues/%d/comments?per_page=100", owner, repo, mrIID),
+		nil, &issueComments); err != nil {
+		return nil, fmt.Errorf("ListNotesSince: issue comments: %w", err)
+	}
+	for _, c := range issueComments {
+		if c.ID <= sinceNoteID {
+			continue
+		}
+		out = append(out, provider.NotePoll{
+			ID:     c.ID,
+			Body:   c.Body,
+			Author: c.User.toProviderUser(),
+		})
+	}
+
+	// 2. Inline review comments (the ones with a thread node_id).
+	var prReviewComments []struct {
+		ID     int64  `json:"id"`
+		NodeID string `json:"node_id"`
+		Body   string `json:"body"`
+		User   ghUser `json:"user"`
+	}
+	if err := p.doJSON(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/pulls/%d/comments?per_page=100", owner, repo, mrIID),
+		nil, &prReviewComments); err != nil {
+		return nil, fmt.Errorf("ListNotesSince: pr review comments: %w", err)
+	}
+	for _, c := range prReviewComments {
+		if c.ID <= sinceNoteID {
+			continue
+		}
+		out = append(out, provider.NotePoll{
+			ID:           c.ID,
+			Body:         c.Body,
+			DiscussionID: c.NodeID,
+			Author:       c.User.toProviderUser(),
+		})
+	}
+
+	// 3. Top-level reviews (only body-bearing ones, matching the webhook semantics).
+	var reviews []struct {
+		ID    int64  `json:"id"`
+		Body  string `json:"body"`
+		State string `json:"state"`
+		User  ghUser `json:"user"`
+	}
+	if err := p.doJSON(ctx, http.MethodGet,
+		fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews?per_page=100", owner, repo, mrIID),
+		nil, &reviews); err != nil {
+		return nil, fmt.Errorf("ListNotesSince: reviews: %w", err)
+	}
+	for _, r := range reviews {
+		if r.ID <= sinceNoteID {
+			continue
+		}
+		if r.Body == "" && r.State == "APPROVED" {
+			continue
+		}
+		out = append(out, provider.NotePoll{
+			ID:     r.ID,
+			Body:   r.Body,
+			Author: r.User.toProviderUser(),
+		})
+	}
+
+	// Chronological order so the resume() handler processes oldest first.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 // ResolveDiscussion marks a GitHub pull-request review thread as resolved
