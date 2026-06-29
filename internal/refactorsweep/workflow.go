@@ -620,9 +620,28 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		r.Object.LastError = fmt.Sprintf("runner declined unit %q: %s", unitID, resp.Summary)
 		return StatusFailed, nil
 
+	case DecisionNoChange:
+		// The runner evaluated and decided this unit needs no change
+		// (e.g. planner's reasoning was stale, or the prior increment
+		// already covered it). Semantically the same as Done+!dirty:
+		// blacklist with a clear reason, drop the worktree, and let
+		// the planner re-evaluate. If the planner keeps picking the
+		// same shape of "done" unit, the blacklist accumulates and
+		// discoverSpec eventually returns no-more-units → Completed.
+		r.Object.Blacklisted = append(r.Object.Blacklisted, BlacklistedUnit{
+			UnitID: unitID,
+			Reason: fmt.Sprintf("runner returned NoChange: %s", resp.Summary),
+			At:     time.Now(),
+		})
+		updatePlanOutcome(r.Object, unitID, "blacklisted")
+		r.Object.CurrentUnit = ""
+		_ = d.Git.RemoveWorktree(ctx, r.Object.BaseRepo, worktree)
+		return StatusDiscovering, nil
+
 	default:
-		// Continue / Ask / NoChange are unexpected in the work phase — the
-		// runner is supposed to produce a complete change set or give up.
+		// Continue / Ask are unexpected in the work phase — the runner
+		// is supposed to produce a complete change set or give up.
+		// NoChange is handled above.
 		r.Object.LastError = fmt.Sprintf("unexpected decision %q in work phase for unit %q",
 			resp.Decision, unitID)
 		return StatusFailed, nil

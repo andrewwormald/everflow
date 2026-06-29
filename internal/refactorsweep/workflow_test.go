@@ -655,6 +655,46 @@ func TestWork_RunnerDeclines(t *testing.T) {
 	}
 }
 
+// Regression: when the runner returns DecisionNoChange in the work phase,
+// the unit must be blacklisted and the Run must return to Discovering —
+// NOT terminate as StatusFailed. The first cross-MR-chain dogfood spike
+// against github.com/andrewwormald/everflow ended the whole Run when the
+// planner picked a third increment, the runner correctly evaluated it as
+// no-op, and work() routed NoChange through the catch-all "unexpected
+// decision" → StatusFailed branch.
+func TestWork_RunnerNoChange_BlacklistsAndContinues(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionNoChange,
+		Summary:  "Spec already satisfied; nothing to change for increment-3",
+	}})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "increment-3", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: want nil err, got %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("NoChange must route to Discovering (let planner re-evaluate), got %v", next)
+	}
+	if r.Object.CurrentUnit != "" {
+		t.Errorf("CurrentUnit should be cleared after NoChange; got %q", r.Object.CurrentUnit)
+	}
+	if len(r.Object.Blacklisted) != 1 || r.Object.Blacklisted[0].UnitID != "increment-3" {
+		t.Errorf("increment-3 should be blacklisted; got %+v", r.Object.Blacklisted)
+	}
+	if !strings.Contains(r.Object.Blacklisted[0].Reason, "NoChange") {
+		t.Errorf("Blacklist reason should name the decision: %q", r.Object.Blacklisted[0].Reason)
+	}
+	if r.Object.LastError != "" {
+		t.Errorf("NoChange should not set LastError (it's not a failure): %q", r.Object.LastError)
+	}
+}
+
 func TestWork_CreateMRFails(t *testing.T) {
 	fp := &fakeProvider{createMRErr: errors.New("404 not found")}
 	d := newDeps(t, fp)
