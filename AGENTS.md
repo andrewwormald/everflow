@@ -40,6 +40,7 @@ When writing an ADR:
 ### Code rules
 
 - Run `go vet ./...` and `go build ./...` before committing.
+- Before committing, run `go test ./...` and `(cd _v0 && go test ./...)` to verify both modules build cleanly.
 - No `_test.go` for the PoC unless you're adding new behavior worth covering.
 - Don't add dependencies casually. Workflow (durable state) and `k8s.io/utils/clock` (clock injection) are the only required ones today.
 - Keep `main.go` small. Anything reusable goes in a focused file (`runner.go`, `worktree.go`, ...).
