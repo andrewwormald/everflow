@@ -58,6 +58,8 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	b.AddStep(StatusDiscovering, d.discover,
 		StatusWorking,
 		StatusCompleted,
+		StatusPaused, // discoverSpec returns this on DecisionAsk (planner asks the author a clarifying question)
+		StatusFailed, // discoverSpec returns this on planner errors / unexpected decisions
 	)
 
 	b.AddStep(StatusWorking, d.work,
