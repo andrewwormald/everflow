@@ -253,21 +253,9 @@ v1 ships `gitlab.Provider`. v2 adds `github.Provider`. Implementations are ~150 
 
 ## What's not yet built
 
-The v0 code in this repo (`agent.go`, `main.go`, etc.) implements the scheduled-skill loop from [ADR-0010](decisions/0010-scheduled-skill-poc-first.md). It's retained as reference for the workflow primitives but does *not* implement this design.
+Since v1 shipped, ADRs 0031-0034 have landed: polling as the default event source ([ADR-0031](decisions/0031-polling-as-primary.md)), binary-blob filtering in worktree staging ([ADR-0032](decisions/0032-staging-filters-binary-blobs.md)), the `sync.Cond` EventStreamer ([ADR-0033](decisions/0033-replace-memstreamer.md)), and the comment-loop + auto-resolve + `Paused` self-loop ([ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md)). The provider abstraction, daemon HTTP server, sqlite store, refactor-sweep state machine, Starlark filter integration, per-Run filesystem layout, control-command handler, and GitHub provider adapter are all in. Still open:
 
-The v1 implementation needs (in roughly this build order):
-
-1. **Provider abstraction + GitLab adapter** — webhook register/dispatch, MR create/comment, signature verify
-2. **HTTP server in the daemon** — `:port/webhook/{provider}/{runID}` route, HMAC verify, workflow.Callback dispatch
-3. **Sqlite store** — replace memrecordstore/memtimeoutstore so daemon restart preserves Runs
-4. **State machine for the refactor-sweep workflow** — `Discovering → Working → Awaiting-merge → ...`
-5. **Starlark filter integration** — `go.starlark.net` embedded, filter eval per event, phrase file read/append
-6. **Per-Run filesystem layout + skill mirror** — `~/.everflow/runs/<runID>/...`
-7. **Control command handler** — author-only comment commands
-8. **`everflow start` CLI** — flag parsing, validation, trigger; `everflow status`, `everflow phrases promote`
-9. **GitHub provider adapter** — second implementation to validate the Provider interface
-
-Rough sizing: ~2 weeks of focused work to ship the v1 baseline (concurrency = 1, GitLab only).
+- **`everflow start` CLI (partial)** — flag parsing, validation, trigger, and `everflow status` are in; `everflow phrases promote` is still TODO.
 
 ## Open questions
 
@@ -277,7 +265,7 @@ These don't block the architecture, but they shape implementation:
 
 2. **Subagent invocation atomicity** — when processing a unit, does one `claude -p` invocation (a) read the skill, (b) make the change, (c) open the MR, (d) update the skill with learnings, in one call? Or are those separate calls? Per-unit-one-call is cheaper; multi-call is more verifiable. Default to one call for v1; reconsider if quality is poor.
 
-3. **What about questions in reviewer comments?** A reviewer asking "why this approach?" isn't a blocking change request. Does the subagent answer it (post a reply comment) or wait for the human? Leaning *answer* — but this lets the subagent author content, not just code. Worth a small UX experiment.
+3. **What about questions in reviewer comments?** A reviewer asking "why this approach?" isn't a blocking change request. Does the subagent answer it (post a reply comment) or wait for the human? Leaning *answer* — but this lets the subagent author content, not just code. Worth a small UX experiment. *Partially answered by [ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md): a verbal reply with no code change is now supported — the runner posts an info comment and auto-resolves the thread instead of pausing.*
 
 4. **Dependencies between units** — some refactors have ordering constraints (unit B depends on unit A being merged first). Do we model this? v1 says no — the discovery rule is responsible for enumerating units that *can* run in any order. If ordering matters, the author writes a discovery rule that returns the next unit when the prior is shipped, not all units up front.
 
