@@ -253,9 +253,9 @@ v1 ships `gitlab.Provider`. v2 adds `github.Provider`. Implementations are ~150 
 
 ## What's not yet built
 
-Since v1 shipped, ADRs 0031-0034 have landed: polling as the default event source ([ADR-0031](decisions/0031-polling-as-primary.md)), binary-blob filtering in worktree staging ([ADR-0032](decisions/0032-staging-filters-binary-blobs.md)), the `sync.Cond` EventStreamer ([ADR-0033](decisions/0033-eventstreamer-cond-wait.md)), and the comment-loop + auto-resolve + `Paused` self-loop ([ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md)). Items 1-7 and 9 from the original list are built. Still open:
+Since v1 shipped, ADRs 0031-0034 have landed: polling as the default event source ([ADR-0031](decisions/0031-polling-as-primary.md)), binary-blob filtering in worktree staging ([ADR-0032](decisions/0032-staging-filters-binary-blobs.md)), the `sync.Cond` EventStreamer ([ADR-0033](decisions/0033-replace-memstreamer.md)), and the comment-loop + auto-resolve + `Paused` self-loop ([ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md)). The provider abstraction, daemon HTTP server, sqlite store, refactor-sweep state machine, Starlark filter integration, per-Run filesystem layout, control-command handler, and GitHub provider adapter are all in. Still open:
 
-8. **`everflow start` CLI** (partial) — flag parsing, validation, trigger, `everflow status` are in; `everflow phrases promote` is still TODO.
+- **`everflow start` CLI (partial)** — flag parsing, validation, trigger, and `everflow status` are in; `everflow phrases promote` is still TODO.
 
 ## Open questions
 
