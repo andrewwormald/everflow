@@ -1,8 +1,8 @@
 # Everflow — design
 
-**Status**: Active design. The v0 scheduled-skill code in this repo demonstrates the durable-workflow plumbing but does not yet implement the v1 mandate described below. Every load-bearing decision in this doc links to an ADR under [`decisions/`](decisions/).
+**Status**: Active design. The v1 baseline ships under `internal/` (refactor-sweep workflow, sqlite store, GitLab + GitHub providers, poller, webhook server) and ADRs 0031-0034 have landed on top of it. Every load-bearing decision in this doc links to an ADR under [`decisions/`](decisions/).
 
-**Last updated**: 2026-06-16
+**Last updated**: 2026-06-29
 
 ## Mandate
 
@@ -249,7 +249,7 @@ type Provider interface {
 }
 ```
 
-v1 ships `gitlab.Provider`. v2 adds `github.Provider`. Implementations are ~150 LOC each.
+Both `gitlab.Provider` and `github.Provider` are shipped. Implementations are ~150 LOC each.
 
 ## What's not yet built
 
