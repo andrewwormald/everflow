@@ -82,3 +82,4 @@ forces or unlocks.
 | 0032 | Commit stages selectively; binary blobs are filtered out        | Accepted | 2026-06-24 |
 | 0033 | In-process EventStreamer with cond.Wait, not luno/workflow's memstreamer | Accepted | 2026-06-24 |
 | 0034 | Comment-driven loop is the primary interaction; Paused permits self-loop | Accepted | 2026-06-25 |
+| 0035 | Self-comment echo suppression via SHA-256 FIFO on AgentState    | Accepted | 2026-07-01 |

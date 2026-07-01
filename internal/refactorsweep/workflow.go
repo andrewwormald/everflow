@@ -9,6 +9,7 @@ package refactorsweep
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -611,7 +612,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		// 6. Initial status comment so the author can see who's driving.
 		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/everflow status` for progress, or `/everflow skip` to abandon.",
 			shortRunID(r.RunID), unitID)
-		if err := p.PostComment(ctx, r.Object.ProjectID, mr.IID, body); err != nil {
+		if err := postBotComment(ctx, r, p, r.Object.ProjectID, mr.IID, body); err != nil {
 			// Comment failure is non-fatal — the MR exists, the run continues.
 			r.Object.LastError = fmt.Sprintf("post initial comment: %v", err)
 		}
@@ -650,6 +651,52 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	}
 }
 
+// recentOutgoingHashCap bounds AgentState.RecentOutgoingHashes. See the
+// field's doc comment on AgentState for the reasoning.
+const recentOutgoingHashCap = 32
+
+// hashBody returns a SHA-256 hex digest of a comment body. Deterministic
+// and stable — the same body always produces the same hash, so a comment
+// the daemon posts and the poller reads back will collide.
+func hashBody(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// postBotComment posts a comment on the provider AND records its hash on
+// the Run's RecentOutgoingHashes ring so the next poll tick can silently
+// drop the echo. Hash is stored BEFORE the network call so no race can
+// let the poll see the comment before the state update lands.
+//
+// All daemon-originating comments in refactorsweep must go through this
+// helper rather than calling p.PostComment directly, or the self-comment
+// loop reintroduces itself.
+func postBotComment(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, projectID string, mrIID int, body string) error {
+	h := hashBody(body)
+	r.Object.RecentOutgoingHashes = append(r.Object.RecentOutgoingHashes, h)
+	if n := len(r.Object.RecentOutgoingHashes); n > recentOutgoingHashCap {
+		r.Object.RecentOutgoingHashes = r.Object.RecentOutgoingHashes[n-recentOutgoingHashCap:]
+	}
+	return p.PostComment(ctx, projectID, mrIID, body)
+}
+
+// isOwnEcho reports whether an inbound note is one the daemon itself
+// posted recently. Called at the top of resume() to short-circuit the
+// self-comment loop before any filter, control-verb parsing, or runner
+// invocation runs.
+func isOwnEcho(r *workflow.Run[AgentState, AgentStatus], body string) bool {
+	if len(r.Object.RecentOutgoingHashes) == 0 {
+		return false
+	}
+	h := hashBody(body)
+	for _, seen := range r.Object.RecentOutgoingHashes {
+		if seen == h {
+			return true
+		}
+	}
+	return false
+}
+
 // resume handles webhook callbacks. The payload is a JSON-encoded
 // provider.Event marshalled by the daemon's webhook dispatcher.
 //
@@ -674,6 +721,18 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	}
 	r.Object.EventsSeen++
 	ev.IsAuthor = isFromAuthor(ev.Author, r.Object.Author)
+
+	// Self-comment echo suppression. The daemon posts several comments
+	// per Run (initial "🤖 Opened", "✓ Addressed", "📝 Recorded prompt",
+	// info replies) via the user's OAuth identity, which means the
+	// poller can't distinguish those from real user comments by author
+	// alone. Every echoed comment used to trigger another claude -p
+	// call, doubling+ runner spend per Run. We hash outgoing comments
+	// into RecentOutgoingHashes and drop the echo on ingress.
+	if ev.Kind == provider.EventNoteAdded && isOwnEcho(r, ev.Note.Body) {
+		r.Object.EventsSkippedByFilter++
+		return r.Status, nil
+	}
 
 	// Polling watermarks — keep monotonic so the next poll won't re-fire
 	// already-handled events. Safe to update unconditionally; webhook
@@ -842,7 +901,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if ps, ok := d.loadPhrases(r).(*filter.YAMLPhraseSet); ok && ps != nil {
 			if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
 				if ps.OverCap() {
-					_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+					_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 						fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `everflow phrases promote` or trim by hand.", filter.MaxPerRunEntries))
 				}
 			}
@@ -854,7 +913,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		// Pause so the author can investigate; we still have the MR to
 		// recover with.
 		r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
-		_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 			fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/everflow retry` to try again.", phase, runErr))
 		return StatusPaused, nil
 	}
@@ -865,7 +924,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		dirty, gErr := d.Git.HasChanges(ctx, req.Worktree)
 		if gErr != nil {
 			r.Object.PauseReason = fmt.Sprintf("git HasChanges error after %s: %v", phase, gErr)
-			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 				fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/everflow retry`.", phase, gErr))
 			return StatusPaused, nil
 		}
@@ -874,7 +933,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// change anything. Note that on the MR and stay AwaitingMerge —
 			// the reviewer can clarify if needed. Resolve the thread anyway
 			// (the comment was answered, even if not via code).
-			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 				fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
 			if discID := ev.Note.DiscussionID; discID != "" {
 				_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
@@ -892,7 +951,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// Do NOT pause — the runner addressing a comment verbally
 			// (without code change) is normal.
 			if errors.Is(gErr, git.ErrNoChanges) {
-				_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
 				// Best-effort resolve so the thread doesn't sit open.
 				if discID := ev.Note.DiscussionID; discID != "" {
@@ -901,13 +960,13 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				return StatusAwaitingMerge, nil
 			}
 			r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
-			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 				fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
 			return StatusPaused, nil
 		}
 		if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
 			r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
-			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/everflow retry` after fixing.", phase, gErr))
 			return StatusPaused, nil
 		}
@@ -920,12 +979,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
 				// Surface but don't fail — the change is pushed, that's
 				// what matters.
-				_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 					fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
 			}
 		}
 
-		_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 			fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary))
 		return StatusAwaitingMerge, nil
 	case DecisionContinue, DecisionNoChange:
@@ -934,12 +993,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		return StatusAwaitingMerge, nil
 	case DecisionAsk:
 		r.Object.PauseReason = resp.Question
-		_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 			fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/everflow resume` after answering, or `/everflow skip` to abandon.", resp.Question))
 		return StatusPaused, nil
 	case DecisionFail:
 		r.Object.PauseReason = resp.Summary
-		_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/everflow retry`, `/everflow skip`, or push a fix yourself.", phase, resp.Summary))
 		return StatusPaused, nil
 	}
@@ -986,7 +1045,7 @@ func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentSta
 func (d *Deps) dropAbandonConfirm(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) AgentStatus {
 	r.Object.AbandonRequestedAt = time.Time{}
 	if p, ok := d.Providers[r.Object.ProviderName]; ok {
-		_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 			"ℹ️ Activity detected during the abandon confirmation window — abandon cancelled; watching for events again.")
 	}
 	return StatusAwaitingMerge
@@ -1000,7 +1059,7 @@ func (d *Deps) onAbandonConfirmTimeout(ctx context.Context, r *workflow.Run[Agen
 	r.Object.AbandonRequestedAt = time.Time{}
 	if p, ok := d.Providers[r.Object.ProviderName]; ok {
 		for _, mr := range r.Object.InFlight {
-			_ = p.PostComment(ctx, mr.ProjectID, mr.IID,
+			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
 				"⏰ Abandon confirmation window (12h) expired — staying with the Run.")
 			break
 		}

@@ -92,7 +92,7 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 		if args != "" {
 			body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 		}
-		_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, body)
+		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, body)
 		for unitID, mr := range r.Object.InFlight {
 			_ = p.CloseMR(ctx, mr.ProjectID, mr.IID)
 			d.cleanupWorktree(ctx, r, unitID)
@@ -108,7 +108,7 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 	}
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, body)
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, body)
 	return StatusAwaitingAbandonConfirm, nil
 }
 
@@ -121,7 +121,7 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 		reason = fmt.Sprintf("%s: %s", reason, args)
 	}
 	r.Object.PauseReason = reason
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 		fmt.Sprintf("🛑 Paused per @%s. Reply `/everflow resume` to continue.", ev.Author.Handle))
 	return StatusPaused, nil
 }
@@ -131,7 +131,7 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 func (d *Deps) cmdResume(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 		fmt.Sprintf("▶️ Resumed per @%s. Watching for events.", ev.Author.Handle))
 	return StatusAwaitingMerge, nil
 }
@@ -142,7 +142,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	p := d.Providers[r.Object.ProviderName]
 	unitID := unitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
-		_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 			"`/everflow skip`: this MR isn't tracked by any active everflow Run.")
 		return r.Status, nil
 	}
@@ -154,7 +154,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 
 	_ = p.CloseMR(ctx, ev.MR.ProjectID, ev.MR.IID)
 	next := d.markUnitBlacklisted(ctx, r, unitID, ev.MR, reason)
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 		fmt.Sprintf("⏭️ Skipped `%s` per @%s. MR closed; picking the next unit.", unitID, ev.Author.Handle))
 	return next, nil
 }
@@ -166,7 +166,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 		fmt.Sprintf("🔄 Cleared pause per @%s. Re-comment your last review feedback or wait for CI to rerun to retry the underlying operation.", ev.Author.Handle))
 	return StatusAwaitingMerge, nil
 }
@@ -177,12 +177,12 @@ func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 func (d *Deps) cmdPrompt(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	if args == "" {
-		_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 			"`/everflow prompt` needs text. Example:\n```\n/everflow prompt focus on the auth module first\n```")
 		return r.Status, nil
 	}
 	r.Object.PromptInjection = args
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 		fmt.Sprintf("📝 Recorded prompt from @%s. Will inject into the next subagent call:\n```\n%s\n```", ev.Author.Handle, args))
 	return r.Status, nil
 }
@@ -190,7 +190,7 @@ func (d *Deps) cmdPrompt(ctx context.Context, r *workflow.Run[AgentState, AgentS
 // cmdStatus posts a one-comment summary of where the Run is.
 func (d *Deps) cmdStatus(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, buildStatusComment(r))
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, buildStatusComment(r))
 	return r.Status, nil
 }
 
@@ -226,7 +226,7 @@ func (d *Deps) cmdStop(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 	}
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, body)
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, body)
 
 	for unitID, mr := range r.Object.InFlight {
 		_ = p.CloseMR(ctx, mr.ProjectID, mr.IID)
@@ -241,7 +241,7 @@ func (d *Deps) cmdStop(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 // current status — no transition.
 func (d *Deps) cmdHelp(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID, helpMessage)
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, helpMessage)
 	return r.Status, nil
 }
 
@@ -258,7 +258,7 @@ const helpMessage = "**everflow control verbs** (author only)\n\n" +
 // cmdUnknown handles unrecognised verbs with a polite error pointing at help.
 func (d *Deps) cmdUnknown(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, verb string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	_ = p.PostComment(ctx, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
 		fmt.Sprintf("Unknown command `/everflow %s`. Reply `/everflow` for the verb list.", verb))
 	return r.Status, nil
 }

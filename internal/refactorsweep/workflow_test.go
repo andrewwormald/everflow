@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -1192,6 +1193,127 @@ func TestResume_PausedRun_DropsNonControlEvents(t *testing.T) {
 	}
 	if r.Object.SubagentInvocations != 0 {
 		t.Errorf("no subagent should fire while paused; got %d", r.Object.SubagentInvocations)
+	}
+}
+
+// --- Self-comment echo suppression (RecentOutgoingHashes FIFO) ---
+
+// TestPostBotComment_StoresHashOnState asserts the helper records a
+// SHA-256 hash of the body on AgentState.RecentOutgoingHashes before
+// invoking the provider. The write-before-network ordering is what
+// prevents a race where the poller sees the comment before the state
+// knows about it.
+func TestPostBotComment_StoresHashOnState(t *testing.T) {
+	fp := &fakeProvider{}
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	if err := postBotComment(t.Context(), r, fp, mr.ProjectID, mr.IID, "hello world"); err != nil {
+		t.Fatalf("postBotComment: %v", err)
+	}
+	if got := len(r.Object.RecentOutgoingHashes); got != 1 {
+		t.Fatalf("want 1 hash on state, got %d", got)
+	}
+	if r.Object.RecentOutgoingHashes[0] != hashBody("hello world") {
+		t.Errorf("recorded hash doesn't match body hash")
+	}
+	if len(fp.comments) != 1 || fp.comments[0].Body != "hello world" {
+		t.Errorf("provider should have received the raw body; got %+v", fp.comments)
+	}
+}
+
+// TestPostBotComment_CapFIFO exercises the ring-buffer trim: N > cap
+// posts and only the last `cap` hashes should survive, in FIFO order.
+func TestPostBotComment_CapFIFO(t *testing.T) {
+	fp := &fakeProvider{}
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	for i := 0; i < recentOutgoingHashCap+5; i++ {
+		_ = postBotComment(t.Context(), r, fp, mr.ProjectID, mr.IID, fmt.Sprintf("msg-%d", i))
+	}
+	if got := len(r.Object.RecentOutgoingHashes); got != recentOutgoingHashCap {
+		t.Errorf("want len==cap after overflow, got %d", got)
+	}
+	// The last cap messages should be msg-5 through msg-36 (drop msg-0..4).
+	oldestKept := hashBody("msg-5")
+	if r.Object.RecentOutgoingHashes[0] != oldestKept {
+		t.Errorf("FIFO order broken: want first entry = hash(msg-5), got hash of a different body")
+	}
+	newestKept := hashBody(fmt.Sprintf("msg-%d", recentOutgoingHashCap+4))
+	if r.Object.RecentOutgoingHashes[len(r.Object.RecentOutgoingHashes)-1] != newestKept {
+		t.Errorf("FIFO order broken: last entry should be the newest post")
+	}
+}
+
+// TestResume_SkipsOwnEchoedComment is the headline regression guard for
+// the self-comment loop. A note whose body matches a recent outgoing
+// hash must be silently dropped by resume() without running the filter,
+// without invoking the runner, and without any state change beyond
+// EventsSkippedByFilter++.
+func TestResume_SkipsOwnEchoedComment(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	// Simulate the daemon having posted this exact body earlier in the Run.
+	_ = postBotComment(t.Context(), r, fp, mr.ProjectID, mr.IID,
+		"ℹ️ address_comment: No code changes were needed.")
+	beforeSkipped := r.Object.EventsSkippedByFilter
+
+	// Now the poller "sees" that same body coming back as a new note.
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "andrewwormald"},
+		Note:   provider.Note{ID: 200, Body: "ℹ️ address_comment: No code changes were needed."},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != r.Status {
+		t.Errorf("echo skip must not change status; got %v", next)
+	}
+	if r.Object.EventsSkippedByFilter != beforeSkipped+1 {
+		t.Errorf("EventsSkippedByFilter should have incremented; got %d (was %d)",
+			r.Object.EventsSkippedByFilter, beforeSkipped)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner must not fire on an echo; got %d calls", len(fr.calls))
+	}
+}
+
+// TestResume_DoesNotSkipUnrelatedComment guards against a false positive:
+// a note whose body has never been posted by the daemon must fall through
+// to normal handling.
+func TestResume_DoesNotSkipUnrelatedComment(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "done"}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(false)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	// Seed a completely unrelated hash on state.
+	_ = postBotComment(t.Context(), r, fp, mr.ProjectID, mr.IID,
+		"ℹ️ status: 0 completed, 1 in flight.")
+	fp.comments = nil // ignore the seeding comment in subsequent assertions
+
+	// User sends a genuine comment.
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	// The runner should have fired for this genuine comment.
+	if next != StatusAwaitingMerge {
+		t.Errorf("real user comment should route through resume normally, want AwaitingMerge, got %v", next)
 	}
 }
 

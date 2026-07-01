@@ -92,6 +92,21 @@ type AgentState struct {
 	// MR states transition.
 	LastSeenNoteIDs map[int]int64  `json:"last_seen_note_ids,omitempty"`
 	LastMRStates    map[int]string `json:"last_mr_states,omitempty"`
+
+	// RecentOutgoingHashes is a bounded FIFO of SHA-256 hex hashes of the
+	// most recent comment bodies the daemon has posted on behalf of this
+	// Run. resume() consults it on every inbound note_added event and
+	// silently drops any note whose body matches — the self-comment loop
+	// prevention. Without this, every daemon-posted comment (initial
+	// "🤖 Opened", "✓ Addressed", etc.) fires a redundant claude -p on
+	// the next poll tick because the poll can't distinguish the daemon
+	// from the author (they share the same OAuth identity).
+	//
+	// Cap: 32 (see recentOutgoingHashCap in workflow.go). Poll cadence
+	// is 30s; a realistic burst of daemon comments in that window is
+	// well under 20. Extra headroom is cheap — 32 × 64 hex chars ≈ 2KB
+	// per Run of durable state.
+	RecentOutgoingHashes []string `json:"recent_outgoing_hashes,omitempty"`
 }
 
 // EventSource values for AgentState.EventSource.
