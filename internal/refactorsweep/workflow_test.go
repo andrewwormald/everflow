@@ -1317,6 +1317,125 @@ func TestResume_DoesNotSkipUnrelatedComment(t *testing.T) {
 	}
 }
 
+// TestSelfCommentLoop_EndToEnd is the strong regression guard for ADR-0035.
+// It runs the real work() code path — no direct call to postBotComment —
+// captures the exact comment body work() posted via its provider, then
+// feeds a synthesised note_added event containing that same body through
+// resume(). The runner must NOT fire a second time.
+//
+// This test would fail if:
+//   - work() bypassed postBotComment for any call site (regression to
+//     direct p.PostComment)
+//   - The hash write happened after the network call (race window)
+//   - resume()'s isOwnEcho check moved to after the filter or after
+//     invokeForEvent (would need a runner invocation to skip)
+//
+// The prior tests (TestResume_SkipsOwnEchoedComment etc.) prove the
+// mechanism in isolation; this one proves the actual daemon loop is
+// closed.
+func TestSelfCommentLoop_EndToEnd(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "did the thing",
+		Tokens:   100,
+	}})
+	fp.createMRResult = provider.MR{
+		ProjectID: "acme/example", IID: 42,
+		URL: "https://x/42", Branch: "everflow/deadbeef/svc-a",
+	}
+
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Migrate something",
+		CurrentUnit:  "svc-a",
+		BaseBranch:   "main",
+		Author:       provider.User{Handle: "andrewwormald"},
+		InFlight:     map[string]provider.MR{},
+	})
+
+	// --- Stage 1: real work() runs; posts the "🤖 Opened" comment.
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Fatalf("work should land in AwaitingMerge, got %v", next)
+	}
+	if len(fp.comments) != 1 {
+		t.Fatalf("work should have posted exactly 1 initial status comment; got %d", len(fp.comments))
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("work should have invoked the runner exactly once; got %d", len(fr.calls))
+	}
+	// The exact body work() decided to post — we take it back from what
+	// the provider actually received, so this test is decoupled from the
+	// specific "🤖 Opened by ..." string.
+	echoedBody := fp.comments[0].Body
+
+	// Sanity: the fix must have recorded a hash on state before returning.
+	if len(r.Object.RecentOutgoingHashes) == 0 {
+		t.Fatal("work() posted a comment without recording its hash on RecentOutgoingHashes — postBotComment was bypassed")
+	}
+	if r.Object.RecentOutgoingHashes[len(r.Object.RecentOutgoingHashes)-1] != hashBody(echoedBody) {
+		t.Fatal("the most-recent recorded hash does not match the body work() actually posted — hash write is misordered")
+	}
+
+	// --- Stage 2: simulate the poller picking that same body back up 30s
+	//     later as a "new" note_added event. Author is us (gh OAuth == the
+	//     Run author), which is exactly the case that trips the bug.
+	echo := provider.Event{
+		Kind:      provider.EventNoteAdded,
+		ProjectID: "acme/example",
+		MR:        r.Object.InFlight["svc-a"],
+		Author:    provider.User{Handle: "andrewwormald"},
+		Note: provider.Note{
+			ID:   9999, // any ID > previously-seen; poller believes it's new
+			Body: echoedBody,
+		},
+	}
+	skippedBefore := r.Object.EventsSkippedByFilter
+
+	nextAfterEcho, err := d.resume(t.Context(), r, payloadOf(t, echo))
+	if err != nil {
+		t.Fatalf("resume on echoed comment: %v", err)
+	}
+
+	// --- Stage 3: assert the loop is closed.
+
+	// The runner must not have been invoked a second time.
+	if len(fr.calls) != 1 {
+		t.Errorf(
+			"self-comment loop NOT closed: runner was invoked %d times after echo (want 1 from work() only). "+
+				"An echo of the daemon's own comment triggered another claude -p call — the very bug ADR-0035 fixes.",
+			len(fr.calls),
+		)
+	}
+
+	// The provider must not have received a second comment from this echo path.
+	if len(fp.comments) != 1 {
+		t.Errorf("echo path should not post additional comments; provider received %d total (want 1)", len(fp.comments))
+	}
+
+	// Status must be unchanged (still AwaitingMerge).
+	if nextAfterEcho != r.Status {
+		t.Errorf("echo should not transition status; got %v (was %v)", nextAfterEcho, r.Status)
+	}
+
+	// Counter increments to prove the skip was taken (rather than the note
+	// being ignored for some unrelated reason).
+	if r.Object.EventsSkippedByFilter != skippedBefore+1 {
+		t.Errorf(
+			"EventsSkippedByFilter must increment on the skip; got %d (was %d). "+
+				"If this doesn't increment, the note was dropped somewhere else (e.g. unknown-MR filter) rather than by echo suppression, and the test doesn't actually prove the fix.",
+			r.Object.EventsSkippedByFilter, skippedBefore,
+		)
+	}
+}
+
 func TestResume_UnknownMR_Dropped(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	d.withRunner(t, &fakeRunner{})
