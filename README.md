@@ -78,7 +78,7 @@ Full architecture: [`DESIGN.md`](DESIGN.md). Every meaningful design choice has 
 
 ## Quick start
 
-You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and either `glab auth login` done (GitLab) or a `GITHUB_TOKEN` env var.
+You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
 
 ```bash
 # Write a spec.
