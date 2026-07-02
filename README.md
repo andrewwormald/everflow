@@ -132,6 +132,15 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 | [`internal/webhook/`](internal/webhook/) | HTTP webhook ingress (opt-in) |
 | [`_v0/`](_v0/) | Archived scheduled-skill PoC, separate module |
 
+## Known limitations and troubleshooting
+
+- **Concurrency = 1.** Parallel MRs (concurrency > 1) are on the roadmap but not yet shipped; each Run opens one MR at a time.
+- **Provider auth expiry.** If the OAuth token or PAT expires mid-Run, the daemon pauses the Run with a `provider-auth:` reason and backs off polling. Refresh credentials and restart the daemon to resume automatically.
+- **`claude` must be on `$PATH`.** There is no fallback runner; if `claude` exits non-zero, the Run parks at Paused so you can retry.
+- **Webhook mode requires a stable public URL.** Poll mode (the default) works anywhere; webhook mode needs `--public-base-url`.
+
+See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for diagnosis steps and recovery procedures for every known failure mode.
+
 ## License
 
 MIT

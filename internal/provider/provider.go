@@ -99,6 +99,17 @@ const (
 	EventMRMerged          EventKind = "mr_merged"
 	EventMRClosed          EventKind = "mr_closed"
 	EventMRUpdated         EventKind = "mr_updated"
+
+	// EventProviderAuthFailure is a synthetic event the poller emits when
+	// it receives a 401/403 from the provider. It is never received from a
+	// webhook — it signals the state machine that the token has expired so
+	// it can park the Run and post a comment. See ADR-0038.
+	EventProviderAuthFailure EventKind = "provider_auth_failure"
+
+	// EventProviderAuthRestored is a synthetic event emitted by the poller
+	// on the first successful API call after a prior auth failure. It clears
+	// the auth-pause state and returns the Run to normal watching.
+	EventProviderAuthRestored EventKind = "provider_auth_restored"
 )
 
 // User is the normalised shape of a platform user. Author classification

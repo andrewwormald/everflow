@@ -4,15 +4,17 @@
 //
 // The adapter is dumb: it composes a prompt from the runner.Request
 // fields (Goal, Worktree, UnitID, CommentBody, CIFailure), appends a
-// decision-marker instruction, runs `claude -p`, and parses the marker
-// out of the response. It does not interpret SkillCommand — the step
-// body is responsible for setting Goal to a fully-formed task; this
+// decision-marker instruction, runs `claude -p --output-format json`,
+// and parses the JSON envelope for token counts and the decision marker
+// embedded in the result text. It does not interpret SkillCommand — the
+// step body is responsible for setting Goal to a fully-formed task; this
 // adapter just adds the protocol envelope claude needs to signal back.
 package claude
 
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +25,53 @@ import (
 
 	"github.com/andrewwormald/everflow/internal/runner"
 )
+
+// claudeJSONResult is the envelope `claude -p --output-format json` writes to
+// stdout. Only the fields everflow needs are unmarshalled; unknown fields are
+// silently ignored.
+type claudeJSONResult struct {
+	Type    string `json:"type"`
+	IsError bool   `json:"is_error"`
+	// Result is the full text the model produced, including the
+	// <everflow-decision> marker that ParseDecision reads.
+	Result string `json:"result"`
+	// Usage is populated by claude ≥ 1.x; older builds omit it.
+	Usage *claudeUsage `json:"usage,omitempty"`
+}
+
+// claudeUsage mirrors the Anthropic API usage block embedded in the JSON
+// output. Input + output token counts are the primary interest; cache
+// tokens are included so the sum represents total tokens billed.
+type claudeUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+}
+
+// totalTokens returns the sum of all token fields.
+func (u *claudeUsage) totalTokens() int {
+	if u == nil {
+		return 0
+	}
+	return u.InputTokens + u.CacheCreationInputTokens + u.CacheReadInputTokens + u.OutputTokens
+}
+
+// parseJSONOutput tries to decode rawOut as a claudeJSONResult. On success it
+// returns (resultText, tokens, true). On any parse failure it returns
+// ("", 0, false) so the caller can fall back to treating rawOut as plain text.
+func parseJSONOutput(rawOut string) (result string, tokens int, ok bool) {
+	var parsed claudeJSONResult
+	if err := json.Unmarshal([]byte(strings.TrimSpace(rawOut)), &parsed); err != nil {
+		return "", 0, false
+	}
+	// Guard against an unrecognised envelope (e.g. a plain-JSON error message
+	// from a wrapper script). We require type=="result" AND a non-empty Result.
+	if parsed.Type != "result" || parsed.Result == "" {
+		return "", 0, false
+	}
+	return parsed.Result, parsed.Usage.totalTokens(), true
+}
 
 // Runner is the claude.Runner. The zero value is usable (uses `claude`
 // from $PATH with no extra args). NewRunner is the canonical constructor.
@@ -66,7 +115,8 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 	args := append([]string{}, c.ExtraArgs...)
 	args = append(args,
 		"-p", prompt,
-		"--dangerously-skip-permissions", // ADR-0006 — yolo inside the worktree
+		"--output-format", "json",          // machine-readable output + token counts
+		"--dangerously-skip-permissions",    // ADR-0006 — yolo inside the worktree
 	)
 
 	cmd := exec.CommandContext(ctx, c.Binary, args...)
@@ -86,15 +136,26 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 	end := time.Now()
 	rawOut := stdout.String()
 
+	// Attempt JSON envelope parse to extract token counts and clean result
+	// text. If parsing fails (older CLI version, wrapper script, error page),
+	// fall back to treating rawOut as plain text — that preserves backward
+	// compatibility and degrades gracefully to Tokens=0.
+	resultText, tokens, jsonOK := parseJSONOutput(rawOut)
+	if !jsonOK {
+		fmt.Fprintf(os.Stderr, "claude: warning: could not parse --output-format json envelope; falling back to plain text (tokens will be 0)\n")
+		resultText = rawOut
+	}
+
 	if runErr != nil {
 		// Even on non-zero exit we try to parse a decision — the model
 		// might have flagged failure via the marker before exiting. Fall
 		// back to wrapping the OS error.
-		decision, summary, question, parseErr := ParseDecision(rawOut)
+		decision, summary, question, parseErr := ParseDecision(resultText)
 		if parseErr != nil {
 			return runner.Response{
 				Decision:  runner.DecisionFail,
 				Summary:   strings.TrimSpace(stderr.String()),
+				Tokens:    tokens,
 				StartedAt: start, EndedAt: end,
 			}, fmt.Errorf("claude exec: %w (stderr: %s)", runErr,
 				strings.TrimSpace(stderr.String()))
@@ -103,22 +164,22 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 			Decision:  decision,
 			Summary:   summary,
 			Question:  question,
+			Tokens:    tokens,
 			StartedAt: start, EndedAt: end,
 		}, fmt.Errorf("claude exec: %w (parsed decision: %s)", runErr, decision)
 	}
 
-	decision, summary, question, err := ParseDecision(rawOut)
+	decision, summary, question, err := ParseDecision(resultText)
 	if err != nil {
-		return runner.Response{StartedAt: start, EndedAt: end},
+		return runner.Response{Tokens: tokens, StartedAt: start, EndedAt: end},
 			fmt.Errorf("parse claude output: %w; raw output:\n%s", err, rawOut)
 	}
 	return runner.Response{
 		Decision:  decision,
 		Summary:   summary,
 		Question:  question,
+		Tokens:    tokens,
 		StartedAt: start, EndedAt: end,
-		// Tokens stays 0 — we don't yet parse claude's JSON output mode
-		// to extract token counts. Future ADR.
 	}, nil
 }
 

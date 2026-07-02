@@ -243,6 +243,10 @@ func (g *fakeGit) RemoveWorktree(_ context.Context, _, dir string) error {
 	return nil
 }
 
+func (g *fakeGit) DiffShortstat(_ context.Context, _, _ string) (string, error) {
+	return "1 file changed, 5 insertions(+)", nil
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 // --- Helpers ---
@@ -1471,6 +1475,121 @@ func TestResume_UnknownMR_Dropped(t *testing.T) {
 	}
 	if r.Object.SubagentInvocations != 0 {
 		t.Errorf("no subagent for unknown MR")
+	}
+}
+
+// --- Provider auth event handling (ADR-0038) ---
+
+func TestResume_AuthFailure_ParksRunWithProviderAuthPrefix(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{Kind: provider.EventProviderAuthFailure}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("auth failure should park Run as Paused, got %v", next)
+	}
+	if !strings.HasPrefix(r.Object.PauseReason, providerAuthPausePrefix) {
+		t.Errorf("PauseReason should start with provider-auth prefix, got %q", r.Object.PauseReason)
+	}
+	// A comment should be posted on the in-flight MR.
+	if len(fp.comments) != 1 {
+		t.Errorf("expected one comment on auth failure; got %d", len(fp.comments))
+	}
+	if !strings.Contains(fp.comments[0].Body, "401") {
+		t.Errorf("comment should mention 401, got: %q", fp.comments[0].Body)
+	}
+}
+
+func TestResume_AuthFailure_IdempotentWhenAlreadyAuthPaused(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = providerAuthPausePrefix + "already set"
+
+	ev := provider.Event{Kind: provider.EventProviderAuthFailure}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("second auth failure on already-paused Run should stay Paused, got %v", next)
+	}
+	// No duplicate comment.
+	if len(fp.comments) != 0 {
+		t.Errorf("should not post duplicate comment when already auth-paused; got %d", len(fp.comments))
+	}
+}
+
+func TestResume_AuthRestored_ClearsAuthPauseAndResumesWatching(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = providerAuthPausePrefix + "token expired"
+
+	ev := provider.Event{Kind: provider.EventProviderAuthRestored}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("auth restored on auth-paused Run should go to AwaitingMerge, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("PauseReason should be cleared after auth restored, got %q", r.Object.PauseReason)
+	}
+}
+
+func TestResume_AuthRestored_NoopOnNonAuthPause(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusPaused
+	r.Object.PauseReason = "paused by /everflow pause from @andreww"
+
+	ev := provider.Event{Kind: provider.EventProviderAuthRestored}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusPaused {
+		t.Errorf("auth restored on non-auth-pause should stay Paused, got %v", next)
+	}
+	if r.Object.PauseReason == "" {
+		t.Error("human-set PauseReason should not be cleared by auth restored event")
+	}
+}
+
+// --- Diff shortstat in MR comments (item 4 hallucination guard, Approach A) ---
+
+func TestResume_NoteAdded_DecisionDone_CommentContainsDiffShortstat(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Fixed it"}})
+	// fakeGit.DiffShortstat returns "1 file changed, 5 insertions(+)" by default.
+
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please address this"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fp.comments) != 1 {
+		t.Fatalf("expected one comment; got %d", len(fp.comments))
+	}
+	if !strings.Contains(fp.comments[0].Body, "Diff:") {
+		t.Errorf("addressed comment should contain diff shortstat; got: %q", fp.comments[0].Body)
+	}
+	if !strings.Contains(fp.comments[0].Body, "file changed") {
+		t.Errorf("diff shortstat should mention file changes; got: %q", fp.comments[0].Body)
 	}
 }
 
