@@ -722,21 +722,15 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	r.Object.EventsSeen++
 	ev.IsAuthor = isFromAuthor(ev.Author, r.Object.Author)
 
-	// Self-comment echo suppression. The daemon posts several comments
-	// per Run (initial "🤖 Opened", "✓ Addressed", "📝 Recorded prompt",
-	// info replies) via the user's OAuth identity, which means the
-	// poller can't distinguish those from real user comments by author
-	// alone. Every echoed comment used to trigger another claude -p
-	// call, doubling+ runner spend per Run. We hash outgoing comments
-	// into RecentOutgoingHashes and drop the echo on ingress.
-	if ev.Kind == provider.EventNoteAdded && isOwnEcho(r, ev.Note.Body) {
-		r.Object.EventsSkippedByFilter++
-		return r.Status, nil
-	}
-
 	// Polling watermarks — keep monotonic so the next poll won't re-fire
 	// already-handled events. Safe to update unconditionally; webhook
 	// events use the same fields with the same semantics.
+	//
+	// This runs BEFORE the echo-skip below so an echoed note still
+	// advances LastSeenNoteIDs — otherwise the poller would re-fetch
+	// and re-dispatch the same note every 30s (skipped correctly each
+	// time, but inflating events_seen and generating log noise). This
+	// was ADR-0035's tail bug caught by the b21a0cc6 dogfood Run.
 	switch ev.Kind {
 	case provider.EventNoteAdded:
 		if r.Object.LastSeenNoteIDs == nil {
@@ -755,6 +749,18 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 			r.Object.LastMRStates = map[int]string{}
 		}
 		r.Object.LastMRStates[ev.MR.IID] = "closed"
+	}
+
+	// Self-comment echo suppression. The daemon posts several comments
+	// per Run (initial "🤖 Opened", "✓ Addressed", "📝 Recorded prompt",
+	// info replies) via the user's OAuth identity, which means the
+	// poller can't distinguish those from real user comments by author
+	// alone. Every echoed comment used to trigger another claude -p
+	// call, doubling+ runner spend per Run. We hash outgoing comments
+	// into RecentOutgoingHashes and drop the echo on ingress.
+	if ev.Kind == provider.EventNoteAdded && isOwnEcho(r, ev.Note.Body) {
+		r.Object.EventsSkippedByFilter++
+		return r.Status, nil
 	}
 
 	// AwaitingAbandonConfirm has the most restrictive semantics: only a

@@ -1434,6 +1434,20 @@ func TestSelfCommentLoop_EndToEnd(t *testing.T) {
 			r.Object.EventsSkippedByFilter, skippedBefore,
 		)
 	}
+
+	// LastSeenNoteIDs must advance PAST the echoed note — otherwise the
+	// poller would re-fetch and re-dispatch it on every 30s tick. This
+	// caught a real bug in ADR-0035's original implementation where the
+	// watermark update was placed AFTER the echo-skip return, so echoes
+	// looped forever (correctly skipped each time, but inflating
+	// events_seen and generating log noise).
+	if got := r.Object.LastSeenNoteIDs[echo.MR.IID]; got < echo.Note.ID {
+		t.Errorf(
+			"LastSeenNoteIDs[%d] must advance to %d after processing (including on the echo-skip path); got %d. "+
+				"If the watermark doesn't advance for skipped echoes, the poller re-dispatches them forever.",
+			echo.MR.IID, echo.Note.ID, got,
+		)
+	}
 }
 
 func TestResume_UnknownMR_Dropped(t *testing.T) {
