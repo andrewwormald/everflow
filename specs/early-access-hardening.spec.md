@@ -1,5 +1,5 @@
 ---
-goal: "Early-access hardening: CI + build/test gate + CodeRabbit; runner token accounting and Budget enforcement; `everflow status` + `everflow abandon` + `everflow resume` CLIs; cheap hallucination guard on runner Done; poll backoff on auth failure; troubleshooting guide"
+goal: "Early-access hardening: runner token accounting and Budget enforcement; `everflow status` + `everflow abandon` + `everflow resume` CLIs; cheap hallucination guard on runner Done; poll backoff on auth failure; troubleshooting guide"
 provider: github
 project: andrewwormald/everflow
 runner: claude
@@ -12,11 +12,13 @@ status: ready
 
 # Early-access readiness pass
 
-The three dogfood spikes shipped so far ([ADR-0032](decisions/0032-staging-filters-binary-blobs.md), [ADR-0033](decisions/0033-replace-memstreamer.md), [ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md), [ADR-0035](decisions/0035-self-comment-echo-suppression.md)) proved the core loop works. This pass closes the gaps that block inviting a small circle of trusted external users. The scope is deliberately conservative — six items, each individually shippable, each producing one or two small MRs.
+The three dogfood spikes shipped so far ([ADR-0032](decisions/0032-staging-filters-binary-blobs.md), [ADR-0033](decisions/0033-replace-memstreamer.md), [ADR-0034](decisions/0034-comment-loop-and-paused-self-loop.md), [ADR-0035](decisions/0035-self-comment-echo-suppression.md)) proved the core loop works. This pass closes the gaps that block inviting a small circle of trusted external users. The scope is deliberately conservative — five items, each individually shippable, each producing one or two small MRs.
+
+**Note:** an earlier revision of this spec included a sixth item (CI + CodeRabbit). That item was landed manually before triggering this Run, because a runner-driven MR touching `.github/workflows/*` requires the GitHub OAuth token to carry the `workflow` scope — which the daemon's `gh auth token` fallback does not have by default. CI is therefore already in place on `main` as of the trigger of this Run.
 
 ## Cross-cutting constraints (all MRs)
 
-- **One concern per MR.** Each of the six items below expects 1-3 MRs. Do NOT bundle unrelated changes.
+- **One concern per MR.** Each of the five items below expects 1-3 MRs. Do NOT bundle unrelated changes.
 - **British English** in prose.
 - **No customer-repo names in code or docs.** Use generic placeholders (`acme/example`).
 - **Every MR must include tests** proportional to the change. Docs-only MRs excepted.
@@ -27,13 +29,12 @@ The three dogfood spikes shipped so far ([ADR-0032](decisions/0032-staging-filte
 
 The items can be tackled independently, but this order gates each on the infrastructure it depends on:
 
-1. **CI + CodeRabbit** (item 6 below) — first. Every subsequent MR gets auto-validated.
-2. **Runner token accounting** (item 1) — foundational: budget enforcement, status CLI, and hallucination guard all benefit from real token numbers.
-3. **`everflow status` CLI** (item 2) — reads existing state; no protocol changes; safe.
-4. **`everflow abandon` + `everflow resume` CLIs** (item 3) — mutates state; touches the state machine.
-5. **Hallucination guard on runner Done** (item 4) — needs token accounting so its own cost is visible; belongs with runner-adapter work.
-6. **Poller auth-expiry backoff** (item 5) — the trickiest design; benefits from having status CLI to observe backoff behaviour.
-7. **Troubleshooting guide** (item 7) — pure docs; last so it can reference all the new CLIs and behaviours.
+1. **Runner token accounting** (item 1) — foundational: budget enforcement, status CLI, and hallucination guard all benefit from real token numbers.
+2. **`everflow status` CLI** (item 2) — reads existing state; no protocol changes; safe.
+3. **`everflow abandon` + `everflow resume` CLIs** (item 3) — mutates state; touches the state machine.
+4. **Hallucination guard on runner Done** (item 4) — needs token accounting so its own cost is visible; belongs with runner-adapter work.
+5. **Poller auth-expiry backoff** (item 5) — the trickiest design; benefits from having status CLI to observe backoff behaviour.
+6. **Troubleshooting guide** (item 7) — pure docs; last so it can reference all the new CLIs and behaviours.
 
 The planner may reorder if it identifies a better dependency graph.
 
@@ -265,43 +266,6 @@ If the workflow-library timeout API (`b.AddTimeout(...)`) is the natural fit for
 
 ---
 
-## Item 6 — CI + CodeRabbit
-
-### What
-
-A minimal GitHub Actions workflow that gates every PR with build + test + vet, and integration with CodeRabbit's free tier for AI code review comments on PRs.
-
-### Why
-
-Zero automated quality signal on this repo today. Every PR merges on human review alone. For early access, we want automated gates so contributors (or the daemon itself, dogfooding) can't accidentally merge broken code.
-
-### Scope
-
-- `.github/workflows/ci.yml` — Actions workflow triggered on `push` to `main` and on every `pull_request`. Steps:
-  - Checkout
-  - `actions/setup-go@v5` with go 1.26+
-  - `go build ./...`
-  - `go test ./... -race`
-  - `go vet ./...`
-  - `(cd _v0 && go build ./... && go test ./...)` for the archived module
-  - Use the built-in GitHub-hosted `ubuntu-latest` runner (free for public repos)
-- `.coderabbit.yml` at the repo root — enables CodeRabbit's free per-PR AI review. Use their [documented config schema](https://docs.coderabbit.ai) to select sensible defaults (path filters to skip `_v0/`, `logo/`, `decisions/` if they're noisy; verbose review level for now — we can tighten later).
-- Optional: a CI-status badge in README.
-
-### Constraints
-
-- **Only free-tier tooling.** GitHub Actions on public repos is free. CodeRabbit's free tier is one review per PR — that's fine.
-- **Fast CI.** Total wall-clock < 3 min on `ubuntu-latest`. Don't add coverage upload, don't add integration test suites that require real providers.
-
-### Done when
-
-- Every new PR on `andrewwormald/everflow` gets a green CI check for build+test+vet.
-- Every new PR gets a CodeRabbit review comment.
-- CI badge visible in README.
-- The `main` branch after this MR merges also runs CI successfully (baseline established).
-
----
-
 ## Item 7 — Troubleshooting guide
 
 ### What
@@ -346,9 +310,9 @@ Structure (this is a suggestion; the runner may reorganise if a better shape eme
 
 ## Final done-when for this whole spec
 
-- All six items shipped as merged PRs on `andrewwormald/everflow`.
-- CI is green on `main` and gates every PR.
-- Running `everflow status <runID>` on the last dogfood Run (`f320ad5e`) produces a legible summary.
+- All five items in this spec shipped as merged PRs on `andrewwormald/everflow` (CI + CodeRabbit was landed manually prior to trigger, out of scope of this Run).
+- CI stays green on `main` throughout the Run.
+- Running `everflow status <runID>` on any existing Run produces a legible summary.
 - Running `everflow abandon <runID>` + `everflow resume <runID>` on a test Run demonstrably works end-to-end.
 - A user whose OAuth token expires mid-Run sees the Run transition to `AwaitingProviderAuth` (or equivalent) within 30 seconds, not silently spam 401s.
 - `TROUBLESHOOTING.md` exists and covers the failure modes.

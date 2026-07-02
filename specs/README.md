@@ -31,7 +31,7 @@ markdown body on every plan call to decide the next increment.
 |---|---|---|
 | `design-doc-refresh.spec.md` | Merged (PRs #1, #2) | Refresh two DESIGN.md sections; validated the planner's ability to re-evaluate after each merge. |
 | `v0-build-check.spec.md` | Merged (PR #3) | Ended up adding a note to `AGENTS.md` instead of the Makefile the spec asked for — mid-flight scope redirect via `/everflow prompt`. Documented as a canonical example of the comment-loop workflow. |
-| `early-access-hardening.spec.md` | Not yet triggered | The six-item readiness pass covering CI, runner token accounting, `status`/`abandon`/`resume` CLIs, hallucination guard, poll auth-expiry backoff, troubleshooting guide. |
+| `early-access-hardening.spec.md` | Not yet triggered | Five-item readiness pass: runner token accounting, `status`/`abandon`/`resume` CLIs, hallucination guard, poll auth-expiry backoff, troubleshooting guide. (An earlier revision included CI + CodeRabbit; that item was landed manually because runner-driven MRs into `.github/workflows/*` need a GitHub OAuth token with the `workflow` scope that the daemon's `gh auth token` fallback doesn't carry by default.) |
 
 ## Writing a new spec
 

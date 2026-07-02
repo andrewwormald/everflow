@@ -1,0 +1,19 @@
+# CodeRabbit AI code-review config.
+# Full schema: https://docs.coderabbit.ai/reference/configuration
+#
+# This repo is a personal scaffold; the "chill" profile keeps review
+# comments to substantive suggestions rather than nitpicks. Path filters
+# skip the archived _v0 module and brand assets.
+
+language: en-GB
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+  path_filters:
+    - "!_v0/**"
+    - "!logo/**"
+    - "!decisions/**"
