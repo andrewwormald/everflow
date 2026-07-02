@@ -203,6 +203,11 @@ func buildStatusComment(r *workflow.Run[AgentState, AgentStatus]) string {
 		len(r.Object.Completed), len(r.Object.Blacklisted),
 		len(r.Object.InFlight), len(r.Object.Queue))
 	fmt.Fprintf(&b, "- Subagent invocations: %d\n", r.Object.SubagentInvocations)
+	fmt.Fprintf(&b, "- Tokens used: %d", r.Object.TotalTokens)
+	if r.Object.Budget.MaxTokens > 0 {
+		fmt.Fprintf(&b, " / %d", r.Object.Budget.MaxTokens)
+	}
+	fmt.Fprintln(&b)
 	fmt.Fprintf(&b, "- Events seen: %d (skipped by filter: %d)\n",
 		r.Object.EventsSeen, r.Object.EventsSkippedByFilter)
 	if r.Object.PauseReason != "" {

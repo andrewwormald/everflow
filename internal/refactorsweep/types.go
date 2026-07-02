@@ -87,6 +87,12 @@ type AgentState struct {
 	EventsSkippedByFilter int `json:"events_skipped_by_filter"`
 	SubagentInvocations  int `json:"subagent_invocations"`
 
+	// Token + runtime accounting for Budget enforcement (ADR-0036).
+	// TotalTokens accumulates resp.Tokens across every runner invocation;
+	// StartedAt is set once in setup() to enable MaxRuntime checks.
+	TotalTokens int       `json:"total_tokens,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+
 	// Polling state — populated only in poll mode (ADR-0031).
 	// Keyed by MR IID. Updated by the poller as new comments arrive and
 	// MR states transition.
