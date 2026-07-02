@@ -48,6 +48,15 @@ type Git interface {
 	// repo's worktree registration. Idempotent — succeeds even if `dir`
 	// is already gone.
 	RemoveWorktree(ctx context.Context, baseRepo, dir string) error
+
+	// DiffShortstat returns the `--shortstat` summary of commits reachable from
+	// HEAD but not from origin/<baseBranch>, e.g.
+	// "3 files changed, 12 insertions(+), 4 deletions(-)".
+	// Returns an empty string if HEAD == origin/<baseBranch> (no commits yet).
+	// Used to append the actual diff extent to MR comments so reviewers can
+	// compare the runner's summary against what was really pushed (item 4 of
+	// ADR-TBD hallucination guard).
+	DiffShortstat(ctx context.Context, dir, baseBranch string) (string, error)
 }
 
 // ErrNoChanges is returned by Commit when the worktree is clean. Callers
@@ -240,6 +249,16 @@ func (g *ExecGit) RemoveWorktree(ctx context.Context, baseRepo, dir string) erro
 		_ = g.run(ctx, baseRepo, "worktree", "prune")
 	}
 	return nil
+}
+
+func (g *ExecGit) DiffShortstat(ctx context.Context, dir, baseBranch string) (string, error) {
+	// `git diff --shortstat A...B` shows the diff of commits reachable from B
+	// but not A — i.e. everything this branch has added beyond base.
+	out, err := g.runOut(ctx, dir, "diff", "--shortstat", "origin/"+baseBranch+"...HEAD")
+	if err != nil {
+		return "", fmt.Errorf("DiffShortstat: %w", err)
+	}
+	return strings.TrimSpace(out), nil
 }
 
 // --- internal helpers ---

@@ -207,3 +207,88 @@ func TestRunner_Name(t *testing.T) {
 		t.Errorf("Name: want claude regardless of binary, got %q", got)
 	}
 }
+
+// --- parseJSONOutput tests ---
+
+func TestParseJSONOutput_WithUsage(t *testing.T) {
+	// Simulates `claude -p --output-format json` output when the CLI populates
+	// the usage block with real token counts.
+	raw := `{"type":"result","subtype":"success","is_error":false,"result":"I updated the file.\n\n<everflow-decision>done</everflow-decision>","session_id":"sess_abc","cost_usd":0.01,"total_cost_usd":0.01,"duration_ms":3000,"num_turns":1,"usage":{"input_tokens":800,"cache_creation_input_tokens":0,"cache_read_input_tokens":200,"output_tokens":120}}`
+	result, tokens, ok := parseJSONOutput(raw)
+	if !ok {
+		t.Fatal("parseJSONOutput returned ok=false; want ok=true")
+	}
+	if !strings.Contains(result, "<everflow-decision>done</everflow-decision>") {
+		t.Errorf("result text should contain decision marker, got: %q", result)
+	}
+	// 800 + 0 + 200 + 120 = 1120
+	if tokens != 1120 {
+		t.Errorf("tokens: want 1120, got %d", tokens)
+	}
+}
+
+func TestParseJSONOutput_NoUsage(t *testing.T) {
+	// Older claude CLI build that omits the usage field should still parse
+	// correctly, returning tokens=0 rather than erroring.
+	raw := `{"type":"result","subtype":"success","is_error":false,"result":"Done.\n\n<everflow-decision>done</everflow-decision>","session_id":"sess_xyz","cost_usd":0.005,"duration_ms":1500,"num_turns":1}`
+	result, tokens, ok := parseJSONOutput(raw)
+	if !ok {
+		t.Fatal("parseJSONOutput returned ok=false; want ok=true")
+	}
+	if !strings.Contains(result, "Done") {
+		t.Errorf("result text should include response body, got: %q", result)
+	}
+	if tokens != 0 {
+		t.Errorf("tokens with missing usage block: want 0, got %d", tokens)
+	}
+}
+
+func TestParseJSONOutput_InvalidJSON(t *testing.T) {
+	// Plain-text output (e.g. from a wrapper script that doesn't use JSON mode).
+	raw := "I updated the file.\n\n<everflow-decision>done</everflow-decision>"
+	_, _, ok := parseJSONOutput(raw)
+	if ok {
+		t.Error("parseJSONOutput with plain text: want ok=false")
+	}
+}
+
+func TestParseJSONOutput_WrongType(t *testing.T) {
+	// JSON but not a result envelope (e.g. an error object from the platform).
+	raw := `{"type":"error","message":"API rate limit exceeded"}`
+	_, _, ok := parseJSONOutput(raw)
+	if ok {
+		t.Error("parseJSONOutput with non-result type: want ok=false")
+	}
+}
+
+func TestParseJSONOutput_EmptyResult(t *testing.T) {
+	raw := `{"type":"result","subtype":"success","is_error":false,"result":""}`
+	_, _, ok := parseJSONOutput(raw)
+	if ok {
+		t.Error("parseJSONOutput with empty result: want ok=false (no marker possible)")
+	}
+}
+
+// TestParseDecision_FullRoundTrip checks that a real claude JSON output
+// round-trips through parseJSONOutput → ParseDecision end-to-end.
+func TestParseDecision_FullRoundTrip(t *testing.T) {
+	raw := `{"type":"result","subtype":"success","is_error":false,"result":"I migrated the logrus calls to slog.\n\n<everflow-decision>done</everflow-decision>","session_id":"sess_rt","cost_usd":0.02,"duration_ms":4000,"num_turns":2,"usage":{"input_tokens":500,"cache_creation_input_tokens":100,"cache_read_input_tokens":0,"output_tokens":80}}`
+	resultText, tokens, ok := parseJSONOutput(raw)
+	if !ok {
+		t.Fatal("parseJSONOutput: want ok=true")
+	}
+	d, summary, _, err := ParseDecision(resultText)
+	if err != nil {
+		t.Fatalf("ParseDecision: %v", err)
+	}
+	if d != runner.DecisionDone {
+		t.Errorf("decision: want Done, got %v", d)
+	}
+	if !strings.Contains(summary, "migrated the logrus calls") {
+		t.Errorf("summary should contain response text, got: %q", summary)
+	}
+	// 500 + 100 + 0 + 80 = 680
+	if tokens != 680 {
+		t.Errorf("tokens: want 680, got %d", tokens)
+	}
+}

@@ -516,27 +516,36 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 
 // runStatusResponse is the JSON shape returned by GET /status?run_id=xxx.
 type runStatusResponse struct {
-	RunID                string    `json:"run_id"`
-	ForeignID            string    `json:"foreign_id"`
-	Status               string    `json:"status"`
-	Goal                 string    `json:"goal"`
-	Mode                 string    `json:"mode"`
-	Provider             string    `json:"provider"`
-	Project              string    `json:"project"`
-	Completed            int       `json:"completed"`
-	Blacklisted          int       `json:"blacklisted"`
-	InFlight             int       `json:"in_flight"`
-	Queued               int       `json:"queued"`
-	SubagentInvocations  int       `json:"subagent_invocations"`
-	TotalTokens          int       `json:"total_tokens"`
-	MaxTokens            int       `json:"max_tokens,omitempty"`
-	MaxUnits             int       `json:"max_units,omitempty"`
-	EventsSeen           int       `json:"events_seen"`
-	EventsSkipped        int       `json:"events_skipped"`
-	PauseReason          string    `json:"pause_reason,omitempty"`
-	LastError            string    `json:"last_error,omitempty"`
-	StartedAt            time.Time `json:"started_at,omitempty"`
-	UpdatedAt            time.Time `json:"updated_at"`
+	RunID                string          `json:"run_id"`
+	ForeignID            string          `json:"foreign_id"`
+	Status               string          `json:"status"`
+	Goal                 string          `json:"goal"`
+	Mode                 string          `json:"mode"`
+	Provider             string          `json:"provider"`
+	Project              string          `json:"project"`
+	Completed            int             `json:"completed"`
+	Blacklisted          int             `json:"blacklisted"`
+	InFlight             int             `json:"in_flight"`
+	Queued               int             `json:"queued"`
+	SubagentInvocations  int             `json:"subagent_invocations"`
+	TotalTokens          int             `json:"total_tokens"`
+	MaxTokens            int             `json:"max_tokens,omitempty"`
+	MaxUnits             int             `json:"max_units,omitempty"`
+	EventsSeen           int             `json:"events_seen"`
+	EventsSkipped        int             `json:"events_skipped"`
+	PauseReason          string          `json:"pause_reason,omitempty"`
+	LastError            string          `json:"last_error,omitempty"`
+	StartedAt            time.Time       `json:"started_at,omitempty"`
+	UpdatedAt            time.Time       `json:"updated_at"`
+	RecentTurns          []turnSummary   `json:"recent_turns,omitempty"`
+}
+
+// turnSummary is the compact representation of a Turn for the status command.
+type turnSummary struct {
+	Phase   string `json:"phase"`
+	UnitID  string `json:"unit_id,omitempty"`
+	Tokens  int    `json:"tokens"`
+	Summary string `json:"summary"`
 }
 
 // statusHandler returns a JSON status summary. GET /status?run_id=xxx returns
@@ -593,6 +602,22 @@ func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 	if err := workflow.Unmarshal(rec.Object, &state); err != nil {
 		return runStatusResponse{}, err
 	}
+
+	// Last 5 turns for the status display.
+	const maxRecentTurns = 5
+	turns := state.History
+	if len(turns) > maxRecentTurns {
+		turns = turns[len(turns)-maxRecentTurns:]
+	}
+	recent := make([]turnSummary, len(turns))
+	for i, t := range turns {
+		excerpt := t.Summary
+		if len(excerpt) > 80 {
+			excerpt = excerpt[:77] + "..."
+		}
+		recent[i] = turnSummary{Phase: t.Phase, UnitID: t.UnitID, Tokens: t.Tokens, Summary: excerpt}
+	}
+
 	return runStatusResponse{
 		RunID:               rec.RunID,
 		ForeignID:           rec.ForeignID,
@@ -615,6 +640,7 @@ func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 		LastError:           state.LastError,
 		StartedAt:           state.StartedAt,
 		UpdatedAt:           rec.UpdatedAt,
+		RecentTurns:         recent,
 	}, nil
 }
 
@@ -885,6 +911,16 @@ func printRunStatus(w io.Writer, s runStatusResponse) {
 	if s.LastError != "" {
 		fmt.Fprintf(w, "Error:    %s\n", s.LastError)
 	}
+	if len(s.RecentTurns) > 0 {
+		fmt.Fprintf(w, "\nRecent turns (last %d):\n", len(s.RecentTurns))
+		for _, t := range s.RecentTurns {
+			unit := t.UnitID
+			if unit == "" {
+				unit = "-"
+			}
+			fmt.Fprintf(w, "  [%-18s] %-16s tokens=%-6d %q\n", t.Phase, unit, t.Tokens, t.Summary)
+		}
+	}
 }
 
 func cmdList(args []string) error {
@@ -895,7 +931,10 @@ func cmdList(args []string) error {
 func cmdAbandon(args []string) error {
 	fs := flag.NewFlagSet("abandon", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	storePath := fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db); used when daemon is unreachable")
 	reasonFlag := fs.String("reason", "", "optional reason for abandonment")
+	gitlabBaseURL := fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
+	githubBaseURL := fs.String("github-base-url", "", "GitHub API base URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -903,12 +942,23 @@ func cmdAbandon(args []string) error {
 	if runID == "" {
 		return errors.New("usage: everflow abandon <run-id>")
 	}
-	return sendControl(*daemonURL, runID, "abandon", *reasonFlag)
+
+	// Try daemon first (preferred path: daemon handles two-tap confirmation
+	// and provider-side MR cleanup gracefully).
+	if err := sendControl(*daemonURL, runID, "abandon", *reasonFlag); err == nil {
+		return nil
+	}
+
+	// Daemon not reachable — fall back to direct store manipulation. This is
+	// the rescue path: no two-tap, immediate force-cancel. See ADR-0037.
+	fmt.Fprintln(os.Stderr, "everflow: daemon unreachable; falling back to direct store write")
+	return directAbandon(context.Background(), *storePath, runID, *reasonFlag, *gitlabBaseURL, *githubBaseURL)
 }
 
 func cmdResume(args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	storePath := fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db); used when daemon is unreachable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -916,7 +966,147 @@ func cmdResume(args []string) error {
 	if runID == "" {
 		return errors.New("usage: everflow resume <run-id>")
 	}
-	return sendControl(*daemonURL, runID, "resume", "")
+
+	// Try daemon first (preferred: daemon can resume Paused → AwaitingMerge).
+	// The daemon path handles the AwaitingMerge callback correctly; the direct
+	// path is needed for Cancelled/Failed → Discovering revive.
+	if err := sendControl(*daemonURL, runID, "resume", ""); err == nil {
+		return nil
+	}
+
+	// Daemon not reachable — fall back to direct store write. The daemon must
+	// be (re)started to process the outbox event that drives the Discovering
+	// step. See ADR-0037.
+	fmt.Fprintln(os.Stderr, "everflow: daemon unreachable; falling back to direct store write")
+	return directResume(context.Background(), *storePath, runID)
+}
+
+// defaultStorePath returns ~/.everflow/store.db when path is blank.
+func defaultStorePath(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("home dir: %w", err)
+	}
+	return home + "/.everflow/store.db", nil
+}
+
+// directAbandon force-cancels a Run by writing directly to the sqlite store.
+// It does not require the daemon to be running. In-flight MRs are closed
+// best-effort via the configured provider credentials.
+func directAbandon(ctx context.Context, storePath, runID, reason, gitlabBaseURL, githubBaseURL string) error {
+	sp, err := defaultStorePath(storePath)
+	if err != nil {
+		return err
+	}
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		return fmt.Errorf("open store %s: %w", sp, err)
+	}
+
+	rec, err := rs.Lookup(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("run %s not found: %w", runID, err)
+	}
+	if rec.RunState.Finished() {
+		return fmt.Errorf("run %s is already in a terminal state (%s); nothing to abandon", runID, rec.RunState)
+	}
+
+	var state refactorsweep.AgentState
+	if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+		return fmt.Errorf("decode run state: %w", err)
+	}
+
+	// Close in-flight MRs best-effort via the provider.
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	providers, _ := buildProviders(logger, gitlabBaseURL, githubBaseURL)
+	if p, ok := providers[state.ProviderName]; ok {
+		for _, mr := range state.InFlight {
+			if cErr := p.CloseMR(ctx, mr.ProjectID, mr.IID); cErr != nil {
+				fmt.Fprintf(os.Stderr, "everflow: close MR #%d (best-effort): %v\n", mr.IID, cErr)
+			}
+		}
+	}
+
+	// Remove per-unit worktrees best-effort.
+	runsRoot := filepath.Join(filepath.Dir(sp), "runs")
+	g := git.NewExec("", "")
+	for unitID := range state.InFlight {
+		wt := filepath.Join(runsRoot, runID, "worktrees", unitID)
+		if rErr := g.RemoveWorktree(ctx, state.BaseRepo, wt); rErr != nil {
+			fmt.Fprintf(os.Stderr, "everflow: remove worktree %s (best-effort): %v\n", wt, rErr)
+		}
+	}
+
+	if reason == "" {
+		reason = "abandoned via CLI"
+	}
+	state.LastError = reason
+
+	obj, err := workflow.Marshal(&state)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	rec.Object = obj
+	rec.Status = int(refactorsweep.StatusCancelled)
+	rec.RunState = workflow.RunStateCancelled
+	rec.Meta.Version++
+
+	if err := rs.Store(ctx, rec); err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	fmt.Printf("✓ Run %s cancelled (direct store write; reason: %s)\n", runID[:min(10, len(runID))], reason)
+	return nil
+}
+
+// directResume revives a Cancelled or Failed Run to Discovering by writing
+// directly to the sqlite store. The daemon must be running (or restarted)
+// to process the outbox event and drive the Discovering step. See ADR-0037.
+func directResume(ctx context.Context, storePath, runID string) error {
+	sp, err := defaultStorePath(storePath)
+	if err != nil {
+		return err
+	}
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		return fmt.Errorf("open store %s: %w", sp, err)
+	}
+
+	rec, err := rs.Lookup(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("run %s not found: %w", runID, err)
+	}
+
+	status := refactorsweep.AgentStatus(rec.Status)
+	if status != refactorsweep.StatusCancelled && status != refactorsweep.StatusFailed && status != refactorsweep.StatusPaused {
+		return fmt.Errorf("run %s is in status %s; only Cancelled, Failed, or Paused runs can be resumed via direct store write", runID, status)
+	}
+
+	var state refactorsweep.AgentState
+	if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+		return fmt.Errorf("decode run state: %w", err)
+	}
+
+	state.LastError = ""
+	state.PauseReason = ""
+
+	obj, err := workflow.Marshal(&state)
+	if err != nil {
+		return fmt.Errorf("marshal state: %w", err)
+	}
+	rec.Object = obj
+	rec.Status = int(refactorsweep.StatusDiscovering)
+	rec.RunState = workflow.RunStateRunning
+	rec.Meta.Version++
+
+	if err := rs.Store(ctx, rec); err != nil {
+		return fmt.Errorf("store: %w", err)
+	}
+	fmt.Printf("✓ Run %s revived to Discovering (direct store write)\n", runID[:min(10, len(runID))])
+	fmt.Println("  The daemon must be running (or restarted) to pick up and process the outbox event.")
+	return nil
 }
 
 // sendControl posts a control verb to the daemon's /control endpoint.

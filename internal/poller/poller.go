@@ -214,23 +214,43 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 	// Update auth-failure backoff state. On an auth error, extend the
 	// backoff window. On a clean tick, reset the counter so a token rotation
 	// restores normal polling immediately.
+	//
+	// Synthetic auth events are dispatched outside the mutex to avoid
+	// deadlocking if Dispatcher calls back into the poller.
+	var authEventToDispatch provider.EventKind
 	l.authMu.Lock()
 	if hadAuthErr {
-		e := l.authBackoff[r.RunID]
-		e.failures++
-		e.until = time.Now().Add(authBackoffDuration(e.failures))
 		if l.authBackoff == nil {
 			l.authBackoff = make(map[string]authBackoffEntry)
 		}
+		e := l.authBackoff[r.RunID]
+		e.failures++
+		e.until = time.Now().Add(authBackoffDuration(e.failures))
 		l.authBackoff[r.RunID] = e
 		l.Logger.Warn("poller: auth backoff set",
 			"run_id", r.RunID, "failures", e.failures, "until", e.until.Format(time.RFC3339))
+		if e.failures == 1 {
+			// First failure — notify the state machine so it can park the Run
+			// and post an explanatory comment on the in-flight MR.
+			authEventToDispatch = provider.EventProviderAuthFailure
+		}
 	} else if entry.failures > 0 {
 		// Successful tick after prior auth failures — reset.
 		delete(l.authBackoff, r.RunID)
 		l.Logger.Info("poller: auth backoff cleared after successful tick", "run_id", r.RunID)
+		authEventToDispatch = provider.EventProviderAuthRestored
 	}
 	l.authMu.Unlock()
+
+	if authEventToDispatch != "" {
+		authEv := provider.Event{
+			Kind:       authEventToDispatch,
+			ReceivedAt: time.Now().UnixNano(),
+		}
+		if err := l.Dispatcher(ctx, r.RunID, authEv); err != nil {
+			l.Logger.Warn("poller: dispatch auth event", "run_id", r.RunID, "kind", authEventToDispatch, "err", err)
+		}
+	}
 
 	if updated && l.SaveSnapshot != nil {
 		if err := l.SaveSnapshot(ctx, r.RunID, noteIDs, mrStates); err != nil {

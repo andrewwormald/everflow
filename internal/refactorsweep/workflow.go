@@ -642,8 +642,16 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		r.Object.InFlight[unitID] = mr
 
 		// 6. Initial status comment so the author can see who's driving.
+		// Append the actual diff shortstat as a cheap hallucination guard:
+		// the reviewer sees both the runner's summary and the real extent of
+		// changes pushed. See spec item 4 (Approach A).
 		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/everflow status` for progress, or `/everflow skip` to abandon.",
 			shortRunID(r.RunID), unitID)
+		if d.Git != nil {
+			if stat, sErr := d.Git.DiffShortstat(ctx, worktree, baseBranch); sErr == nil && stat != "" {
+				body += "\n\nDiff: " + stat
+			}
+		}
 		if err := postBotComment(ctx, r, p, r.Object.ProjectID, mr.IID, body); err != nil {
 			// Comment failure is non-fatal — the MR exists, the run continues.
 			r.Object.LastError = fmt.Sprintf("post initial comment: %v", err)
@@ -814,6 +822,14 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded &&
 		strings.HasPrefix(strings.TrimSpace(ev.Note.Body), "/everflow") {
 		return d.handleControlCommand(ctx, r, ev)
+	}
+
+	// Provider auth events are handled here before the Paused early-return so
+	// EventProviderAuthRestored can clear an auth-pause regardless of current
+	// status. This path also handles the initial auth-failure notification
+	// (transitions AwaitingMerge → Paused). See ADR-0038.
+	if ev.Kind == provider.EventProviderAuthFailure || ev.Kind == provider.EventProviderAuthRestored {
+		return d.handleProviderAuthEvent(ctx, r, ev)
 	}
 
 	// While paused, only control commands progress the Run. All other
@@ -1023,8 +1039,15 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			}
 		}
 
-		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-			fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary))
+		// Append actual diff shortstat as a hallucination guard so reviewers
+		// can see whether the runner's summary matches what was actually pushed.
+		addressedBody := fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
+		if d.Git != nil {
+			if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, defaultIfEmpty(r.Object.BaseBranch, "main")); sErr == nil && stat != "" {
+				addressedBody += "\n\nDiff: " + stat
+			}
+		}
+		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID, addressedBody)
 		return StatusAwaitingMerge, nil
 	case DecisionContinue, DecisionNoChange:
 		// Runner decided nothing actionable. Don't post a comment — that
@@ -1075,6 +1098,49 @@ func (d *Deps) markUnitBlacklisted(ctx context.Context, r *workflow.Run[AgentSta
 	}
 	d.cleanupWorktree(ctx, r, unitID)
 	return StatusDiscovering
+}
+
+// providerAuthPausePrefix is the PauseReason prefix the workflow uses when
+// parking a Run due to a provider authentication failure. The poller checks
+// for this prefix on recovery to distinguish auth-pauses from human-pauses.
+const providerAuthPausePrefix = "provider-auth: "
+
+// handleProviderAuthEvent handles EventProviderAuthFailure and
+// EventProviderAuthRestored events synthesised by the poller (ADR-0038).
+//
+//   - AuthFailure: park the Run (Paused with providerAuthPausePrefix) and
+//     post a comment on the in-flight MR. Idempotent — if the Run is already
+//     in an auth-pause, stay there without posting a duplicate comment.
+//   - AuthRestored: if the Run is in an auth-pause, clear PauseReason and
+//     return to AwaitingMerge. No-op for any other pause reason.
+func (d *Deps) handleProviderAuthEvent(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
+	switch ev.Kind {
+	case provider.EventProviderAuthFailure:
+		if strings.HasPrefix(r.Object.PauseReason, providerAuthPausePrefix) {
+			return StatusPaused, nil // already parked; skip duplicate comment
+		}
+		r.Object.PauseReason = providerAuthPausePrefix +
+			"token expired or invalid — refresh via `gh auth login` (GitHub) or `glab auth login` (GitLab) and restart the daemon"
+		if p, ok := d.Providers[r.Object.ProviderName]; ok {
+			for _, mr := range r.Object.InFlight {
+				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+					"⚠️ Paused — the provider token has expired (HTTP 401). "+
+						"Please refresh credentials (`gh auth login` / `glab auth login`) and restart the daemon. "+
+						"The Run will resume automatically on the next successful poll.")
+				break // one comment is enough; concurrency=1 in v1
+			}
+		}
+		return StatusPaused, nil
+
+	case provider.EventProviderAuthRestored:
+		if !strings.HasPrefix(r.Object.PauseReason, providerAuthPausePrefix) {
+			// Not in an auth-pause; nothing to do.
+			return r.Status, nil
+		}
+		r.Object.PauseReason = ""
+		return StatusAwaitingMerge, nil
+	}
+	return r.Status, nil
 }
 
 // dropAbandonConfirm is the "any non-abandon activity" handler for the
