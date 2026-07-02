@@ -834,6 +834,7 @@ func cmdStart(args []string) error {
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	storePath := fs.String("store", "", "path to sqlite store (default: ~/.everflow/store.db); used when daemon is unreachable")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -845,7 +846,10 @@ func cmdStatus(args []string) error {
 	}
 	resp, err := http.Get(url) //nolint:noctx
 	if err != nil {
-		return fmt.Errorf("GET %s: %w (is the daemon running?)", url, err)
+		// Daemon unreachable — fall back to a direct sqlite read so the
+		// command works without the daemon running.
+		fmt.Fprintf(os.Stderr, "everflow: daemon unreachable (%v); reading store directly\n", err)
+		return directStatus(context.Background(), *storePath, runID)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -872,6 +876,59 @@ func cmdStatus(args []string) error {
 	}
 	fmt.Printf("%-10s  %-22s  %-9s  %s\n", "RUN ID", "UPDATED", "STATUS", "GOAL")
 	for _, s := range runs {
+		goal := s.Goal
+		if len(goal) > 50 {
+			goal = goal[:47] + "..."
+		}
+		fmt.Printf("%-10s  %-22s  %-9s  %s\n",
+			s.RunID[:min(10, len(s.RunID))],
+			s.UpdatedAt.Format("2006-01-02 15:04:05"),
+			s.Status,
+			goal,
+		)
+	}
+	return nil
+}
+
+// directStatus prints a Run's state by reading directly from the sqlite store.
+// It does not require the daemon to be running.
+func directStatus(ctx context.Context, storePath, runID string) error {
+	sp, err := defaultStorePath(storePath)
+	if err != nil {
+		return err
+	}
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		return fmt.Errorf("open store %s: %w", sp, err)
+	}
+
+	if runID != "" {
+		rec, err := rs.Lookup(ctx, runID)
+		if err != nil {
+			return fmt.Errorf("run %s not found: %w (hint: use 'everflow list' or query the store directly)", runID, err)
+		}
+		s, err := recordToStatus(rec)
+		if err != nil {
+			return fmt.Errorf("decode run state: %w", err)
+		}
+		printRunStatus(os.Stdout, s)
+		return nil
+	}
+
+	records, err := rs.List(ctx, workflowName, 0, 500, workflow.OrderTypeDescending)
+	if err != nil {
+		return fmt.Errorf("list runs: %w", err)
+	}
+	if len(records) == 0 {
+		fmt.Println("no runs found")
+		return nil
+	}
+	fmt.Printf("%-10s  %-22s  %-9s  %s\n", "RUN ID", "UPDATED", "STATUS", "GOAL")
+	for i := range records {
+		s, err := recordToStatus(&records[i])
+		if err != nil {
+			continue
+		}
 		goal := s.Goal
 		if len(goal) > 50 {
 			goal = goal[:47] + "..."
