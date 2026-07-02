@@ -48,8 +48,10 @@ const (
 var commands = map[string]command{
 	"daemon":  {usage: "run the long-lived daemon", run: cmdDaemon},
 	"start":   {usage: "trigger a new refactor sweep Run", run: cmdStart},
-	"status":  {usage: "show progress for a Run", run: cmdStatus},
+	"status":  {usage: "show progress for a Run (or list all Runs)", run: cmdStatus},
 	"list":    {usage: "list active and completed Runs", run: cmdList},
+	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
+	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
@@ -83,7 +85,7 @@ func main() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "everflow — bulk-refactor sweep daemon\n\nusage: everflow <command> [flags]\n\ncommands:\n")
-	for _, name := range []string{"daemon", "start", "status", "list", "phrases", "version"} {
+	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "version"} {
 		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
 	fmt.Fprintf(w, "\nrun `everflow <command> -h` for command-specific flags.\n")
@@ -216,6 +218,8 @@ func cmdDaemon(args []string) error {
 
 	localMux := http.NewServeMux()
 	localMux.HandleFunc("/trigger", triggerHandler(wf, logger))
+	localMux.HandleFunc("/status", statusHandler(recordStore, logger))
+	localMux.HandleFunc("/control", controlHandler(wf, recordStore, logger))
 	localSrv := &http.Server{
 		Addr:              *triggerAddr,
 		Handler:           localMux,
@@ -508,6 +512,192 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 	}
 }
 
+// --- /status and /control handlers ---
+
+// runStatusResponse is the JSON shape returned by GET /status?run_id=xxx.
+type runStatusResponse struct {
+	RunID                string    `json:"run_id"`
+	ForeignID            string    `json:"foreign_id"`
+	Status               string    `json:"status"`
+	Goal                 string    `json:"goal"`
+	Mode                 string    `json:"mode"`
+	Provider             string    `json:"provider"`
+	Project              string    `json:"project"`
+	Completed            int       `json:"completed"`
+	Blacklisted          int       `json:"blacklisted"`
+	InFlight             int       `json:"in_flight"`
+	Queued               int       `json:"queued"`
+	SubagentInvocations  int       `json:"subagent_invocations"`
+	TotalTokens          int       `json:"total_tokens"`
+	MaxTokens            int       `json:"max_tokens,omitempty"`
+	MaxUnits             int       `json:"max_units,omitempty"`
+	EventsSeen           int       `json:"events_seen"`
+	EventsSkipped        int       `json:"events_skipped"`
+	PauseReason          string    `json:"pause_reason,omitempty"`
+	LastError            string    `json:"last_error,omitempty"`
+	StartedAt            time.Time `json:"started_at,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+// statusHandler returns a JSON status summary. GET /status?run_id=xxx returns
+// one run; GET /status returns all runs (compact listing).
+func statusHandler(rs workflow.RecordStore, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "use GET", http.StatusMethodNotAllowed)
+			return
+		}
+		ctx := r.Context()
+		runID := r.URL.Query().Get("run_id")
+		if runID != "" {
+			rec, err := rs.Lookup(ctx, runID)
+			if err != nil {
+				http.Error(w, "run not found: "+err.Error(), http.StatusNotFound)
+				return
+			}
+			resp, err := recordToStatus(rec)
+			if err != nil {
+				http.Error(w, "decode run: "+err.Error(), http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
+
+		// List all runs.
+		records, err := rs.List(ctx, workflowName, 0, 500, workflow.OrderTypeDescending)
+		if err != nil {
+			http.Error(w, "list: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		var out []runStatusResponse
+		for _, rec := range records {
+			resp, err := recordToStatus(&rec)
+			if err != nil {
+				logger.Warn("status: decode run", "run_id", rec.RunID, "err", err)
+				continue
+			}
+			out = append(out, resp)
+		}
+		if out == nil {
+			out = []runStatusResponse{}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}
+}
+
+func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
+	var state refactorsweep.AgentState
+	if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+		return runStatusResponse{}, err
+	}
+	return runStatusResponse{
+		RunID:               rec.RunID,
+		ForeignID:           rec.ForeignID,
+		Status:              refactorsweep.AgentStatus(rec.Status).String(),
+		Goal:                state.Goal,
+		Mode:                state.Mode,
+		Provider:            state.ProviderName,
+		Project:             state.ProjectID,
+		Completed:           len(state.Completed),
+		Blacklisted:         len(state.Blacklisted),
+		InFlight:            len(state.InFlight),
+		Queued:              len(state.Queue),
+		SubagentInvocations: state.SubagentInvocations,
+		TotalTokens:         state.TotalTokens,
+		MaxTokens:           state.Budget.MaxTokens,
+		MaxUnits:            state.Budget.MaxUnits,
+		EventsSeen:          state.EventsSeen,
+		EventsSkipped:       state.EventsSkippedByFilter,
+		PauseReason:         state.PauseReason,
+		LastError:           state.LastError,
+		StartedAt:           state.StartedAt,
+		UpdatedAt:           rec.UpdatedAt,
+	}, nil
+}
+
+// controlRequest is the JSON body for POST /control.
+type controlRequest struct {
+	RunID string `json:"run_id"`
+	Verb  string `json:"verb"` // abandon | resume | pause | stop | skip | retry | prompt | status
+	Args  string `json:"args,omitempty"`
+}
+
+// controlHandler injects a synthetic /everflow control command into a Run by
+// constructing a fake author NoteAdded event and calling wf.Callback. The
+// event's Author is set to the Run's recorded author so the IsAuthor check in
+// resume() passes. Only safe on the localhost-only trigger listener (ADR-0028).
+func controlHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorsweep.AgentStatus], rs workflow.RecordStore, logger *slog.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "use POST", http.StatusMethodNotAllowed)
+			return
+		}
+		var req controlRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.RunID == "" || req.Verb == "" {
+			http.Error(w, "run_id and verb are required", http.StatusBadRequest)
+			return
+		}
+		ctx := r.Context()
+
+		rec, err := rs.Lookup(ctx, req.RunID)
+		if err != nil {
+			http.Error(w, "run not found: "+err.Error(), http.StatusNotFound)
+			return
+		}
+		var state refactorsweep.AgentState
+		if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+			http.Error(w, "decode run state: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Pick any in-flight MR to post the ack comment against. If none,
+		// the control handlers will attempt to post to MR IID=0 which will
+		// fail gracefully (ignored error).
+		var mr provider.MR
+		for _, m := range state.InFlight {
+			mr = m
+			break
+		}
+
+		noteBody := "/everflow " + req.Verb
+		if req.Args != "" {
+			noteBody += " " + req.Args
+		}
+		ev := provider.Event{
+			Kind:      provider.EventNoteAdded,
+			ProjectID: state.ProjectID,
+			MR:        mr,
+			Author:    state.Author,
+			IsAuthor:  true,
+			Note: provider.Note{
+				Body: noteBody,
+			},
+			ReceivedAt: time.Now().UnixNano(),
+		}
+		buf, err := json.Marshal(ev)
+		if err != nil {
+			http.Error(w, "marshal event: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		status := refactorsweep.AgentStatus(rec.Status)
+		if err := wf.Callback(ctx, rec.ForeignID, status, bytes.NewReader(buf)); err != nil {
+			http.Error(w, "callback: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		logger.Info("injected control command", "run_id", req.RunID, "verb", req.Verb)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "verb": req.Verb, "run_id": req.RunID})
+	}
+}
+
 func cmdStart(args []string) error {
 	fs := flag.NewFlagSet("start", flag.ExitOnError)
 	var (
@@ -616,13 +806,137 @@ func cmdStart(args []string) error {
 }
 
 func cmdStatus(args []string) error {
-	_ = args
-	return fmt.Errorf("everflow status: not implemented in scaffold")
+	fs := flag.NewFlagSet("status", flag.ExitOnError)
+	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	runID := fs.Arg(0)
+
+	url := *daemonURL + "/status"
+	if runID != "" {
+		url += "?run_id=" + runID
+	}
+	resp, err := http.Get(url) //nolint:noctx
+	if err != nil {
+		return fmt.Errorf("GET %s: %w (is the daemon running?)", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("status: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+
+	if runID != "" {
+		var s runStatusResponse
+		if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+			return fmt.Errorf("decode: %w", err)
+		}
+		printRunStatus(os.Stdout, s)
+		return nil
+	}
+
+	var runs []runStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil {
+		return fmt.Errorf("decode: %w", err)
+	}
+	if len(runs) == 0 {
+		fmt.Println("no runs found")
+		return nil
+	}
+	fmt.Printf("%-10s  %-22s  %-9s  %s\n", "RUN ID", "UPDATED", "STATUS", "GOAL")
+	for _, s := range runs {
+		goal := s.Goal
+		if len(goal) > 50 {
+			goal = goal[:47] + "..."
+		}
+		fmt.Printf("%-10s  %-22s  %-9s  %s\n",
+			s.RunID[:min(10, len(s.RunID))],
+			s.UpdatedAt.Format("2006-01-02 15:04:05"),
+			s.Status,
+			goal,
+		)
+	}
+	return nil
+}
+
+func printRunStatus(w io.Writer, s runStatusResponse) {
+	fmt.Fprintf(w, "Run:      %s\n", s.RunID)
+	fmt.Fprintf(w, "Status:   %s\n", s.Status)
+	fmt.Fprintf(w, "Goal:     %s\n", s.Goal)
+	fmt.Fprintf(w, "Provider: %s / %s\n", s.Provider, s.Project)
+	fmt.Fprintf(w, "Mode:     %s\n", s.Mode)
+	fmt.Fprintf(w, "Units:    %d completed, %d blacklisted, %d in-flight, %d queued\n",
+		s.Completed, s.Blacklisted, s.InFlight, s.Queued)
+	tokenStr := fmt.Sprintf("%d", s.TotalTokens)
+	if s.MaxTokens > 0 {
+		tokenStr = fmt.Sprintf("%d / %d", s.TotalTokens, s.MaxTokens)
+	}
+	fmt.Fprintf(w, "Tokens:   %s\n", tokenStr)
+	fmt.Fprintf(w, "Invocations: %d (events: %d, skipped: %d)\n",
+		s.SubagentInvocations, s.EventsSeen, s.EventsSkipped)
+	if !s.StartedAt.IsZero() {
+		fmt.Fprintf(w, "Started:  %s\n", s.StartedAt.Format(time.RFC3339))
+	}
+	fmt.Fprintf(w, "Updated:  %s\n", s.UpdatedAt.Format(time.RFC3339))
+	if s.PauseReason != "" {
+		fmt.Fprintf(w, "Paused:   %s\n", s.PauseReason)
+	}
+	if s.LastError != "" {
+		fmt.Fprintf(w, "Error:    %s\n", s.LastError)
+	}
 }
 
 func cmdList(args []string) error {
-	_ = args
-	return fmt.Errorf("everflow list: not implemented in scaffold")
+	// cmdList is a convenience alias for `everflow status` (lists all runs).
+	return cmdStatus(args)
+}
+
+func cmdAbandon(args []string) error {
+	fs := flag.NewFlagSet("abandon", flag.ExitOnError)
+	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	reasonFlag := fs.String("reason", "", "optional reason for abandonment")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	runID := fs.Arg(0)
+	if runID == "" {
+		return errors.New("usage: everflow abandon <run-id>")
+	}
+	return sendControl(*daemonURL, runID, "abandon", *reasonFlag)
+}
+
+func cmdResume(args []string) error {
+	fs := flag.NewFlagSet("resume", flag.ExitOnError)
+	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	runID := fs.Arg(0)
+	if runID == "" {
+		return errors.New("usage: everflow resume <run-id>")
+	}
+	return sendControl(*daemonURL, runID, "resume", "")
+}
+
+// sendControl posts a control verb to the daemon's /control endpoint.
+func sendControl(daemonURL, runID, verb, args string) error {
+	req := controlRequest{RunID: runID, Verb: verb, Args: args}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	resp, err := http.Post(daemonURL+"/control", "application/json", bytes.NewReader(body)) //nolint:noctx
+	if err != nil {
+		return fmt.Errorf("POST /control: %w (is the daemon running?)", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+	fmt.Printf("✓ %s sent to run %s\n", verb, runID)
+	return nil
 }
 
 func cmdPhrases(args []string) error {

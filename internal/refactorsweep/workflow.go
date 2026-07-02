@@ -228,8 +228,34 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 	if r.Object.InFlight == nil {
 		r.Object.InFlight = map[string]provider.MR{}
 	}
+	// Record when this Run first entered Discovering so MaxRuntime can be
+	// checked on every subsequent discover() call.
+	if r.Object.StartedAt.IsZero() {
+		r.Object.StartedAt = time.Now()
+	}
 
 	return StatusDiscovering, nil
+}
+
+// checkBudget returns a non-empty pause reason if any budget limit is
+// exceeded, or empty string if the Run may proceed. Called at the top of
+// discover() so the Run pauses rather than spending more runner time once
+// a cap is hit. See ADR-0036.
+func checkBudget(s *AgentState, now time.Time) string {
+	b := s.Budget
+	if b.MaxUnits > 0 {
+		done := len(s.Completed) + len(s.Blacklisted)
+		if done >= b.MaxUnits {
+			return fmt.Sprintf("budget: MaxUnits (%d) reached — %d completed + blacklisted", b.MaxUnits, done)
+		}
+	}
+	if b.MaxTokens > 0 && s.TotalTokens >= b.MaxTokens {
+		return fmt.Sprintf("budget: MaxTokens (%d) reached — %d tokens used", b.MaxTokens, s.TotalTokens)
+	}
+	if b.MaxRuntime > 0 && !s.StartedAt.IsZero() && now.Sub(s.StartedAt) >= b.MaxRuntime {
+		return fmt.Sprintf("budget: MaxRuntime (%s) reached — run started %s ago", b.MaxRuntime, now.Sub(s.StartedAt).Round(time.Second))
+	}
+	return ""
 }
 
 // discover picks the next unit to work on. Branches on Mode:
@@ -244,6 +270,10 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 // Empty Mode is treated as sweep for backwards compatibility with v1 Runs
 // triggered before the Mode field existed.
 func (d *Deps) discover(ctx context.Context, r *workflow.Run[AgentState, AgentStatus]) (AgentStatus, error) {
+	if reason := checkBudget(r.Object, time.Now()); reason != "" {
+		r.Object.PauseReason = reason
+		return StatusPaused, nil
+	}
 	if r.Object.IsSpecMode() {
 		return d.discoverSpec(ctx, r)
 	}
@@ -365,6 +395,7 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 	}
 	r.Object.History = append(r.Object.History, turn)
 	r.Object.SubagentInvocations++
+	r.Object.TotalTokens += resp.Tokens
 
 	if runErr != nil {
 		r.Object.LastError = runErr.Error()
@@ -531,6 +562,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	}
 	r.Object.History = append(r.Object.History, turn)
 	r.Object.SubagentInvocations++
+	r.Object.TotalTokens += resp.Tokens
 
 	if runErr != nil {
 		r.Object.LastError = fmt.Sprintf("work: runner.Run: %v", runErr)
@@ -891,6 +923,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 	r.Object.History = append(r.Object.History, turn)
 	r.Object.SubagentInvocations++
+	r.Object.TotalTokens += resp.Tokens
 
 	mr := r.Object.InFlight[unitID]
 

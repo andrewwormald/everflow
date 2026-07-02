@@ -7,8 +7,34 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strings"
 )
+
+// ErrAuthFailure is returned (or wrapped) by provider methods when the
+// platform responds with an authentication or authorisation failure (HTTP
+// 401/403). The poller uses it to back off rather than hammering an expired
+// token on every tick.
+var ErrAuthFailure = errors.New("provider: authentication failure")
+
+// IsAuthError reports whether err is (or wraps) ErrAuthFailure, or whether
+// the error message indicates a 401/403 from the platform. The string check
+// is a fallback for provider implementations that haven't yet wrapped
+// ErrAuthFailure explicitly.
+func IsAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrAuthFailure) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "401") ||
+		strings.Contains(msg, "403") ||
+		strings.Contains(msg, "unauthorized") ||
+		strings.Contains(msg, "forbidden")
+}
 
 // Provider is the platform abstraction. v1 ships gitlab.Provider; v2 adds
 // github.Provider. All other everflow code programs against this interface.

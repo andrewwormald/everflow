@@ -20,6 +20,27 @@ import (
 	"github.com/andrewwormald/everflow/internal/provider"
 )
 
+// authBackoffEntry tracks consecutive auth failures for one Run. The poller
+// skips a Run until until has passed, preventing hammering on an expired token.
+type authBackoffEntry struct {
+	failures int
+	until    time.Time
+}
+
+// authBackoffDuration returns the wait time after n consecutive auth failures.
+// Schedule: 30s → 2m → 8m → 32m → 2h (capped). This gives rapid first
+// feedback that the token is broken while avoiding log noise for long outages.
+func authBackoffDuration(failures int) time.Duration {
+	d := 30 * time.Second
+	for i := 0; i < failures; i++ {
+		d *= 4
+		if d > 2*time.Hour {
+			return 2 * time.Hour
+		}
+	}
+	return d
+}
+
 // EventDispatcher is the function shape main.go's webhook dispatcher
 // also satisfies — synthesised events flow through the same path.
 type EventDispatcher func(ctx context.Context, runID string, event provider.Event) error
@@ -63,6 +84,11 @@ type Loop struct {
 	Dispatcher  EventDispatcher
 	SaveSnapshot SaveSnapshot
 	Logger      *slog.Logger
+
+	// authBackoff tracks per-Run auth-failure state. Protected by authMu.
+	// Lazily initialised on first auth error.
+	authMu      sync.Mutex
+	authBackoff map[string]authBackoffEntry
 }
 
 func (l *Loop) Run(ctx context.Context) {
@@ -99,16 +125,31 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 		return // unknown provider — skip silently
 	}
 
+	// Skip if still in auth-failure backoff window.
+	l.authMu.Lock()
+	entry := l.authBackoff[r.RunID]
+	l.authMu.Unlock()
+	if time.Now().Before(entry.until) {
+		return
+	}
+
 	// Per-Run snapshot buffers; persisted at end via SaveSnapshot.
 	noteIDs := copyInt64Map(r.LastSeenNoteIDs)
 	mrStates := copyStringMap(r.LastMRStates)
 	updated := false
+	hadAuthErr := false
 	var mu sync.Mutex // for any future concurrent polls per Run; currently serial
 
 	for unitID, mr := range r.InFlight {
 		// 1. MR state delta?
 		state, err := p.GetMRState(ctx, mr.ProjectID, mr.IID)
 		if err != nil {
+			if provider.IsAuthError(err) {
+				hadAuthErr = true
+				l.Logger.Warn("poller: GetMRState auth failure; backing off",
+					"run_id", r.RunID, "mr_iid", mr.IID, "err", err)
+				break // stop all MR polling for this run this tick
+			}
 			l.Logger.Warn("poller: GetMRState", "run_id", r.RunID, "mr_iid", mr.IID, "err", err)
 			continue
 		}
@@ -138,6 +179,12 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 		since := noteIDs[mr.IID]
 		notes, err := p.ListNotesSince(ctx, mr.ProjectID, mr.IID, since)
 		if err != nil {
+			if provider.IsAuthError(err) {
+				hadAuthErr = true
+				l.Logger.Warn("poller: ListNotesSince auth failure; backing off",
+					"run_id", r.RunID, "mr_iid", mr.IID, "err", err)
+				break
+			}
 			l.Logger.Warn("poller: ListNotesSince", "run_id", r.RunID, "mr_iid", mr.IID, "err", err)
 			continue
 		}
@@ -163,6 +210,27 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 			}
 		}
 	}
+
+	// Update auth-failure backoff state. On an auth error, extend the
+	// backoff window. On a clean tick, reset the counter so a token rotation
+	// restores normal polling immediately.
+	l.authMu.Lock()
+	if hadAuthErr {
+		e := l.authBackoff[r.RunID]
+		e.failures++
+		e.until = time.Now().Add(authBackoffDuration(e.failures))
+		if l.authBackoff == nil {
+			l.authBackoff = make(map[string]authBackoffEntry)
+		}
+		l.authBackoff[r.RunID] = e
+		l.Logger.Warn("poller: auth backoff set",
+			"run_id", r.RunID, "failures", e.failures, "until", e.until.Format(time.RFC3339))
+	} else if entry.failures > 0 {
+		// Successful tick after prior auth failures — reset.
+		delete(l.authBackoff, r.RunID)
+		l.Logger.Info("poller: auth backoff cleared after successful tick", "run_id", r.RunID)
+	}
+	l.authMu.Unlock()
 
 	if updated && l.SaveSnapshot != nil {
 		if err := l.SaveSnapshot(ctx, r.RunID, noteIDs, mrStates); err != nil {

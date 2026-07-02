@@ -68,3 +68,50 @@ When writing an ADR:
 | What's planned but not built? | `DESIGN.md` (vision) + open ADRs marked `Proposed` |
 | How do I run this? | `README.md` |
 | What's the L1/L2/L3 mapping? | `DESIGN.md` § *L1/L2/L3 → workflow mapping* |
+
+## Troubleshooting
+
+### Build and test commands
+
+```bash
+# Build
+go build ./...
+
+# Vet
+go vet ./...
+
+# Test
+go test ./...
+
+# Both modules (main + _v0 scaffold)
+go test ./... && (cd _v0 && go test ./...)
+```
+
+### Common problems
+
+**Daemon won't start — "open store: ..."**  
+SQLite parent directory doesn't exist. The daemon creates `~/.everflow/` automatically with the default `--store` flag. For a custom path, ensure the parent directory exists.
+
+**`everflow start` — "POST .../trigger: connection refused"**  
+The daemon isn't running. Start it with `everflow daemon` in a separate terminal.
+
+**Run stuck in `Paused` — `/everflow status` shows a budget pause reason**  
+A budget cap fired (`MaxUnits`, `MaxTokens`, or `MaxRuntime`). The run is paused and won't auto-resume. Inspect with `everflow status <run-id>`. To continue, stop the run and start a new one with a higher budget cap.
+
+**Run stuck in `Paused` — no budget reason**  
+The runner returned `Ask` or `Fail`, or the author issued `/everflow pause`. Look at `PauseReason` in `everflow status <run-id>`. Reply `/everflow resume` (MR comment or CLI) to clear it.
+
+**Poller not picking up MR comments**  
+Check the daemon logs for `"poller: auth failure; backing off"`. If present, the provider token expired. Rotate the token (set `GITLAB_TOKEN`/`GITHUB_TOKEN` env var or re-run `glab auth login` / `gh auth login`) and restart the daemon. The poller backs off exponentially (30s → 2m → 8m → 32m → 2h) to avoid hammering an invalid token.
+
+**`everflow status` — "run not found"**  
+The run ID is wrong, or the store path used by the daemon differs from the one the CLI would default to. Confirm with `--daemon` flag pointing at the correct local address, or query the store directly.
+
+**Runner returns Done but MR has no changes**  
+The hallucination guard in `work()` detects this: `HasChanges` is checked after a `Done` decision. If the worktree is clean, the unit is blacklisted with reason "runner returned Done with no changes" and the run proceeds to the next unit. Check the `Blacklisted` count in `everflow status <run-id>`.
+
+**`go build` fails with "unknown field ... in struct literal"**  
+A field was removed from `AgentState`. Old SQLite records containing the field will unmarshal fine (JSON is forward-compatible). If a *new* required field was added without a zero default, add `omitempty` and a safe zero value.
+
+**Webhook events not firing / all events going to wrong runs**  
+The in-memory `SecretRegistry` is rebuilt from durable state on daemon start (`rehydrateSecrets`). If a run was created before the daemon's last restart, its secret is rehydrated automatically. If not (e.g. the store was replaced), old webhook registrations are orphaned — close the MRs manually, stop the run, and restart.
