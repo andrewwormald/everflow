@@ -485,6 +485,44 @@ func updatePlanOutcome(s *AgentState, unitID, outcome string) {
 	}
 }
 
+// planRationaleFor returns the planner's per-increment rationale for
+// unitID from AgentState.Plan, or "" if there isn't one. When Plan
+// contains multiple entries with the same UnitID (e.g. re-plan after
+// blacklist), the latest wins — the planner's freshest thinking about
+// this increment is the most useful scope guidance for the runner.
+//
+// This is the load-bearing piece of the scope-narrowing fix: without
+// it, work() hands the runner the top-level spec Goal (often a
+// multi-item shopping list) with no signal about which item(s) belong
+// to THIS increment. The runner then over-scopes — the failure mode
+// that produced the mega-PR #5 during Run b21a0cc6.
+func planRationaleFor(s *AgentState, unitID string) string {
+	for i := len(s.Plan) - 1; i >= 0; i-- {
+		if s.Plan[i].UnitID == unitID {
+			return s.Plan[i].Rationale
+		}
+	}
+	return ""
+}
+
+// applyIncrementScope prepends the planner's rationale for the current
+// increment to the runner Request's Goal so the runner sees per-increment
+// scope directly rather than having to infer it from a unit-id string
+// and a whole-spec Goal. No-op when no plan entry exists for the unit
+// (edge case: legacy Runs pre-dating this fix). Order relative to
+// PromptInjection: rationale goes UNDER the injection so the user's
+// single-use override remains the highest-priority signal.
+func applyIncrementScope(req *runner.Request, s *AgentState, unitID string) {
+	rationale := planRationaleFor(s, unitID)
+	if rationale == "" {
+		return
+	}
+	req.Goal = "## Scope for this increment (from the planner)\n\n" +
+		rationale +
+		"\n\n---\n\n## Full spec goal (context)\n\n" +
+		req.Goal
+}
+
 // work invokes the runner against the current unit and, on success,
 // opens an MR via the provider.
 //
@@ -541,6 +579,10 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		UnitID:       unitID,
 		Budget:       r.Object.Budget,
 	}
+	// Prepend the planner's per-increment rationale so the runner sees
+	// this increment's scope directly, not just the whole-spec Goal. See
+	// planRationaleFor + applyIncrementScope for the reasoning.
+	applyIncrementScope(&req, r.Object, unitID)
 	if r.Object.PromptInjection != "" {
 		req.Goal = r.Object.PromptInjection + "\n\n---\n\n" + req.Goal
 		r.Object.PromptInjection = "" // consume single-use
@@ -924,6 +966,10 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	default:
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unexpected event kind %s", ev.Kind)
 	}
+	// Per-increment scope: same rationale threading as work(). A reviewer
+	// comment on an in-flight MR should be addressed within THIS
+	// increment's scope, not re-triggered against the whole-spec Goal.
+	applyIncrementScope(&req, r.Object, unitID)
 	if r.Object.PromptInjection != "" {
 		req.Goal = r.Object.PromptInjection + "\n\n---\n\n" + req.Goal
 		r.Object.PromptInjection = "" // consume single-use

@@ -84,3 +84,6 @@ forces or unlocks.
 | 0034 | Comment-driven loop is the primary interaction; Paused permits self-loop | Accepted | 2026-06-25 |
 | 0035 | Self-comment echo suppression via SHA-256 FIFO on AgentState    | Accepted | 2026-07-01 |
 | 0036 | Budget enforcement: MaxUnits, MaxTokens, MaxRuntime             | Accepted | 2026-07-02 |
+| 0037 | Resume CLI writes directly to the RecordStore                   | Accepted | 2026-07-02 |
+| 0038 | Poller auth-backoff via Paused-with-marker                      | Accepted | 2026-07-02 |
+| 0039 | Thread planner's per-increment rationale into the runner's Goal | Accepted | 2026-07-03 |

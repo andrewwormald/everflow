@@ -700,6 +700,167 @@ func TestWork_RunnerNoChange_BlacklistsAndContinues(t *testing.T) {
 	}
 }
 
+// TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
+// for the scope-narrowing fix. Without threading the planner's per-
+// increment rationale into req.Goal, the runner receives only the
+// top-level (often multi-item) spec Goal + an opaque unit-id string
+// and has no signal about which item(s) this increment covers.
+// That's how the Run b21a0cc6 (2026-07-02) produced the mega-PR #5
+// that bundled 5 unrelated items — the runner did as much of the
+// shopping-list Goal as it could fit in one turn.
+//
+// This test asserts the runner is invoked with a Goal that contains
+// the planner's rationale for THIS specific unit, so the runner can
+// scope its work accordingly.
+func TestWork_ThreadsPlanRationaleIntoRunnerGoal(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "did it", Tokens: 100,
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 42}
+
+	// Seed a Plan entry for svc-payments whose rationale is unambiguously
+	// per-increment (not the whole spec).
+	const perIncrementRationale = "For svc-payments only: swap logrus for slog. Do NOT touch other services."
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Migrate logrus to slog across all services",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+		Plan: []PlannedIncrement{
+			{UnitID: "svc-payments", Rationale: perIncrementRationale},
+		},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Fatalf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("want 1 runner call, got %d", len(fr.calls))
+	}
+
+	got := fr.calls[0].Goal
+	// The runner's Goal must contain BOTH the per-increment rationale
+	// (with a scope header) AND the full spec goal underneath. If either
+	// is missing, the fix has regressed.
+	if !strings.Contains(got, perIncrementRationale) {
+		t.Errorf(
+			"runner Goal must include the planner's per-increment rationale.\n"+
+				"Want to find: %q\nGot Goal: %q",
+			perIncrementRationale, got,
+		)
+	}
+	if !strings.Contains(got, "Migrate logrus to slog across all services") {
+		t.Errorf("runner Goal must still include the full spec Goal as context; got: %q", got)
+	}
+	if !strings.Contains(got, "Scope for this increment") {
+		t.Errorf(
+			"runner Goal should carry a labelled scope header so the runner knows the "+
+				"per-increment text is authoritative; got: %q",
+			got,
+		)
+	}
+	// Rationale must appear BEFORE the spec goal in the prompt (LLMs
+	// weight earlier context more heavily); the separator between them
+	// confirms ordering.
+	rationaleIdx := strings.Index(got, perIncrementRationale)
+	specIdx := strings.Index(got, "Migrate logrus to slog across all services")
+	if rationaleIdx > specIdx {
+		t.Errorf("planner rationale must appear BEFORE the full spec goal in the runner prompt")
+	}
+}
+
+// TestWork_NoPlanEntry_UsesGoalAsBefore covers the edge case where a
+// Run has no Plan entry for the current unit (e.g. sweep mode, or a
+// legacy Run pre-dating the plan-threading fix). The runner should
+// receive an unmodified Goal — no scope header, no separator.
+func TestWork_NoPlanEntry_UsesGoalAsBefore(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "done", Tokens: 50,
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 1}
+
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "acme/example", RunnerName: "fake-runner",
+		Goal:        "Rename Foo to Bar",
+		CurrentUnit: "svc-a",
+		BaseBranch:  "main",
+		InFlight:    map[string]provider.MR{},
+		// Plan is nil — no entry for svc-a
+	})
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("want 1 runner call, got %d", len(fr.calls))
+	}
+	if fr.calls[0].Goal != "Rename Foo to Bar" {
+		t.Errorf(
+			"no plan entry → Goal must be the raw spec Goal; got %q",
+			fr.calls[0].Goal,
+		)
+	}
+}
+
+// TestWork_PlanRationale_StacksWithPromptInjection verifies the ordering:
+// user's PromptInjection is highest priority (topmost), planner rationale
+// beneath it, spec Goal at the bottom. All three signals must be present
+// in the final runner Goal.
+func TestWork_PlanRationale_StacksWithPromptInjection(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "ok", Tokens: 100,
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 1}
+
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "acme/example", RunnerName: "fake-runner",
+		Goal:        "SPEC-GOAL: do many things",
+		CurrentUnit: "svc-x",
+		BaseBranch:  "main",
+		InFlight:    map[string]provider.MR{},
+		Plan: []PlannedIncrement{
+			{UnitID: "svc-x", Rationale: "PLANNER-SCOPE: narrow to X only"},
+		},
+		PromptInjection: "USER-OVERRIDE: use the Edit tool",
+	})
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	got := fr.calls[0].Goal
+
+	for _, needle := range []string{"USER-OVERRIDE: use the Edit tool", "PLANNER-SCOPE: narrow to X only", "SPEC-GOAL: do many things"} {
+		if !strings.Contains(got, needle) {
+			t.Errorf("Goal must contain %q; got: %q", needle, got)
+		}
+	}
+	// Ordering: user injection → planner rationale → spec goal.
+	userIdx := strings.Index(got, "USER-OVERRIDE")
+	planIdx := strings.Index(got, "PLANNER-SCOPE")
+	specIdx := strings.Index(got, "SPEC-GOAL")
+	if !(userIdx < planIdx && planIdx < specIdx) {
+		t.Errorf(
+			"ordering must be user-injection < planner-rationale < spec-goal; got indices %d/%d/%d",
+			userIdx, planIdx, specIdx,
+		)
+	}
+	// PromptInjection was single-use and should have been consumed.
+	if r.Object.PromptInjection != "" {
+		t.Errorf("PromptInjection must be cleared after use; still: %q", r.Object.PromptInjection)
+	}
+}
+
 func TestWork_CreateMRFails(t *testing.T) {
 	fp := &fakeProvider{createMRErr: errors.New("404 not found")}
 	d := newDeps(t, fp)
