@@ -42,7 +42,12 @@ import (
 
 const (
 	workflowName = "refactor-sweep"
-	version      = "0.0.1-scaffold"
+)
+
+var (
+	version   = "0.0.1-scaffold"
+	gitCommit = "none"
+	buildTime = "unknown"
 )
 
 var commands = map[string]command{
@@ -1199,7 +1204,11 @@ func cmdPhrases(args []string) error {
 	}
 }
 
+func versionString() string {
+	return fmt.Sprintf("everflow %s (commit: %s, built: %s)", strings.TrimSpace(version), gitCommit, buildTime)
+}
+
 func cmdVersion(_ []string) error {
-	fmt.Println(strings.TrimSpace(version))
+	fmt.Println(versionString())
 	return nil
 }

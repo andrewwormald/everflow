@@ -70,6 +70,27 @@ func seedStore(t *testing.T, runID string, state refactorsweep.AgentState) strin
 	return sp
 }
 
+func TestVersionString(t *testing.T) {
+	orig := version
+	origCommit := gitCommit
+	origBuild := buildTime
+	t.Cleanup(func() {
+		version = orig
+		gitCommit = origCommit
+		buildTime = origBuild
+	})
+
+	version = "1.2.3"
+	gitCommit = "abc1234"
+	buildTime = "2026-07-03T12:00:00Z"
+
+	got := versionString()
+	want := "everflow 1.2.3 (commit: abc1234, built: 2026-07-03T12:00:00Z)"
+	if got != want {
+		t.Errorf("versionString() = %q, want %q", got, want)
+	}
+}
+
 func TestDirectStatus_PrintsRunSummary(t *testing.T) {
 	runID := "aaaaaaaa-0000-0000-0000-000000000001"
 	state := refactorsweep.AgentState{
