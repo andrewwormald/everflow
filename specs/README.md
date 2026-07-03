@@ -31,7 +31,8 @@ markdown body on every plan call to decide the next increment.
 |---|---|---|
 | `design-doc-refresh.spec.md` | Merged (PRs #1, #2) | Refresh two DESIGN.md sections; validated the planner's ability to re-evaluate after each merge. |
 | `v0-build-check.spec.md` | Merged (PR #3) | Ended up adding a note to `AGENTS.md` instead of the Makefile the spec asked for — mid-flight scope redirect via `/everflow prompt`. Documented as a canonical example of the comment-loop workflow. |
-| `early-access-hardening.spec.md` | Not yet triggered | Five-item readiness pass: runner token accounting, `status`/`abandon`/`resume` CLIs, hallucination guard, poll auth-expiry backoff, troubleshooting guide. (An earlier revision included CI + CodeRabbit; that item was landed manually because runner-driven MRs into `.github/workflows/*` need a GitHub OAuth token with the `workflow` scope that the daemon's `gh auth token` fallback doesn't carry by default.) |
+| `early-access-hardening.spec.md` | Merged (PRs #4, #5, #6) — but PR #5 bundled 5 items in one MR, motivating ADR-0039 | Five-item readiness pass: runner token accounting, `status`/`abandon`/`resume` CLIs, hallucination guard, poll auth-expiry backoff, troubleshooting guide. (An earlier revision included CI + CodeRabbit; that item was landed manually because runner-driven MRs into `.github/workflows/*` need a GitHub OAuth token with the `workflow` scope that the daemon's `gh auth token` fallback doesn't carry by default.) |
+| `adr-0039-validation.spec.md` | Not yet triggered | Deliberate three-item shopping-list spec designed to exercise ADR-0039's planner-rationale-threading fix. If the fix works, each item lands as its own MR; if it doesn't, the runner will bundle them and recreate the mega-PR failure. |
 
 ## Writing a new spec
 
