@@ -1,17 +1,10 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" width="200" height="200" role="img" aria-label="Everflow">
-  <title>Everflow</title>
-  <defs>
-    <path id="loop-d" d="M41 20 H55 A21 21 0 0 1 76 41 V55 A21 21 0 0 1 55 76 H41 A21 21 0 0 1 20 55 V41 A21 21 0 0 1 41 20 Z"/>
-  </defs>
-  <path d="M41 20 H55 A21 21 0 0 1 76 41 V55 A21 21 0 0 1 55 76 H41 A21 21 0 0 1 20 55 V41 A21 21 0 0 1 41 20 Z"
-        fill="none" stroke="#fbf8f3" stroke-width="11" stroke-linejoin="round"/>
-  <circle r="4" fill="#ff5a3c" opacity="0.32">
-    <animateMotion dur="3.4s" repeatCount="indefinite" begin="-3.04s" rotate="auto"><mpath href="#loop-d"/></animateMotion>
-  </circle>
-  <circle r="6" fill="#ff5a3c" opacity="0.60">
-    <animateMotion dur="3.4s" repeatCount="indefinite" begin="-3.18s" rotate="auto"><mpath href="#loop-d"/></animateMotion>
-  </circle>
-  <circle r="9.5" fill="#ff5a3c">
-    <animateMotion dur="3.4s" repeatCount="indefinite" begin="0s" rotate="auto"><mpath href="#loop-d"/></animateMotion>
-  </circle>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 28" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" role="img" aria-label="Everflow">
+  <title>everflow — flow chevrons (dark)</title>
+  <desc>Three chevrons stepping forward. Trailing two light-grey (merged / in-review), leading one green (in flight). Dark-mode variant.</desc>
+  <!-- Trailing chevron: merged -->
+  <polyline points="4,4 14,14 4,24" stroke="#ffffff" stroke-opacity="0.32"/>
+  <!-- Middle chevron: in-review -->
+  <polyline points="22,4 32,14 22,24" stroke="#ffffff" stroke-opacity="0.62"/>
+  <!-- Leading chevron: in-flight, merge-green (same green as light variant for brand consistency) -->
+  <polyline points="40,4 50,14 40,24" stroke="#159a5c"/>
 </svg>

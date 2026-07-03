@@ -60,7 +60,7 @@ forces or unlocks.
 | 0010 | Build the scheduled-skill PoC before the interactive loop | Accepted | 2026-06-15 |
 | 0011 | Persistent worktree, reset --hard to base each pass | Accepted | 2026-06-15 |
 | 0012 | Track all decisions as ADRs                        | Accepted | 2026-06-15 |
-| 0013 | Adopt the "Orbit" brand mark and warm-coral palette | Accepted | 2026-06-15 |
+| 0013 | Adopt the "Orbit" brand mark and warm-coral palette | Superseded by 0040 | 2026-06-15 |
 | 0014 | Bulk-refactor sweeps are the primary use case      | Accepted | 2026-06-16 |
 | 0015 | Throttled-sequential MR flow, configurable concurrency | Accepted | 2026-06-16 |
 | 0016 | MR comments as everflow's only communication channel | Accepted | 2026-06-16 |
@@ -87,3 +87,4 @@ forces or unlocks.
 | 0037 | Resume CLI writes directly to the RecordStore                   | Accepted | 2026-07-02 |
 | 0038 | Poller auth-backoff via Paused-with-marker                      | Accepted | 2026-07-02 |
 | 0039 | Thread planner's per-increment rationale into the runner's Goal | Accepted | 2026-07-03 |
+| 0040 | Adopt the "Flow Chevrons" brand mark (supersedes ADR-0013)      | Accepted | 2026-07-03 |

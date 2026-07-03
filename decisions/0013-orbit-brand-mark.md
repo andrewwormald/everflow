@@ -1,6 +1,6 @@
 # ADR-0013: Adopt the "Orbit" brand mark and warm-coral palette
 
-**Status**: Accepted
+**Status**: Superseded by [ADR-0040](0040-flow-chevrons-brand-mark.md)
 **Date**: 2026-06-15
 
 ## Context

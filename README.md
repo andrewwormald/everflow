@@ -1,7 +1,7 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="logo/mark-dark.gif">
-    <img src="logo/mark.gif" alt="Everflow" width="220" />
+    <source media="(prefers-color-scheme: dark)" srcset="logo/mark-dark.svg">
+    <img src="logo/mark.svg" alt="Everflow — three chevrons flowing forward" width="220" />
   </picture>
 
   <h1>everflow</h1>
