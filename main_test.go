@@ -91,6 +91,28 @@ func TestVersionString(t *testing.T) {
 	}
 }
 
+func TestStartupBanner(t *testing.T) {
+	orig := version
+	origCommit := gitCommit
+	t.Cleanup(func() {
+		version = orig
+		gitCommit = origCommit
+	})
+
+	version = "1.2.3"
+	gitCommit = "abc1234"
+
+	var buf bytes.Buffer
+	printStartupBanner(&buf)
+	got := buf.String()
+
+	for _, want := range []string{"everflow 1.2.3", "commit=abc1234", "pid=", "go=go", "/", "\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("banner %q missing %q", got, want)
+		}
+	}
+}
+
 func TestDirectStatus_PrintsRunSummary(t *testing.T) {
 	runID := "aaaaaaaa-0000-0000-0000-000000000001"
 	state := refactorsweep.AgentState{

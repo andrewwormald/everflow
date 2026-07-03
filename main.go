@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -256,6 +257,7 @@ func cmdDaemon(args []string) error {
 	}
 	go pollerLoop.Run(ctx)
 
+	printStartupBanner(os.Stderr)
 	logger.Info("everflow daemon started",
 		"version", version,
 		"listen", *listenAddr,
@@ -1262,4 +1264,9 @@ func versionString() string {
 func cmdVersion(_ []string) error {
 	fmt.Println(versionString())
 	return nil
+}
+
+func printStartupBanner(w io.Writer) {
+	fmt.Fprintf(w, "everflow %s commit=%s pid=%d go=%s %s/%s\n",
+		strings.TrimSpace(version), gitCommit, os.Getpid(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
