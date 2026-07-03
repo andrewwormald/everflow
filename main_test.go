@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -66,6 +67,36 @@ func seedStore(t *testing.T, runID string, state refactorsweep.AgentState) strin
 	}
 	if err := rs.Store(context.Background(), rec); err != nil {
 		t.Fatalf("store.Store: %v", err)
+	}
+	return sp
+}
+
+// seedStoreMulti creates a temp sqlite store seeded with one Record per
+// runID at the given status. Used by prefix-matching tests.
+func seedStoreMulti(t *testing.T, runIDs []string, status refactorsweep.AgentStatus) string {
+	t.Helper()
+	sp := filepath.Join(t.TempDir(), "store.db")
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	for i, rid := range runIDs {
+		obj, err := workflow.Marshal(&refactorsweep.AgentState{Goal: "seed"})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		rec := &workflow.Record{
+			WorkflowName: workflowName,
+			ForeignID:    fmt.Sprintf("fid-%d", i),
+			RunID:        rid,
+			RunState:     workflow.RunStateRunning,
+			Status:       int(status),
+			Object:       obj,
+			UpdatedAt:    time.Now(),
+		}
+		if err := rs.Store(context.Background(), rec); err != nil {
+			t.Fatalf("store.Store: %v", err)
+		}
 	}
 	return sp
 }
@@ -267,5 +298,91 @@ func TestDirectStatus_ListAllRuns(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing goal %q\n\nfull output:\n%s", want, out)
 		}
+	}
+}
+
+// Full-UUID run IDs sharing a leading substring, for prefix-matching tests.
+var prefixRunIDs = []string{
+	"00000000-0000-0000-0000-000000000001",
+	"00000000-0000-0000-0000-000000000002",
+	"00000000-0000-0000-0000-000000000003",
+}
+
+// TestPrefixMatching covers the three subcommands (status/abandon/resume) for
+// ambiguous, unique-full, and no-match prefixes. abandon/resume mutate state
+// on success, so each subtest reseeds a fresh temp store.
+func TestPrefixMatching(t *testing.T) {
+	const ambiguous = "000000"
+	const noMatch = "00000000-0000-0000-0000-000000000fff"
+	full := prefixRunIDs[0]
+
+	// resume requires Cancelled/Failed/Paused; the others accept Working.
+	subcmds := []struct {
+		name   string
+		status refactorsweep.AgentStatus
+		invoke func(ctx context.Context, storePath, runID string) error
+	}{
+		{"status", refactorsweep.StatusWorking, directStatus},
+		{"abandon", refactorsweep.StatusWorking, func(ctx context.Context, sp, rid string) error {
+			return directAbandon(ctx, sp, rid, "", "", "")
+		}},
+		{"resume", refactorsweep.StatusPaused, directResume},
+	}
+	for _, sc := range subcmds {
+		t.Run(sc.name, func(t *testing.T) {
+			seed := func() string { return seedStoreMulti(t, prefixRunIDs, sc.status) }
+
+			err := sc.invoke(context.Background(), seed(), ambiguous)
+			if err == nil {
+				t.Fatal("ambiguous: expected error")
+			}
+			for _, id := range prefixRunIDs {
+				if !strings.Contains(err.Error(), id) {
+					t.Errorf("ambiguous error missing %q; got: %s", id, err)
+				}
+			}
+
+			flush := captureStdout(t)
+			if err := sc.invoke(context.Background(), seed(), full); err != nil {
+				_ = flush()
+				t.Fatalf("full uuid: %v", err)
+			}
+			_ = flush()
+
+			err = sc.invoke(context.Background(), seed(), noMatch)
+			if err == nil || !strings.Contains(err.Error(), "no run matches prefix") {
+				t.Errorf("no match: want 'no run matches prefix' err, got: %v", err)
+			}
+		})
+	}
+}
+
+// TestDaemonUnreachableHint asserts that when the daemon is unreachable AND
+// no store fallback exists, all three subcommands surface a hint pointing at
+// --store. HOME is redirected to an empty temp dir so ~/.everflow/store.db
+// doesn't exist.
+func TestDaemonUnreachableHint(t *testing.T) {
+	const unreachable = "http://127.0.0.1:9" // reserved "discard" port
+	t.Setenv("HOME", t.TempDir())
+
+	subcmds := []struct {
+		name string
+		run  func(args []string) error
+	}{
+		{"status", cmdStatus},
+		{"abandon", cmdAbandon},
+		{"resume", cmdResume},
+	}
+	for _, sc := range subcmds {
+		t.Run(sc.name, func(t *testing.T) {
+			err := sc.run([]string{"--daemon", unreachable, prefixRunIDs[0]})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "is unreachable") || !strings.Contains(msg, "--store") {
+				t.Errorf("want 'is unreachable' and '--store' hint in error; got: %s", msg)
+			}
+		})
 	}
 }

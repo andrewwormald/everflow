@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -839,7 +840,7 @@ func cmdStart(args []string) error {
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
-	storePath := fs.String("store", "", "path to sqlite store (default: ~/.everflow/store.db); used when daemon is unreachable")
+	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.everflow/store.db if it exists)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -847,14 +848,31 @@ func cmdStatus(args []string) error {
 
 	url := *daemonURL + "/status"
 	if runID != "" {
+		full, err := resolveRunIDFromDaemon(*daemonURL, runID)
+		if err != nil {
+			// If the daemon is unreachable, fall back to the store when
+			// possible; otherwise surface a hint pointing at --store.
+			if isDaemonUnreachable(err) {
+				if fallback, ok := tryStoreFallback(*storePath); ok {
+					fmt.Fprintf(os.Stderr, "everflow: daemon unreachable (%v); reading store directly\n", err)
+					return directStatus(context.Background(), fallback, runID)
+				}
+				return daemonUnreachableError(*daemonURL, err)
+			}
+			return err
+		}
+		runID = full
 		url += "?run_id=" + runID
 	}
 	resp, err := http.Get(url) //nolint:noctx
 	if err != nil {
-		// Daemon unreachable — fall back to a direct sqlite read so the
-		// command works without the daemon running.
-		fmt.Fprintf(os.Stderr, "everflow: daemon unreachable (%v); reading store directly\n", err)
-		return directStatus(context.Background(), *storePath, runID)
+		// Daemon unreachable — fall back to a direct sqlite read when the
+		// store exists; otherwise emit a hint pointing at --store.
+		if fallback, ok := tryStoreFallback(*storePath); ok {
+			fmt.Fprintf(os.Stderr, "everflow: daemon unreachable (%v); reading store directly\n", err)
+			return directStatus(context.Background(), fallback, runID)
+		}
+		return daemonUnreachableError(*daemonURL, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -908,9 +926,13 @@ func directStatus(ctx context.Context, storePath, runID string) error {
 	}
 
 	if runID != "" {
-		rec, err := rs.Lookup(ctx, runID)
+		full, err := resolveRunIDFromStore(ctx, rs, runID)
 		if err != nil {
-			return fmt.Errorf("run %s not found: %w (hint: use 'everflow list' or query the store directly)", runID, err)
+			return err
+		}
+		rec, err := rs.Lookup(ctx, full)
+		if err != nil {
+			return fmt.Errorf("run %s not found: %w (hint: use 'everflow list' or query the store directly)", full, err)
 		}
 		s, err := recordToStatus(rec)
 		if err != nil {
@@ -1041,10 +1063,103 @@ func directList(ctx context.Context, storePath string) error {
 	return nil
 }
 
+// resolveRunIDPrefix returns the unique candidate matched by strings.HasPrefix.
+// Full UUIDs fall through cleanly (they match only themselves). Zero or
+// multiple matches return errors; the multi-match error lists every hit so
+// the user can pick.
+func resolveRunIDPrefix(candidates []string, prefix string) (string, error) {
+	if prefix == "" {
+		return "", errors.New("empty run-id")
+	}
+	var matches []string
+	for _, c := range candidates {
+		if strings.HasPrefix(c, prefix) {
+			matches = append(matches, c)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("no run matches prefix %q", prefix)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("prefix %q matches multiple runs — please be more specific:\n  %s", prefix, strings.Join(matches, "\n  "))
+	}
+}
+
+// resolveRunIDFromStore resolves a prefix against the sqlite store.
+func resolveRunIDFromStore(ctx context.Context, rs workflow.RecordStore, prefix string) (string, error) {
+	records, err := rs.List(ctx, workflowName, 0, 500, workflow.OrderTypeDescending)
+	if err != nil {
+		return "", fmt.Errorf("list runs: %w", err)
+	}
+	ids := make([]string, 0, len(records))
+	for _, r := range records {
+		ids = append(ids, r.RunID)
+	}
+	return resolveRunIDPrefix(ids, prefix)
+}
+
+// resolveRunIDFromDaemon resolves a prefix by fetching /status from the daemon
+// and filtering. Transport-level errors are returned unwrapped so callers can
+// detect them via isDaemonUnreachable.
+func resolveRunIDFromDaemon(daemonURL, prefix string) (string, error) {
+	resp, err := http.Get(daemonURL + "/status") //nolint:noctx
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("status: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+	var runs []runStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil {
+		return "", fmt.Errorf("decode: %w", err)
+	}
+	ids := make([]string, 0, len(runs))
+	for _, r := range runs {
+		ids = append(ids, r.RunID)
+	}
+	return resolveRunIDPrefix(ids, prefix)
+}
+
+// isDaemonUnreachable reports transport-level HTTP failures (connection
+// refused, timeout, DNS). http.Get returns errors only for transport failures
+// — well-formed 4xx / 5xx come back via resp.StatusCode with a nil error — so
+// a *url.Error in the chain is the reliable signal.
+func isDaemonUnreachable(err error) bool {
+	var urlErr *url.Error
+	return err != nil && errors.As(err, &urlErr)
+}
+
+// daemonUnreachableError wraps a transport failure with a hint pointing users
+// at --store as an alternative when the daemon isn't running.
+func daemonUnreachableError(daemonURL string, err error) error {
+	return fmt.Errorf("daemon at %s is unreachable: %w\nhint: pass --store /path/to/store.db to read the sqlite store directly (no daemon needed)", daemonURL, err)
+}
+
+// tryStoreFallback picks a store path for the offline-rescue path. --store
+// wins; otherwise ~/.everflow/store.db is used only when it exists — we
+// don't silently create an empty store and pretend nothing is wrong.
+func tryStoreFallback(userProvided string) (string, bool) {
+	if userProvided != "" {
+		return userProvided, true
+	}
+	sp, err := defaultStorePath("")
+	if err != nil {
+		return "", false
+	}
+	if _, err := os.Stat(sp); err != nil {
+		return "", false
+	}
+	return sp, true
+}
+
 func cmdAbandon(args []string) error {
 	fs := flag.NewFlagSet("abandon", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
-	storePath := fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db); used when daemon is unreachable")
+	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.everflow/store.db if it exists)")
 	reasonFlag := fs.String("reason", "", "optional reason for abandonment")
 	gitlabBaseURL := fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
 	githubBaseURL := fs.String("github-base-url", "", "GitHub API base URL")
@@ -1057,21 +1172,31 @@ func cmdAbandon(args []string) error {
 	}
 
 	// Try daemon first (preferred path: daemon handles two-tap confirmation
-	// and provider-side MR cleanup gracefully).
-	if err := sendControl(*daemonURL, runID, "abandon", *reasonFlag); err == nil {
-		return nil
+	// and provider-side MR cleanup gracefully). Resolve the prefix against
+	// the daemon's view of the store so short IDs work.
+	full, resolveErr := resolveRunIDFromDaemon(*daemonURL, runID)
+	if resolveErr == nil {
+		if err := sendControl(*daemonURL, full, "abandon", *reasonFlag); err == nil {
+			return nil
+		}
+	} else if !isDaemonUnreachable(resolveErr) {
+		return resolveErr
 	}
 
 	// Daemon not reachable — fall back to direct store manipulation. This is
 	// the rescue path: no two-tap, immediate force-cancel. See ADR-0037.
+	fallback, ok := tryStoreFallback(*storePath)
+	if !ok {
+		return daemonUnreachableError(*daemonURL, resolveErr)
+	}
 	fmt.Fprintln(os.Stderr, "everflow: daemon unreachable; falling back to direct store write")
-	return directAbandon(context.Background(), *storePath, runID, *reasonFlag, *gitlabBaseURL, *githubBaseURL)
+	return directAbandon(context.Background(), fallback, runID, *reasonFlag, *gitlabBaseURL, *githubBaseURL)
 }
 
 func cmdResume(args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
-	storePath := fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db); used when daemon is unreachable")
+	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.everflow/store.db if it exists)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1083,15 +1208,24 @@ func cmdResume(args []string) error {
 	// Try daemon first (preferred: daemon can resume Paused → AwaitingMerge).
 	// The daemon path handles the AwaitingMerge callback correctly; the direct
 	// path is needed for Cancelled/Failed → Discovering revive.
-	if err := sendControl(*daemonURL, runID, "resume", ""); err == nil {
-		return nil
+	full, resolveErr := resolveRunIDFromDaemon(*daemonURL, runID)
+	if resolveErr == nil {
+		if err := sendControl(*daemonURL, full, "resume", ""); err == nil {
+			return nil
+		}
+	} else if !isDaemonUnreachable(resolveErr) {
+		return resolveErr
 	}
 
 	// Daemon not reachable — fall back to direct store write. The daemon must
 	// be (re)started to process the outbox event that drives the Discovering
 	// step. See ADR-0037.
+	fallback, ok := tryStoreFallback(*storePath)
+	if !ok {
+		return daemonUnreachableError(*daemonURL, resolveErr)
+	}
 	fmt.Fprintln(os.Stderr, "everflow: daemon unreachable; falling back to direct store write")
-	return directResume(context.Background(), *storePath, runID)
+	return directResume(context.Background(), fallback, runID)
 }
 
 // defaultStorePath returns ~/.everflow/store.db when path is blank.
@@ -1119,6 +1253,11 @@ func directAbandon(ctx context.Context, storePath, runID, reason, gitlabBaseURL,
 		return fmt.Errorf("open store %s: %w", sp, err)
 	}
 
+	full, err := resolveRunIDFromStore(ctx, rs, runID)
+	if err != nil {
+		return err
+	}
+	runID = full
 	rec, err := rs.Lookup(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("run %s not found: %w", runID, err)
@@ -1187,6 +1326,11 @@ func directResume(ctx context.Context, storePath, runID string) error {
 		return fmt.Errorf("open store %s: %w", sp, err)
 	}
 
+	full, err := resolveRunIDFromStore(ctx, rs, runID)
+	if err != nil {
+		return err
+	}
+	runID = full
 	rec, err := rs.Lookup(ctx, runID)
 	if err != nil {
 		return fmt.Errorf("run %s not found: %w", runID, err)
