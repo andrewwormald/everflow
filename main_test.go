@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -88,6 +90,34 @@ func TestVersionString(t *testing.T) {
 	want := "everflow 1.2.3 (commit: abc1234, built: 2026-07-03T12:00:00Z)"
 	if got != want {
 		t.Errorf("versionString() = %q, want %q", got, want)
+	}
+}
+
+func TestDaemonBanner(t *testing.T) {
+	orig := version
+	origCommit := gitCommit
+	t.Cleanup(func() {
+		version = orig
+		gitCommit = origCommit
+	})
+
+	version = "1.2.3"
+	gitCommit = "abc1234"
+
+	line := daemonBannerLine()
+
+	wantPID := fmt.Sprintf("pid=%d", os.Getpid())
+	wantPlatform := fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
+	for _, want := range []string{
+		"everflow daemon 1.2.3",
+		"commit=abc1234",
+		wantPID,
+		"go=" + runtime.Version(),
+		wantPlatform,
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("banner missing %q\n\nfull line: %s", want, line)
+		}
 	}
 }
 
