@@ -700,6 +700,59 @@ func TestWork_RunnerNoChange_BlacklistsAndContinues(t *testing.T) {
 	}
 }
 
+// TestWork_RunnerContinue_TreatedAsDone is the regression guard for the
+// bug caught by Run b723ebc4 on 2026-07-03. DecisionContinue is
+// documented as planner-only ("more work to plan"), but Claude sometimes
+// returns it from a work turn. Before the fix, work()'s catch-all
+// default routed it to StatusFailed and terminated the whole Run on
+// what should have been a routine "keep going" signal.
+//
+// After the fix: DecisionContinue behaves like DecisionDone. If the
+// worktree is dirty, the runner's work is committed + pushed + an MR
+// opens (via the shared Done code path). If the worktree is clean, the
+// unit is blacklisted (identical to Done + !dirty).
+func TestWork_RunnerContinue_TreatedAsDone(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "Added item A; item B still pending — planner should pick it next",
+		Tokens:   200,
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 8}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Multi-item spec",
+		CurrentUnit:  "increment-1",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: want nil err, got %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf(
+			"DecisionContinue with dirty worktree must route to AwaitingMerge (same as Done); got %v. "+
+				"If this returns StatusFailed with 'unexpected decision', the fix has regressed.",
+			next,
+		)
+	}
+	if r.Object.LastError != "" {
+		t.Errorf("Continue should not set LastError (it's not a failure): %q", r.Object.LastError)
+	}
+	if len(fr.calls) != 1 {
+		t.Errorf("expected exactly one runner call; got %d", len(fr.calls))
+	}
+	// The MR should have been opened via CreateMR.
+	if mr, ok := r.Object.InFlight["increment-1"]; !ok || mr.IID != 8 {
+		t.Errorf("expected InFlight[increment-1] = MR#8; got %+v", r.Object.InFlight)
+	}
+}
+
 // TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
 // for the scope-narrowing fix. Without threading the planner's per-
 // increment rationale into req.Goal, the runner receives only the

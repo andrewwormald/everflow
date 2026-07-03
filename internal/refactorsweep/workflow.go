@@ -612,7 +612,20 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	}
 
 	switch resp.Decision {
-	case DecisionDone:
+	case DecisionDone, DecisionContinue:
+		// DecisionContinue is documented as planner-only ("there's more
+		// to do; pick another increment"), but Claude sometimes returns
+		// it from a work turn — semantically "I did some work and there
+		// might be more". Treat it identically to DecisionDone here:
+		// ship what's in the worktree if dirty; blacklist if clean. The
+		// planner will decide on the next increment after the MR merges,
+		// which is what Continue is asking for anyway.
+		//
+		// Regressed on Run b723ebc4 (2026-07-03) when the runner returned
+		// Continue in the work phase for increment-2, and work()'s catch-
+		// all default routed it to StatusFailed — same shape as the
+		// DecisionNoChange bug fixed in b6926b9.
+
 		// 3. Did the runner actually change anything?
 		dirty, err := d.Git.HasChanges(ctx, worktree)
 		if err != nil {
@@ -724,9 +737,11 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		return StatusDiscovering, nil
 
 	default:
-		// Continue / Ask are unexpected in the work phase — the runner
-		// is supposed to produce a complete change set or give up.
-		// NoChange is handled above.
+		// Only Ask is genuinely unexpected here: it's the planner's way
+		// of asking a clarifying question, but by the time we're in work
+		// the planner has already picked the unit — a runner Ask would
+		// mean the runner is confused about what to do rather than what
+		// to plan. Done/Continue/Fail/NoChange are all handled above.
 		r.Object.LastError = fmt.Sprintf("unexpected decision %q in work phase for unit %q",
 			resp.Decision, unitID)
 		return StatusFailed, nil
