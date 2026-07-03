@@ -123,6 +123,103 @@ func TestDirectStatus_PrintsRunSummary(t *testing.T) {
 	}
 }
 
+func TestDirectList(t *testing.T) {
+	type seedRun struct {
+		runID string
+		state refactorsweep.AgentState
+	}
+	tests := []struct {
+		name     string
+		seeds    []seedRun
+		wantOut  []string
+		wantNone bool
+	}{
+		{
+			name:     "empty store",
+			seeds:    nil,
+			wantNone: true,
+		},
+		{
+			name: "single run",
+			seeds: []seedRun{
+				{
+					runID: "aaaaaaaa-1111-0000-0000-000000000001",
+					state: refactorsweep.AgentState{
+						Goal: "migrate the acme service",
+						Mode: "spec",
+					},
+				},
+			},
+			wantOut: []string{"aaaaaaaa-1111...", "spec", "migrate the acme service"},
+		},
+		{
+			name: "multi run",
+			seeds: []seedRun{
+				{
+					runID: "bbbbbbbb-0001-0000-0000-000000000001",
+					state: refactorsweep.AgentState{Goal: "fix the alpha bug", Mode: "sweep"},
+				},
+				{
+					runID: "cccccccc-0002-0000-0000-000000000002",
+					state: refactorsweep.AgentState{Goal: "add beta feature", Mode: "spec"},
+				},
+			},
+			wantOut: []string{"fix the alpha bug", "add beta feature", "bbbbbbbb-0001...", "cccccccc-0002..."},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			sp := filepath.Join(dir, "store.db")
+
+			if len(tc.seeds) > 0 {
+				rs, _, err := store.Open(sp)
+				if err != nil {
+					t.Fatalf("store.Open: %v", err)
+				}
+				for _, s := range tc.seeds {
+					obj, err := workflow.Marshal(&s.state)
+					if err != nil {
+						t.Fatalf("marshal: %v", err)
+					}
+					rec := &workflow.Record{
+						WorkflowName: workflowName,
+						ForeignID:    "fid",
+						RunID:        s.runID,
+						RunState:     workflow.RunStateRunning,
+						Status:       int(refactorsweep.StatusWorking),
+						Object:       obj,
+						UpdatedAt:    time.Now(),
+					}
+					if err := rs.Store(context.Background(), rec); err != nil {
+						t.Fatalf("store.Store: %v", err)
+					}
+				}
+			}
+
+			flush := captureStdout(t)
+			err := directList(context.Background(), sp)
+			out := flush()
+
+			if err != nil {
+				t.Fatalf("directList: %v", err)
+			}
+			if tc.wantNone {
+				if !strings.Contains(out, "no runs found") {
+					t.Errorf("expected 'no runs found', got:\n%s", out)
+				}
+				return
+			}
+			for _, want := range tc.wantOut {
+				if !strings.Contains(out, want) {
+					t.Errorf("output missing %q\n\nfull output:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
 func TestDirectStatus_ListAllRuns(t *testing.T) {
 	dir := t.TempDir()
 	sp := filepath.Join(dir, "store.db")
