@@ -6,8 +6,10 @@ Brand mark for everflow — the **Flow Chevrons**: three chevrons stepping forwa
 
 | File | Use |
 |---|---|
-| `mark.svg` | Static SVG, light-mode variant (dark chevrons + green leading). Use in READMEs, docs, anywhere with a light background. |
-| `mark-dark.svg` | Static SVG, dark-mode variant (white chevrons + green leading). Pair with `mark.svg` in a `<picture>` for `prefers-color-scheme` switching. |
+| `wordmark.svg` | **Primary lockup** — chevrons + "everflow" wordmark side by side. Use as the README banner and anywhere the mark appears with the name. Light-mode variant. |
+| `wordmark-dark.svg` | Primary lockup, dark-mode variant. Pair with `wordmark.svg` in a `<picture>` for `prefers-color-scheme` switching. |
+| `mark.svg` | Standalone mark — chevrons only, no wordmark. Use where the "everflow" name is already visible in surrounding text or UI chrome. Light-mode. |
+| `mark-dark.svg` | Standalone mark, dark-mode variant. |
 | `favicon.svg` | 16-px-optimised single-chevron variant — the three-chevron rhythm doesn't survive at favicon scale, so this reduces to the leading green chevron alone. |
 
 All variants have **transparent backgrounds** so they lay cleanly over any surface.

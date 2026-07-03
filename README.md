@@ -1,10 +1,8 @@
 <div align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="logo/mark-dark.svg">
-    <img src="logo/mark.svg" alt="Everflow — three chevrons flowing forward" width="220" />
+    <source media="(prefers-color-scheme: dark)" srcset="logo/wordmark-dark.svg">
+    <img src="logo/wordmark.svg" alt="everflow" width="360" />
   </picture>
-
-  <h1>everflow</h1>
 
   <p><strong>Turn one large change into a chain of small, individually-reviewable MRs — and shepherd each one to merge before opening the next.</strong></p>
 </div>
