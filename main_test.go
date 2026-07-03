@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -217,6 +219,31 @@ func TestDirectList(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDaemonBannerLine(t *testing.T) {
+	orig, origCommit := version, gitCommit
+	t.Cleanup(func() { version, gitCommit = orig, origCommit })
+
+	version = "2.3.4"
+	gitCommit = "deadbeef"
+
+	banner := daemonBannerLine()
+
+	wants := []string{
+		"everflow daemon starting",
+		"version=2.3.4",
+		"commit=deadbeef",
+		fmt.Sprintf("pid=%d", os.Getpid()),
+		fmt.Sprintf("go=%s", runtime.Version()),
+		fmt.Sprintf("os=%s", runtime.GOOS),
+		fmt.Sprintf("arch=%s", runtime.GOARCH),
+	}
+	for _, w := range wants {
+		if !strings.Contains(banner, w) {
+			t.Errorf("banner missing %q\n\nfull banner: %s", w, banner)
+		}
 	}
 }
 
