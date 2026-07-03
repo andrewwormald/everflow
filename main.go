@@ -986,8 +986,59 @@ func printRunStatus(w io.Writer, s runStatusResponse) {
 }
 
 func cmdList(args []string) error {
-	// cmdList is a convenience alias for `everflow status` (lists all runs).
-	return cmdStatus(args)
+	fs := flag.NewFlagSet("list", flag.ExitOnError)
+	storePath := fs.String("store", "", "path to sqlite store (default: ~/.everflow/store.db)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return directList(context.Background(), *storePath)
+}
+
+// directList prints all Runs from the sqlite store, one per line, sorted newest first.
+func directList(ctx context.Context, storePath string) error {
+	sp, err := defaultStorePath(storePath)
+	if err != nil {
+		return err
+	}
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		return fmt.Errorf("open store %s: %w", sp, err)
+	}
+
+	records, err := rs.List(ctx, workflowName, 0, 500, workflow.OrderTypeDescending)
+	if err != nil {
+		return fmt.Errorf("list runs: %w", err)
+	}
+	if len(records) == 0 {
+		fmt.Println("no runs found")
+		return nil
+	}
+	for i := range records {
+		rec := &records[i]
+		var state refactorsweep.AgentState
+		if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+			continue
+		}
+		runID := rec.RunID
+		if len(runID) > 13 {
+			runID = runID[:13] + "..."
+		}
+		mode := state.Mode
+		if mode == "" {
+			mode = "sweep"
+		}
+		status := refactorsweep.AgentStatus(rec.Status).String()
+		turns := len(state.History)
+		goal := state.Goal
+		if len(goal) > 40 {
+			goal = `"` + goal[:37] + `..."`
+		} else {
+			goal = `"` + goal + `"`
+		}
+		fmt.Printf("%-16s  %-5s  %-9s  %2d turns  goal: %s\n",
+			runID, mode, status, turns, goal)
+	}
+	return nil
 }
 
 func cmdAbandon(args []string) error {
