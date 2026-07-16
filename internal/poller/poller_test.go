@@ -55,7 +55,7 @@ func (f *fakeAuthProvider) CreateMR(_ context.Context, _ string, _ provider.MRDr
 func (f *fakeAuthProvider) PostComment(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) CloseMR(_ context.Context, _ string, _ int) error { return nil }
-func (f *fakeAuthProvider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) ([]provider.NotePoll, error) { return nil, nil }
+func (f *fakeAuthProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) { return nil, nil }
 func (f *fakeAuthProvider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeAuthProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error { return nil }
 func (f *fakeAuthProvider) IsBot(_ provider.User) bool { return false }
@@ -87,6 +87,77 @@ func (d *dispatchRecord) kinds() []provider.EventKind {
 		out[i] = ev.Kind
 	}
 	return out
+}
+
+// notesProvider wraps fakeAuthProvider and additionally records the
+// provider.NoteCursor it was called with and returns a fixed set of notes.
+type notesProvider struct {
+	fakeAuthProvider
+	notes      []provider.NotePoll
+	gotCursors []provider.NoteCursor
+}
+
+func (n *notesProvider) ListNotesSince(_ context.Context, _ string, _ int, since provider.NoteCursor) ([]provider.NotePoll, error) {
+	// Deep-copy ByStream: the poller mutates its own map in place after
+	// this call returns to record the notes we're about to hand back, and
+	// it's the SAME map instance passed in via since.ByStream. Snapshot it
+	// here so later assertions see what THIS call actually received.
+	byStream := make(map[string]int64, len(since.ByStream))
+	for k, v := range since.ByStream {
+		byStream[k] = v
+	}
+	n.gotCursors = append(n.gotCursors, provider.NoteCursor{ByStream: byStream, Legacy: since.Legacy})
+	return n.notes, nil
+}
+
+// TestPollRun_NoteCursor_PerStreamWithLegacyFallback verifies the poller
+// assembles provider.NoteCursor from ActiveRun's per-stream cursors plus
+// the legacy scalar (ADR-0041), and that a returned note's Stream tag
+// advances only its own stream's cursor.
+func TestPollRun_NoteCursor_PerStreamWithLegacyFallback(t *testing.T) {
+	np := &notesProvider{
+		notes: []provider.NotePoll{
+			{ID: 100, Body: "inline review comment", Stream: "pull_request_review_comment"},
+		},
+	}
+	dr := &dispatchRecord{}
+	l := &Loop{
+		Providers:  map[string]provider.Provider{"fake": np},
+		Dispatcher: dr.dispatch,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError})),
+	}
+
+	run := ActiveRun{
+		RunID:    "run-1",
+		Provider: "fake",
+		InFlight: map[string]provider.MR{"unit-a": {ProjectID: "x/y", IID: 1}},
+		// Legacy watermark already advanced past 100 by a prior issue_comment
+		// on a different stream; the review_comment stream has no cursor yet.
+		LastSeenNoteIDs:     map[int]int64{1: 200},
+		LastSeenNoteCursors: map[int]map[string]int64{1: {"issue_comment": 200}},
+	}
+
+	l.pollRun(t.Context(), run)
+
+	if len(np.gotCursors) != 1 {
+		t.Fatalf("want 1 ListNotesSince call, got %d", len(np.gotCursors))
+	}
+	got := np.gotCursors[0]
+	if got.Legacy != 200 {
+		t.Errorf("want Legacy=200, got %d", got.Legacy)
+	}
+	if got.ByStream["issue_comment"] != 200 {
+		t.Errorf("want ByStream[issue_comment]=200, got %+v", got.ByStream)
+	}
+	if _, ok := got.ByStream["pull_request_review_comment"]; ok {
+		t.Errorf("pull_request_review_comment should have no cursor yet, got %+v", got.ByStream)
+	}
+
+	// The note (id 100, lower than the legacy floor 200) must still have
+	// been dispatched — its own stream had never advanced.
+	if len(dr.events) != 1 || dr.events[0].Note.ID != 100 {
+		t.Fatalf("want the id-100 review comment dispatched despite legacy=200; got %+v", dr.events)
+	}
 }
 
 func TestPollRun_AuthFailure_DispatchesAuthFailureEventOnceOnly(t *testing.T) {

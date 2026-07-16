@@ -126,7 +126,7 @@ func (f *fakeProvider) PostComment(_ context.Context, projectID string, mrIID in
 }
 func (f *fakeProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ string) error { return nil }
 func (f *fakeProvider) GetMRState(_ context.Context, _ string, _ int) (string, error)    { return "opened", nil }
-func (f *fakeProvider) ListNotesSince(_ context.Context, _ string, _ int, _ int64) ([]provider.NotePoll, error) {
+func (f *fakeProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) {
 	return nil, nil
 }
 func (f *fakeProvider) ResolveDiscussion(_ context.Context, projectID string, mrIID int, discussionID string) error {
@@ -783,6 +783,85 @@ func TestWork_RunnerContinue_TreatedAsDone(t *testing.T) {
 	// The MR should have been opened via CreateMR.
 	if mr, ok := r.Object.InFlight["increment-1"]; !ok || mr.IID != 8 {
 		t.Errorf("expected InFlight[increment-1] = MR#8; got %+v", r.Object.InFlight)
+	}
+}
+
+// TestWork_RunnerContinue_RecordsRemainderOnPlanEntry covers the follow-on
+// fix to TestWork_RunnerContinue_TreatedAsDone: when the runner splits an
+// oversized unit and returns DecisionContinue, work() must not just ship
+// the partial MR silently — it should note what's left on the matching
+// Plan entry so the planner can schedule a follow-on increment instead of
+// assuming the unit is fully done.
+func TestWork_RunnerContinue_RecordsRemainderOnPlanEntry(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "Added item A; item B still pending — planner should pick it next",
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 9}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Multi-item spec",
+		CurrentUnit:  "increment-1",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+		Plan: []PlannedIncrement{
+			{UnitID: "increment-1", Rationale: "split item A and B", Outcome: "in_flight"},
+		},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: want nil err, got %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Fatalf("want AwaitingMerge, got %v", next)
+	}
+	if len(r.Object.Plan) != 1 {
+		t.Fatalf("Plan should still have 1 entry; got %+v", r.Object.Plan)
+	}
+	want := "Added item A; item B still pending — planner should pick it next"
+	if got := r.Object.Plan[0].RemainderNote; got != want {
+		t.Errorf("Plan[0].RemainderNote: want %q, got %q", want, got)
+	}
+	// DecisionDone must NOT set a remainder note — only Continue does.
+	if r.Object.Plan[0].Outcome != "in_flight" {
+		t.Errorf("Plan[0].Outcome should be untouched by work() (merge is what marks completed); got %q", r.Object.Plan[0].Outcome)
+	}
+}
+
+// TestWork_RunnerDone_NoRemainderNote is the counterpart guard: a normal
+// DecisionDone must never populate RemainderNote, even when a Plan entry
+// exists for the unit.
+func TestWork_RunnerDone_NoRemainderNote(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "Fully migrated svc-payments",
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 10}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Multi-item spec",
+		CurrentUnit:  "increment-1",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+		Plan: []PlannedIncrement{
+			{UnitID: "increment-1", Rationale: "migrate svc-payments", Outcome: "in_flight"},
+		},
+	})
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: want nil err, got %v", err)
+	}
+	if got := r.Object.Plan[0].RemainderNote; got != "" {
+		t.Errorf("Plan[0].RemainderNote should stay empty on Done; got %q", got)
 	}
 }
 
@@ -1698,6 +1777,70 @@ func TestSelfCommentLoop_EndToEnd(t *testing.T) {
 				"If the watermark doesn't advance for skipped echoes, the poller re-dispatches them forever.",
 			echo.MR.IID, echo.Note.ID, got,
 		)
+	}
+}
+
+// TestResume_CrossStreamWatermark_ByStreamCursorAdvancesIndependently is the
+// regression guard for ADR-0041's cross-stream watermark bug. GitHub's
+// comment endpoints (issue_comment, pull_request_review_comment,
+// pull_request_review) draw ids from independent sequences. Before this
+// fix, AgentState tracked a single scalar high-water mark per MR
+// (LastSeenNoteIDs) shared across all three streams: once a higher-id
+// issue comment advanced it, a lower-id review comment on a DIFFERENT
+// stream would be (mis)classified as already-seen and never delivered.
+//
+// This simulates the two-tick sequence that trips the bug: tick 1 delivers
+// a higher-id issue comment; tick 2 delivers a lower-id inline review
+// comment that must still make it through because its own stream's cursor
+// has never advanced.
+func TestResume_CrossStreamWatermark_ByStreamCursorAdvancesIndependently(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "ack"}})
+	mr := provider.MR{ProjectID: "acme/example", IID: 42}
+	r := awaitingRun(t, "svc-a", mr)
+
+	// --- Tick 1: a higher-id issue_comment arrives and is processed.
+	issueComment := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 200, Body: "please also handle the edge case", Stream: "issue_comment"},
+	}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, issueComment)); err != nil {
+		t.Fatalf("resume(issue_comment): %v", err)
+	}
+	if got := r.Object.LastSeenNoteIDs[mr.IID]; got != 200 {
+		t.Fatalf("legacy scalar watermark should advance to 200, got %d", got)
+	}
+	if got := r.Object.LastSeenNoteIDsByStream[mr.IID]["issue_comment"]; got != 200 {
+		t.Fatalf("issue_comment stream cursor should advance to 200, got %d", got)
+	}
+
+	// --- Tick 2: a LOWER-id inline review comment arrives on a DIFFERENT
+	// stream. A single shared watermark (200) would have silently dropped
+	// this — id 100 <= 200 looks "already seen" even though this exact
+	// stream has never delivered anything yet.
+	reviewComment := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 100, Body: "fix this line", Stream: "pull_request_review_comment", DiscussionID: "disc-1"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, reviewComment))
+	if err != nil {
+		t.Fatalf("resume(pull_request_review_comment): %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("processed comment should stay AwaitingMerge, got %v", next)
+	}
+	if r.Object.SubagentInvocations != 2 {
+		t.Errorf("both comments should have invoked the runner (subagent not skipped); got %d invocations", r.Object.SubagentInvocations)
+	}
+	if got := r.Object.LastSeenNoteIDsByStream[mr.IID]["pull_request_review_comment"]; got != 100 {
+		t.Errorf("pull_request_review_comment stream cursor should advance to 100 independently of the issue_comment stream, got %d", got)
+	}
+	// The legacy scalar reflects the max ever seen across all streams and
+	// must NOT regress — it stays at 200, the highest id observed so far.
+	if got := r.Object.LastSeenNoteIDs[mr.IID]; got != 200 {
+		t.Errorf("legacy scalar watermark must remain the max across streams (200), got %d", got)
 	}
 }
 

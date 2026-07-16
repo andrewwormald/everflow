@@ -60,17 +60,22 @@ type ActiveRun struct {
 	Author    provider.User // for IsAuthor classification when synthesising events
 	InFlight  map[string]provider.MR
 	// LastSeenNoteIDs maps MR IID → highest note ID we've already
-	// processed. Read at poll-start; the SaveSnapshot callback persists
-	// updates.
+	// processed, across all comment streams merged (the pre-ADR-0041
+	// scalar). Read at poll-start; the SaveSnapshot callback persists
+	// updates. Used as provider.NoteCursor.Legacy — the floor for any
+	// stream not yet present in LastSeenNoteCursors.
 	LastSeenNoteIDs map[int]int64
-	LastMRStates    map[int]string
+	// LastSeenNoteCursors maps MR IID → per-stream high-water mark (see
+	// provider.NoteCursor and AgentState.LastSeenNoteIDsByStream).
+	LastSeenNoteCursors map[int]map[string]int64
+	LastMRStates        map[int]string
 }
 
 // SaveSnapshot is called after each successful poll for a Run to persist
-// the updated LastSeenNoteIDs and LastMRStates on AgentState. Typically
-// triggers a workflow.Callback no-op transition so the values flush to
-// the durable store.
-type SaveSnapshot func(ctx context.Context, runID string, noteIDs map[int]int64, mrStates map[int]string) error
+// the updated LastSeenNoteIDs, LastSeenNoteCursors, and LastMRStates on
+// AgentState. Typically triggers a workflow.Callback no-op transition so
+// the values flush to the durable store.
+type SaveSnapshot func(ctx context.Context, runID string, noteIDs map[int]int64, noteCursors map[int]map[string]int64, mrStates map[int]string) error
 
 // Loop runs in a goroutine. It ticks every interval, walks active Runs,
 // queries the provider for changes since the last snapshot, and synthesises
@@ -135,6 +140,7 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 
 	// Per-Run snapshot buffers; persisted at end via SaveSnapshot.
 	noteIDs := copyInt64Map(r.LastSeenNoteIDs)
+	noteCursors := copyNoteCursorMap(r.LastSeenNoteCursors)
 	mrStates := copyStringMap(r.LastMRStates)
 	updated := false
 	hadAuthErr := false
@@ -175,8 +181,13 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 			}
 		}
 
-		// 2. New comments since last seen?
-		since := noteIDs[mr.IID]
+		// 2. New comments since last seen? Per-stream cursor with a
+		// fallback to the legacy scalar for any stream not yet tracked
+		// individually (ADR-0041) — see provider.NoteCursor. ByStream
+		// aliases noteCursors[mr.IID] (mutated below once notes come
+		// back) — safe because the provider only reads it during this
+		// call, before any mutation happens.
+		since := provider.NoteCursor{ByStream: noteCursors[mr.IID], Legacy: noteIDs[mr.IID]}
 		notes, err := p.ListNotesSince(ctx, mr.ProjectID, mr.IID, since)
 		if err != nil {
 			if provider.IsAuthError(err) {
@@ -194,6 +205,15 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 				noteIDs[mr.IID] = n.ID
 				updated = true
 			}
+			if n.Stream != "" {
+				if noteCursors[mr.IID] == nil {
+					noteCursors[mr.IID] = map[string]int64{}
+				}
+				if n.ID > noteCursors[mr.IID][n.Stream] {
+					noteCursors[mr.IID][n.Stream] = n.ID
+					updated = true
+				}
+			}
 			mu.Unlock()
 			ev := provider.Event{
 				Kind:      provider.EventNoteAdded,
@@ -201,7 +221,7 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 				MR:        mr,
 				Author:    n.Author,
 				IsBot:     n.Author.Bot,
-				Note:      provider.Note{ID: n.ID, Body: n.Body},
+				Note:      provider.Note{ID: n.ID, Body: n.Body, DiscussionID: n.DiscussionID, Stream: n.Stream},
 				IsAuthor:  strings.EqualFold(n.Author.Handle, r.Author.Handle) && r.Author.Handle != "",
 				ReceivedAt: time.Now().UnixNano(),
 			}
@@ -253,7 +273,7 @@ func (l *Loop) pollRun(ctx context.Context, r ActiveRun) {
 	}
 
 	if updated && l.SaveSnapshot != nil {
-		if err := l.SaveSnapshot(ctx, r.RunID, noteIDs, mrStates); err != nil {
+		if err := l.SaveSnapshot(ctx, r.RunID, noteIDs, noteCursors, mrStates); err != nil {
 			l.Logger.Warn("poller: save snapshot", "run_id", r.RunID, "err", err)
 		}
 	}
@@ -330,6 +350,22 @@ func copyInt64Map(m map[int]int64) map[int]int64 {
 
 func copyStringMap(m map[int]string) map[int]string {
 	out := make(map[int]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func copyNoteCursorMap(m map[int]map[string]int64) map[int]map[string]int64 {
+	out := make(map[int]map[string]int64, len(m))
+	for k, v := range m {
+		out[k] = copyInt64StringKeyedMap(v)
+	}
+	return out
+}
+
+func copyInt64StringKeyedMap(m map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(m))
 	for k, v := range m {
 		out[k] = v
 	}

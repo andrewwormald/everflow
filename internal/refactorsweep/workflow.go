@@ -486,6 +486,20 @@ func updatePlanOutcome(s *AgentState, unitID, outcome string) {
 	}
 }
 
+// updatePlanRemainder records what's left of a unit that shipped a partial
+// MR (DecisionContinue in the work phase) rather than the whole unit, so
+// the planner sees it on the next iteration. No-op if there's no matching
+// Plan entry (e.g. tests that set CurrentUnit directly without going
+// through discoverSpec).
+func updatePlanRemainder(s *AgentState, unitID, note string) {
+	for i := range s.Plan {
+		if s.Plan[i].UnitID == unitID {
+			s.Plan[i].RemainderNote = note
+			return
+		}
+	}
+}
+
 // planRationaleFor returns the planner's per-increment rationale for
 // unitID from AgentState.Plan, or "" if there isn't one. When Plan
 // contains multiple entries with the same UnitID (e.g. re-plan after
@@ -617,16 +631,23 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	case DecisionDone, DecisionContinue:
 		// DecisionContinue is documented as planner-only ("there's more
 		// to do; pick another increment"), but Claude sometimes returns
-		// it from a work turn — semantically "I did some work and there
-		// might be more". Treat it identically to DecisionDone here:
-		// ship what's in the worktree if dirty; blacklist if clean. The
-		// planner will decide on the next increment after the MR merges,
-		// which is what Continue is asking for anyway.
+		// it from a work turn — semantically "I did some work but this
+		// unit was bigger than one turn; there's a remainder". Treat it
+		// like DecisionDone for shipping purposes: ship what's in the
+		// worktree if dirty; blacklist if clean. The difference from Done
+		// is that we record the runner's own account of what's left onto
+		// the Plan entry (RemainderNote) instead of silently treating the
+		// partial diff as if the unit were complete — the planner reads
+		// this on its next iteration and can schedule a follow-on
+		// increment rather than assuming the unit is done.
 		//
 		// Regressed on Run b723ebc4 (2026-07-03) when the runner returned
 		// Continue in the work phase for increment-2, and work()'s catch-
 		// all default routed it to StatusFailed — same shape as the
 		// DecisionNoChange bug fixed in b6926b9.
+		if resp.Decision == DecisionContinue {
+			updatePlanRemainder(r.Object, unitID, resp.Summary)
+		}
 
 		// 3. Did the runner actually change anything?
 		dirty, err := d.Git.HasChanges(ctx, worktree)
@@ -837,6 +858,21 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		}
 		if ev.Note.ID > r.Object.LastSeenNoteIDs[ev.MR.IID] {
 			r.Object.LastSeenNoteIDs[ev.MR.IID] = ev.Note.ID
+		}
+		// Per-stream cursor (ADR-0041) — see provider.NoteCursor. Note.Stream
+		// is empty for events synthesised before this field existed (or from
+		// a provider that hasn't been updated); skip rather than bucket
+		// those under a bogus "" stream key.
+		if ev.Note.Stream != "" {
+			if r.Object.LastSeenNoteIDsByStream == nil {
+				r.Object.LastSeenNoteIDsByStream = map[int]map[string]int64{}
+			}
+			if r.Object.LastSeenNoteIDsByStream[ev.MR.IID] == nil {
+				r.Object.LastSeenNoteIDsByStream[ev.MR.IID] = map[string]int64{}
+			}
+			if ev.Note.ID > r.Object.LastSeenNoteIDsByStream[ev.MR.IID][ev.Note.Stream] {
+				r.Object.LastSeenNoteIDsByStream[ev.MR.IID][ev.Note.Stream] = ev.Note.ID
+			}
 		}
 	case provider.EventMRMerged:
 		if r.Object.LastMRStates == nil {

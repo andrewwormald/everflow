@@ -338,12 +338,12 @@ func TestListNotesSince_MergesThreeStreams(t *testing.T) {
 	defer srv.Close()
 
 	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
-	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, 50)
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, provider.NoteCursor{Legacy: 50})
 	if err != nil {
 		t.Fatalf("ListNotesSince: %v", err)
 	}
 
-	// sinceNoteID=50 → IDs 10 and 5 dropped (old).
+	// Legacy=50 (no per-stream cursors yet) → IDs 10 and 5 dropped (old).
 	// ID 160 dropped (body-less approval).
 	// Remaining: 100 (PR comment), 200 (inline), 150 (review).
 	// Sorted ascending: 100, 150, 200.
@@ -372,6 +372,89 @@ func TestListNotesSince_MergesThreeStreams(t *testing.T) {
 	}
 }
 
+// TestListNotesSince_CrossStreamWatermark is the regression test for
+// ADR-0041: a review comment (pull_request_review_comment) with a LOWER id
+// than an issue comment already delivered on the issue_comment stream must
+// still be delivered. GitHub's comment endpoints draw ids from independent
+// sequences, so a single shared watermark (since.Legacy alone, mirroring
+// the pre-fix behaviour) would incorrectly filter it out as "already seen"
+// and drop it silently and permanently.
+func TestListNotesSince_CrossStreamWatermark(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues/42/comments":
+			// Already delivered on a prior tick — high id on its own stream.
+			_, _ = w.Write([]byte(`[{"id": 200, "body": "issue comment", "user": {"id":1, "login":"alice", "type":"User"}}]`))
+		case "/repos/owner/repo/pulls/42/comments":
+			// New inline review comment — lower id, never seen before.
+			_, _ = w.Write([]byte(`[{"id": 100, "node_id": "PRRC_1", "body": "inline review comment", "user": {"id":2, "login":"bob", "type":"User"}}]`))
+		case "/repos/owner/repo/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+
+	// Simulate: the issue_comment stream has already advanced past 200 on a
+	// prior tick; the review_comment stream has not been seen at all yet.
+	since := provider.NoteCursor{ByStream: map[string]int64{
+		streamIssueComment: 200,
+	}}
+
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, since)
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+
+	// The issue comment (id 200) is already-seen on its own stream and must
+	// be filtered. The review comment (id 100) is new on ITS stream and
+	// must survive despite its id being lower than the issue_comment
+	// watermark — that's the bug a single shared watermark would trigger.
+	if len(got) != 1 {
+		t.Fatalf("want 1 note (the unseen review comment), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != 100 {
+		t.Errorf("want review comment id 100 delivered, got id %d", got[0].ID)
+	}
+	if got[0].Stream != streamReviewComment {
+		t.Errorf("want stream %q, got %q", streamReviewComment, got[0].Stream)
+	}
+}
+
+// TestListNotesSince_LegacyFloorAppliesPerStream covers the additive
+// migration path: a Run created before ADR-0041 has only since.Legacy set
+// (no ByStream entries at all). Every stream must fall back to that single
+// scalar as its floor, exactly matching pre-fix behaviour until each stream
+// gets its own entry.
+func TestListNotesSince_LegacyFloorAppliesPerStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues/42/comments":
+			_, _ = w.Write([]byte(`[{"id": 50, "body": "old", "user": {"id":1, "login":"a", "type":"User"}}]`))
+		case "/repos/owner/repo/pulls/42/comments":
+			_, _ = w.Write([]byte(`[{"id": 50, "node_id": "n", "body": "old", "user": {"id":1, "login":"a", "type":"User"}}]`))
+		case "/repos/owner/repo/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[{"id": 50, "body": "old", "state": "COMMENTED", "user": {"id":1, "login":"a", "type":"User"}}]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, provider.NoteCursor{Legacy: 50})
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("Legacy floor should apply to every stream with no ByStream entry; want 0 notes, got %+v", got)
+	}
+}
+
 // TestListNotesSince_EmptyAfterFilter covers the case where all notes
 // are older than sinceNoteID.
 func TestListNotesSince_EmptyAfterFilter(t *testing.T) {
@@ -380,7 +463,7 @@ func TestListNotesSince_EmptyAfterFilter(t *testing.T) {
 	}))
 	defer srv.Close()
 	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
-	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, 1000)
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, provider.NoteCursor{Legacy: 1000})
 	if err != nil {
 		t.Fatalf("ListNotesSince: %v", err)
 	}
@@ -401,7 +484,7 @@ func TestListNotesSince_ReviewWithBody(t *testing.T) {
 	}))
 	defer srv.Close()
 	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
-	got, _ := p.ListNotesSince(t.Context(), "owner/repo", 42, 0)
+	got, _ := p.ListNotesSince(t.Context(), "owner/repo", 42, provider.NoteCursor{})
 	if len(got) != 1 || got[0].ID != 99 {
 		t.Errorf("changes-requested review with body should surface; got %+v", got)
 	}

@@ -1,4 +1,4 @@
-# ADR-0041: Per-spec model selection for the runner
+# ADR-0044: Per-spec model selection for the runner
 
 **Status**: Accepted
 **Date**: 2026-07-16
