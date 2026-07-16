@@ -874,6 +874,31 @@ func TestWork_RunnerDone_NoRemainderNote(t *testing.T) {
 	}
 }
 
+// TestBuildPlanningPrompt_SurfacesRemainderNote asserts that a Plan entry
+// with a RemainderNote renders it in the planning prompt, so the planner
+// can see that a unit shipped a partial slice and schedule the leftover
+// work as a follow-on increment instead of assuming the unit is done.
+func TestBuildPlanningPrompt_SurfacesRemainderNote(t *testing.T) {
+	s := &AgentState{
+		Goal: "Multi-item spec",
+		Plan: []PlannedIncrement{
+			{
+				UnitID:        "increment-1",
+				Rationale:     "split item A and B",
+				Outcome:       "in_flight",
+				RemainderNote: "item A shipped; item B still pending",
+			},
+		},
+	}
+
+	prompt := buildPlanningPrompt(s)
+
+	want := "  - increment-1 shipped a partial slice; remaining work: item A shipped; item B still pending\n"
+	if !strings.Contains(prompt, want) {
+		t.Errorf("planning prompt missing remainder line; want to contain %q, got:\n%s", want, prompt)
+	}
+}
+
 // TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
 // for the scope-narrowing fix. Without threading the planner's per-
 // increment rationale into req.Goal, the runner receives only the

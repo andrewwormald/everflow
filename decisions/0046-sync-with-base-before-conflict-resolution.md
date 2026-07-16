@@ -1,4 +1,4 @@
-# ADR-0045: `SyncWithBase` — refresh the feature branch before conflict-resolution turns
+# ADR-0046: `SyncWithBase` — refresh the feature branch before conflict-resolution turns
 
 **Status**: Accepted
 **Date**: 2026-07-16
