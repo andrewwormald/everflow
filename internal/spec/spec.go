@@ -29,11 +29,12 @@ type Spec struct {
 	Runner   string `yaml:"runner"`   // "claude" | "qwen" | ... — see runner.Registry
 
 	// Optional:
+	Model       string `yaml:"model"` // e.g. "claude-haiku-4-5" — passed to the runner via runner.Request.Model; empty means the runner's default
 	BaseRepo    string `yaml:"base_repo"`
 	BaseBranch  string `yaml:"base_branch"`
 	Concurrency int    `yaml:"concurrency"`
-	Status      string `yaml:"status"`     // "draft" | "ready" | "in_progress" | "compressed"; everflow only acts on "ready"
-	DraftMRs    bool   `yaml:"draft_mrs"`  // opens MRs as Draft / WIP — spike safety net
+	Status      string `yaml:"status"`    // "draft" | "ready" | "in_progress" | "compressed"; everflow only acts on "ready"
+	DraftMRs    bool   `yaml:"draft_mrs"` // opens MRs as Draft / WIP — spike safety net
 
 	// Populated by the parser:
 	Body string `yaml:"-"` // markdown body after the frontmatter
