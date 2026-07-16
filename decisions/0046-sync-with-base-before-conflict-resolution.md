@@ -38,6 +38,14 @@ git fetch origin <baseBranch>
 git merge --no-edit origin/<baseBranch>
 ```
 
+Before fetching, `SyncWithBase` checks the worktree is clean (reusing
+`HasChanges`) and refuses with an error if it's dirty. Git's own merge
+only rejects uncommitted changes that overlap the merge; non-overlapping
+ones — e.g. left behind by an interrupted invocation — would be silently
+folded into the merge result. The upfront guard makes "dirty worktree at
+sync time" an explicit error instead, surfacing the interrupted-invocation
+hazard rather than papering over it.
+
 This preserves the branch's own commits and folds base forward via a
 merge commit — no rebase, no force-push. Two outcomes:
 
@@ -100,5 +108,10 @@ mechanism; the call site is a small, separate, easily-reviewed diff.
 - `TestExecGit_SyncWithBase_LeavesConflictForRunner` — overlapping edits
   produce a conflict; asserts `SyncWithBase` returns `nil` and the
   worktree is left dirty with `<<<<<<<` conflict markers.
+- `TestExecGit_SyncWithBase_RefusesDirtyWorktree` — uncommitted changes
+  at call time (deliberately non-overlapping with the merge, so git
+  itself wouldn't refuse) make `SyncWithBase` error out before fetching
+  or merging, leaving both the worktree and the uncommitted change
+  untouched.
 - `TestExecGit_SyncWithBase_FetchErrorPropagates` — a nonexistent base
   branch returns a real error.

@@ -280,6 +280,63 @@ func TestExecGit_SyncWithBase_LeavesConflictForRunner(t *testing.T) {
 	}
 }
 
+// TestExecGit_SyncWithBase_RefusesDirtyWorktree covers the upfront guard:
+// uncommitted changes at call time (e.g. left by an interrupted invocation)
+// must make SyncWithBase refuse before fetching/merging, even when the
+// changes wouldn't overlap the merge — git itself would silently merge
+// over those.
+func TestExecGit_SyncWithBase_RefusesDirtyWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "v1\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/dirty"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	// Base moves forward without touching the file we're about to dirty,
+	// so git's own merge would NOT refuse — only the upfront guard can.
+	writeFile(t, baseRepo, "other.md", "base moved on\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "base moved on")
+	runMust(t, baseRepo, "push", "origin", "main")
+
+	// Leave an uncommitted change in the worktree.
+	writeFile(t, worktreeDir, "wip.md", "uncommitted\n")
+
+	if err := g.SyncWithBase(ctx, worktreeDir, "main"); err == nil {
+		t.Fatalf("SyncWithBase on a dirty worktree should refuse and return an error")
+	}
+
+	// The merge must not have happened: base's new file should be absent.
+	if _, err := os.Stat(filepath.Join(worktreeDir, "other.md")); !os.IsNotExist(err) {
+		t.Errorf("other.md should not exist — SyncWithBase must not merge a dirty worktree; err=%v", err)
+	}
+	// The uncommitted change should be untouched.
+	wip, err := os.ReadFile(filepath.Join(worktreeDir, "wip.md"))
+	if err != nil {
+		t.Fatalf("read wip.md: %v", err)
+	}
+	if string(wip) != "uncommitted\n" {
+		t.Errorf("wip.md altered by refused sync: %q", wip)
+	}
+}
+
 // TestExecGit_SyncWithBase_FetchErrorPropagates ensures a genuine
 // infrastructure failure (no such base branch) is returned as an error,
 // not silently swallowed like a real conflict would be.

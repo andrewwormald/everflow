@@ -58,6 +58,11 @@ type Git interface {
 	// invocations so conflict resolution never judges against a stale base
 	// (see ADR-0045).
 	//
+	// SyncWithBase requires a clean worktree: if `dir` has uncommitted
+	// changes (e.g. from an interrupted invocation) it returns an error
+	// without fetching or merging, so those changes are never silently
+	// merged over.
+	//
 	// If the merge produces conflicts, that's a legitimate outcome, not an
 	// error: SyncWithBase returns nil and leaves the worktree with unmerged
 	// paths for the runner to resolve as part of its turn. Only failures
@@ -261,6 +266,17 @@ func (g *ExecGit) RemoveWorktree(ctx context.Context, baseRepo, dir string) erro
 }
 
 func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) error {
+	// Refuse to merge over uncommitted changes. Git only rejects a dirty
+	// worktree when the changes overlap the merge; non-overlapping ones
+	// (e.g. left by an interrupted invocation) would be silently folded
+	// into the merge result, so guard upfront rather than rely on git.
+	dirty, err := g.HasChanges(ctx, dir)
+	if err != nil {
+		return fmt.Errorf("SyncWithBase: %w", err)
+	}
+	if dirty {
+		return fmt.Errorf("SyncWithBase: worktree %s has uncommitted changes; refusing to fetch/merge", dir)
+	}
 	if err := g.run(ctx, dir, "fetch", "origin", baseBranch); err != nil {
 		return fmt.Errorf("SyncWithBase: fetch: %w", err)
 	}
@@ -269,7 +285,7 @@ func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) erro
 	mergeArgs := append(g.identityArgs(), "merge", "--no-edit", "origin/"+baseBranch)
 	if err := g.run(ctx, dir, mergeArgs...); err != nil {
 		// Distinguish "merge left conflicts" (expected, leave for the runner)
-		// from a genuine failure (bad ref, dirty working tree, etc.).
+		// from a genuine failure (bad ref, unknown branch, etc.).
 		unmerged, uErr := g.runOut(ctx, dir, "diff", "--name-only", "--diff-filter=U")
 		if uErr == nil && strings.TrimSpace(unmerged) != "" {
 			return nil
