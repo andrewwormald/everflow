@@ -276,16 +276,50 @@ func TestCmdHelp_BareEverflow(t *testing.T) {
 	}
 }
 
-func TestCmdUnknown(t *testing.T) {
+func TestCmdFreeform_InvokesSubagent(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
-	d.withRunner(t, &fakeRunner{})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "refactored the auth module",
+	}})
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
+	next, err := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow refactor the auth module first", mr)))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should be invoked once for a freeform verb; got %d calls", len(fr.calls))
+	}
+	if !strings.Contains(fr.calls[0].Goal, "refactor the auth module first") {
+		t.Errorf("freeform instruction not injected into Goal: %q", fr.calls[0].Goal)
+	}
+	if r.Object.PromptInjection != "" {
+		t.Errorf("PromptInjection should be consumed (single-use); got %q", r.Object.PromptInjection)
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "refactored the auth module") {
+		t.Errorf("status comment should be posted on DecisionDone; got %+v", fp.comments)
+	}
+}
+
+func TestCmdFreeform_UntrackedMR_RepliesWithHelp(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 999} // not tracked by any in-flight unit
+	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
+
 	d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow foobar", mr)))
-	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "Unknown command") {
-		t.Errorf("unknown verb should post error; got %+v", fp.comments)
+	if len(fr.calls) != 0 {
+		t.Errorf("runner should not be invoked for an untracked MR; got %d calls", len(fr.calls))
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "isn't tracked") {
+		t.Errorf("untracked MR should get a polite reply; got %+v", fp.comments)
 	}
 }
 
