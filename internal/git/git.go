@@ -49,6 +49,22 @@ type Git interface {
 	// is already gone.
 	RemoveWorktree(ctx context.Context, baseRepo, dir string) error
 
+	// SyncWithBase fetches origin/baseBranch and merges it into dir's current
+	// branch, so the branch's own commits are preserved but base has moved
+	// forward to its current tip. Unlike HardReset (which discards local
+	// commits — used for the planning worktree), this is for worktrees with
+	// in-flight commits of their own: it refreshes the view of base without
+	// throwing that work away. Called before address-comment / fix-CI runner
+	// invocations so conflict resolution never judges against a stale base
+	// (see ADR-0045).
+	//
+	// If the merge produces conflicts, that's a legitimate outcome, not an
+	// error: SyncWithBase returns nil and leaves the worktree with unmerged
+	// paths for the runner to resolve as part of its turn. Only failures
+	// that aren't ordinary merge conflicts (fetch failure, unknown branch,
+	// etc.) are returned as errors.
+	SyncWithBase(ctx context.Context, dir, baseBranch string) error
+
 	// DiffShortstat returns the `--shortstat` summary of commits reachable from
 	// HEAD but not from origin/<baseBranch>, e.g.
 	// "3 files changed, 12 insertions(+), 4 deletions(-)".
@@ -195,14 +211,7 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		return ErrNoChanges
 	}
 
-	args := []string{}
-	if g.AuthorName != "" && g.AuthorEmail != "" {
-		args = append(args,
-			"-c", "user.name="+g.AuthorName,
-			"-c", "user.email="+g.AuthorEmail,
-		)
-	}
-	args = append(args, "commit", "-m", message)
+	args := append(g.identityArgs(), "commit", "-m", message)
 	if err := g.run(ctx, dir, args...); err != nil {
 		return fmt.Errorf("Commit: commit: %w", err)
 	}
@@ -251,6 +260,25 @@ func (g *ExecGit) RemoveWorktree(ctx context.Context, baseRepo, dir string) erro
 	return nil
 }
 
+func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) error {
+	if err := g.run(ctx, dir, "fetch", "origin", baseBranch); err != nil {
+		return fmt.Errorf("SyncWithBase: fetch: %w", err)
+	}
+	// A non-fast-forward merge creates a merge commit, which needs a
+	// committer identity just like Commit does.
+	mergeArgs := append(g.identityArgs(), "merge", "--no-edit", "origin/"+baseBranch)
+	if err := g.run(ctx, dir, mergeArgs...); err != nil {
+		// Distinguish "merge left conflicts" (expected, leave for the runner)
+		// from a genuine failure (bad ref, dirty working tree, etc.).
+		unmerged, uErr := g.runOut(ctx, dir, "diff", "--name-only", "--diff-filter=U")
+		if uErr == nil && strings.TrimSpace(unmerged) != "" {
+			return nil
+		}
+		return fmt.Errorf("SyncWithBase: merge: %w", err)
+	}
+	return nil
+}
+
 func (g *ExecGit) DiffShortstat(ctx context.Context, dir, baseBranch string) (string, error) {
 	// `git diff --shortstat A...B` shows the diff of commits reachable from B
 	// but not A — i.e. everything this branch has added beyond base.
@@ -262,6 +290,20 @@ func (g *ExecGit) DiffShortstat(ctx context.Context, dir, baseBranch string) (st
 }
 
 // --- internal helpers ---
+
+// identityArgs returns `-c user.name=… -c user.email=…` flags for git
+// commands that create commits, so they work on hosts with no global
+// git identity configured (e.g. CI runners). Empty when no author is set,
+// in which case commits inherit the host's .gitconfig.
+func (g *ExecGit) identityArgs() []string {
+	if g.AuthorName == "" || g.AuthorEmail == "" {
+		return nil
+	}
+	return []string{
+		"-c", "user.name=" + g.AuthorName,
+		"-c", "user.email=" + g.AuthorEmail,
+	}
+}
 
 func (g *ExecGit) currentBranch(ctx context.Context, dir string) (string, error) {
 	out, err := g.runOut(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")

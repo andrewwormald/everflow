@@ -93,3 +93,4 @@ forces or unlocks.
 | 0043 | Standing scope-discipline instruction on every runner prompt    | Accepted | 2026-07-16 |
 | 0044 | Per-spec model selection for the runner                         | Accepted | 2026-07-16 |
 | 0045 | Work-phase `DecisionContinue` means "partial slice, remainder follows" | Accepted | 2026-07-16 |
+| 0046 | `SyncWithBase` — refresh the feature branch before conflict-resolution turns | Accepted | 2026-07-16 |

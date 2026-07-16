@@ -180,6 +180,7 @@ type fakeGit struct {
 
 	ensureErr  error
 	resetErr   error
+	syncErr    error
 	commitErr  error
 	pushErr    error
 	hasChanges *bool // nil → default true; set to a bool pointer for explicit
@@ -187,6 +188,7 @@ type fakeGit struct {
 
 	ensures []ensureCall
 	resets  []string
+	syncs   []string
 	commits []string
 	pushes  []string
 	removes []string
@@ -208,6 +210,13 @@ func (g *fakeGit) HardReset(_ context.Context, dir, baseBranch string) error {
 	defer g.mu.Unlock()
 	g.resets = append(g.resets, dir+"@"+baseBranch)
 	return g.resetErr
+}
+
+func (g *fakeGit) SyncWithBase(_ context.Context, dir, baseBranch string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.syncs = append(g.syncs, dir+"@"+baseBranch)
+	return g.syncErr
 }
 
 func (g *fakeGit) HasChanges(_ context.Context, _ string) (bool, error) {
