@@ -753,6 +753,85 @@ func TestWork_RunnerContinue_TreatedAsDone(t *testing.T) {
 	}
 }
 
+// TestWork_RunnerContinue_RecordsRemainderOnPlanEntry covers the follow-on
+// fix to TestWork_RunnerContinue_TreatedAsDone: when the runner splits an
+// oversized unit and returns DecisionContinue, work() must not just ship
+// the partial MR silently — it should note what's left on the matching
+// Plan entry so the planner can schedule a follow-on increment instead of
+// assuming the unit is fully done.
+func TestWork_RunnerContinue_RecordsRemainderOnPlanEntry(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionContinue,
+		Summary:  "Added item A; item B still pending — planner should pick it next",
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 9}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Multi-item spec",
+		CurrentUnit:  "increment-1",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+		Plan: []PlannedIncrement{
+			{UnitID: "increment-1", Rationale: "split item A and B", Outcome: "in_flight"},
+		},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: want nil err, got %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Fatalf("want AwaitingMerge, got %v", next)
+	}
+	if len(r.Object.Plan) != 1 {
+		t.Fatalf("Plan should still have 1 entry; got %+v", r.Object.Plan)
+	}
+	want := "Added item A; item B still pending — planner should pick it next"
+	if got := r.Object.Plan[0].RemainderNote; got != want {
+		t.Errorf("Plan[0].RemainderNote: want %q, got %q", want, got)
+	}
+	// DecisionDone must NOT set a remainder note — only Continue does.
+	if r.Object.Plan[0].Outcome != "in_flight" {
+		t.Errorf("Plan[0].Outcome should be untouched by work() (merge is what marks completed); got %q", r.Object.Plan[0].Outcome)
+	}
+}
+
+// TestWork_RunnerDone_NoRemainderNote is the counterpart guard: a normal
+// DecisionDone must never populate RemainderNote, even when a Plan entry
+// exists for the unit.
+func TestWork_RunnerDone_NoRemainderNote(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "Fully migrated svc-payments",
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 10}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Multi-item spec",
+		CurrentUnit:  "increment-1",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+		Plan: []PlannedIncrement{
+			{UnitID: "increment-1", Rationale: "migrate svc-payments", Outcome: "in_flight"},
+		},
+	})
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: want nil err, got %v", err)
+	}
+	if got := r.Object.Plan[0].RemainderNote; got != "" {
+		t.Errorf("Plan[0].RemainderNote should stay empty on Done; got %q", got)
+	}
+}
+
 // TestWork_ThreadsPlanRationaleIntoRunnerGoal is the regression guard
 // for the scope-narrowing fix. Without threading the planner's per-
 // increment rationale into req.Goal, the runner receives only the
