@@ -454,6 +454,9 @@ func buildPlanningPrompt(s *AgentState) string {
 				outcome = "(pending)"
 			}
 			fmt.Fprintf(&b, "- **%s** [%s]: %s\n", p.UnitID, outcome, p.Rationale)
+			if p.RemainderNote != "" {
+				fmt.Fprintf(&b, "  - %s shipped a partial slice; remaining work: %s\n", p.UnitID, p.RemainderNote)
+			}
 		}
 		fmt.Fprintln(&b)
 	}
