@@ -434,6 +434,7 @@ type triggerRequest struct {
 	ProviderName string   `json:"provider"`
 	ProjectID    string   `json:"project"`
 	RunnerName   string   `json:"runner"`
+	RunnerModel  string   `json:"runner_model,omitempty"` // spec's `model:` override; empty means the runner's default
 	BaseRepo     string   `json:"base_repo"`
 	BaseBranch   string   `json:"base_branch"`
 	Concurrency  int      `json:"concurrency"`
@@ -496,6 +497,7 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 			BaseRepo:     req.BaseRepo,
 			BaseBranch:   req.BaseBranch,
 			RunnerName:   req.RunnerName,
+			RunnerModel:  req.RunnerModel,
 			Concurrency:  req.Concurrency,
 			Queue:        req.Units,
 			SpecPath:     req.SpecPath,
@@ -741,6 +743,7 @@ func cmdStart(args []string) error {
 		providerArg = fs.String("provider", "", "provider name (gitlab | github)")
 		projectArg  = fs.String("project", "", "provider project ID, e.g. acme/example")
 		runnerArg   = fs.String("runner", "claude", "runner name")
+		modelArg    = fs.String("model", "", "runner model override (default: runner's default, or spec's `model:`)")
 		baseBranch  = fs.String("base-branch", "", "base branch (default: main, or spec's `base_branch:`)")
 		baseRepo    = fs.String("base-repo", "", "local path to a git checkout with origin remote (required)")
 		concurrency = fs.Int("concurrency", 0, "max in-flight MRs (default 1, or spec's `concurrency:`)")
@@ -759,6 +762,7 @@ func cmdStart(args []string) error {
 		ProviderName: *providerArg,
 		ProjectID:    *projectArg,
 		RunnerName:   *runnerArg,
+		RunnerModel:  *modelArg,
 		BaseRepo:     *baseRepo,
 		BaseBranch:   *baseBranch,
 		Concurrency:  *concurrency,
@@ -787,6 +791,9 @@ func cmdStart(args []string) error {
 		if req.RunnerName == "claude" && sp.Runner != "" {
 			// "claude" is the flag default; defer to spec if it specified something.
 			req.RunnerName = sp.Runner
+		}
+		if req.RunnerModel == "" {
+			req.RunnerModel = sp.Model
 		}
 		if req.BaseRepo == "" {
 			req.BaseRepo = sp.BaseRepo

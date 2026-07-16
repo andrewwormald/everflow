@@ -376,6 +376,7 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 		SkillCommand: "/everflow-plan",
 		Goal:         goal,
 		UnitID:       "", // planning is not unit-scoped
+		Model:        r.Object.RunnerModel,
 		Budget:       r.Object.Budget,
 	}
 
@@ -577,6 +578,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		SkillCommand: fmt.Sprintf("/everflow-unit %s", unitID), // overridden once SkillPath integration lands
 		Goal:         r.Object.Goal,
 		UnitID:       unitID,
+		Model:        r.Object.RunnerModel,
 		Budget:       r.Object.Budget,
 	}
 	// Prepend the planner's per-increment rationale so the runner sees
@@ -966,6 +968,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		Worktree: filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID),
 		Goal:     r.Object.Goal,
 		UnitID:   unitID,
+		Model:    r.Object.RunnerModel,
 		Budget:   r.Object.Budget,
 	}
 	var phase string

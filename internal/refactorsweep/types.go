@@ -50,6 +50,7 @@ type AgentState struct {
 	BaseRepo        string         `json:"base_repo"`         // local path to a git checkout the daemon can clone worktrees off
 	BaseBranch      string         `json:"base_branch"`
 	RunnerName      string         `json:"runner_name"`       // "claude" | "qwen" | "openhands" — see ADR-0007
+	RunnerModel     string         `json:"runner_model"`      // spec's `model:` override, passed to every runner.Request.Model — see ADR-0041
 	Budget          runner.Budget  `json:"budget"`
 	Author          provider.User  `json:"author"`            // see ADR-0017
 	Concurrency     int            `json:"concurrency"`       // semaphore size; v1 = 1
