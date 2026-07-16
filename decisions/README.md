@@ -89,3 +89,4 @@ forces or unlocks.
 | 0039 | Thread planner's per-increment rationale into the runner's Goal | Accepted | 2026-07-03 |
 | 0040 | Adopt the "Flow Chevrons" brand mark (supersedes ADR-0013)      | Accepted | 2026-07-03 |
 | 0041 | Per-stream comment watermarks (fix cross-stream drop)           | Accepted | 2026-07-16 |
+| 0042 | Standing scope-discipline instruction on every runner prompt    | Accepted | 2026-07-16 |
