@@ -172,6 +172,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		"## Task", "Migrate logrus",
 		"## Reviewer feedback to address", "rename the LogContext",
 		"## CI failure to investigate", "TestSomething",
+		"## Scope discipline", "small and narrowly scoped",
 		"## How to finish", "<everflow-decision>",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -196,6 +197,25 @@ func TestBuildPrompt_MinimalFields(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "<everflow-decision>") {
 		t.Errorf("decision protocol should always be appended")
+	}
+	if !strings.Contains(prompt, "## Scope discipline") {
+		t.Errorf("scope discipline reminder should always be appended, even with minimal fields")
+	}
+}
+
+func TestBuildPrompt_ScopeDisciplinePrecedesDecisionProtocol(t *testing.T) {
+	// The scope reminder must land before the decision-marker instructions,
+	// so it reads as guidance on the work rather than on how to answer.
+	req := runner.Request{Goal: "just do the thing"}
+	prompt := BuildPrompt(req)
+
+	scopeIdx := strings.Index(prompt, "## Scope discipline")
+	decisionIdx := strings.Index(prompt, "## How to finish")
+	if scopeIdx == -1 || decisionIdx == -1 {
+		t.Fatalf("expected both sections present: scopeIdx=%d decisionIdx=%d", scopeIdx, decisionIdx)
+	}
+	if scopeIdx >= decisionIdx {
+		t.Errorf("scope discipline should precede the decision protocol; scopeIdx=%d decisionIdx=%d", scopeIdx, decisionIdx)
 	}
 }
 

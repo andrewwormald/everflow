@@ -207,7 +207,8 @@ func BuildArgs(req runner.Request, extraArgs []string) []string {
 //  1. Header lines (Skill / Unit / Worktree, if set)
 //  2. The body — req.Goal, taken verbatim
 //  3. Event-specific blocks (comment to address, CI failure to fix)
-//  4. The decision-marker protocol instructions (always appended)
+//  4. The scope-discipline reminder (always appended)
+//  5. The decision-marker protocol instructions (always appended)
 func BuildPrompt(req runner.Request) string {
 	var b strings.Builder
 
@@ -230,9 +231,25 @@ func BuildPrompt(req runner.Request) string {
 		fmt.Fprintf(&b, "## CI failure to investigate\n\n```\n%s\n```\n\n", req.CIFailure)
 	}
 
+	b.WriteString(scopeDiscipline)
 	b.WriteString(decisionProtocol)
 	return b.String()
 }
+
+// scopeDiscipline is a standing instruction, appended to every prompt, that
+// pushes back on scope-creep. See ADR-0043: units kept ballooning into
+// multi-concern MRs because nothing in the prompt told the runner to stay
+// narrow — the model reasonably filled the silence by doing as much as it
+// could reach.
+const scopeDiscipline = `## Scope discipline
+
+Keep this unit small and narrowly scoped to the task above. Do only what
+is asked — do not bundle in unrelated fixes, refactors, or improvements
+you happen to notice along the way. If you spot other work worth doing,
+mention it in your summary instead of doing it now; a future unit can
+pick it up.
+
+`
 
 // decisionProtocol is the marker-based signalling everflow uses to read
 // claude's outcome. Appended to every prompt.
