@@ -237,7 +237,7 @@ func BuildPrompt(req runner.Request) string {
 }
 
 // scopeDiscipline is a standing instruction, appended to every prompt, that
-// pushes back on scope-creep. See ADR-0042: units kept ballooning into
+// pushes back on scope-creep. See ADR-0043: units kept ballooning into
 // multi-concern MRs because nothing in the prompt told the runner to stay
 // narrow — the model reasonably filled the silence by doing as much as it
 // could reach.

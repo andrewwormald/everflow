@@ -69,7 +69,7 @@ func (d *Deps) handleControlCommand(ctx context.Context, r *workflow.Run[AgentSt
 	case "":
 		return d.cmdHelp(ctx, r, ev)
 	default:
-		return d.cmdUnknown(ctx, r, ev, verb)
+		return d.cmdFreeform(ctx, r, ev, verb)
 	}
 }
 
@@ -258,12 +258,32 @@ const helpMessage = "**everflow control verbs** (author only)\n\n" +
 	"- `/everflow prompt <text>` — inject into the next subagent call\n" +
 	"- `/everflow status` — post a progress summary\n" +
 	"- `/everflow stop` — cancel the whole Run, close in-flight MRs (no confirmation)\n" +
-	"- `/everflow abandon` — request abandonment with a 12h confirmation window\n"
+	"- `/everflow abandon` — request abandonment with a 12h confirmation window\n" +
+	"- `/everflow <anything else>` — treated as a freeform instruction for the subagent " +
+	"(e.g. `/everflow refactor the auth module first`); requires this MR to be tracked by an in-flight unit\n"
 
-// cmdUnknown handles unrecognised verbs with a polite error pointing at help.
-func (d *Deps) cmdUnknown(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, verb string) (AgentStatus, error) {
+// cmdFreeform handles a verb that isn't one of the recognised control
+// commands. Rather than bouncing "Unknown command", the whole text after
+// "/everflow " is treated as a freeform instruction for the subagent: it's
+// stashed in PromptInjection (the same single-use slot /everflow prompt
+// uses) and the event is replayed through invokeForEvent immediately, as if
+// it were a NoteAdded event picked up by the filter. See ADR-0042.
+//
+// Requires the MR to be tracked by an in-flight unit — there's no subagent
+// to direct otherwise, so this falls back to a "not tracked" reply, mirroring
+// cmdSkip's guard.
+func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, verb string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
-		fmt.Sprintf("Unknown command `/everflow %s`. Reply `/everflow` for the verb list.", verb))
-	return r.Status, nil
+	unitID := unitForMR(r.Object.InFlight, ev.MR)
+	if unitID == "" {
+		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+			fmt.Sprintf("`/everflow %s`: this MR isn't tracked by any active everflow Run, so there's no subagent to direct. Reply `/everflow` for the verb list.", verb))
+		return r.Status, nil
+	}
+
+	// Recompute from the raw body (not verb+args) to preserve original
+	// casing and multi-line formatting — parseControlVerb lowercases verb.
+	instruction := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ev.Note.Body), "/everflow"))
+	r.Object.PromptInjection = instruction
+	return d.invokeForEvent(ctx, r, unitID, ev)
 }

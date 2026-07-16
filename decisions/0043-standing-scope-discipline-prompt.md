@@ -1,4 +1,4 @@
-# ADR-0042: Standing scope-discipline instruction on every runner prompt
+# ADR-0043: Standing scope-discipline instruction on every runner prompt
 
 **Status**: Accepted
 **Date**: 2026-07-16

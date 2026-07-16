@@ -167,6 +167,13 @@ type PlannedIncrement struct {
 	Rationale string    `json:"rationale"`            // the planner's stated reason for this increment
 	PlannedAt time.Time `json:"planned_at"`
 	Outcome   string    `json:"outcome,omitempty"`    // "in_flight" | "completed" | "blacklisted" | ""
+
+	// RemainderNote is set when the unit's work turn shipped a partial MR
+	// (DecisionContinue instead of DecisionDone) rather than silently
+	// treating the partial diff as the whole unit. It carries the
+	// runner's own account of what's left so the planner can pick it up
+	// as a follow-on increment. Empty when the unit shipped in full.
+	RemainderNote string `json:"remainder_note,omitempty"`
 }
 
 // CompletedUnit records a shipped MR.
