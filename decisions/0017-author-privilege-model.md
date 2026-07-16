@@ -59,6 +59,10 @@ Two classes of commenter, two handling paths:
 Unknown commands get a polite reply: "Unknown command `/everflow foobar`.
 Available: pause, resume, skip, retry, prompt, status, stop."
 
+> **Update ([ADR-0042](0042-freeform-verb-fallback.md)):** unrecognised verbs
+> are no longer bounced. They're now treated as a freeform instruction for
+> the subagent, provided the MR is tracked by an in-flight unit.
+
 ### Service-account authorship
 
 When everflow runs under a service-account token (e.g. `everflow-bot` on a
