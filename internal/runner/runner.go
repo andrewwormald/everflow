@@ -49,6 +49,7 @@ type Request struct {
 	Goal         string
 	UnitID       string
 	UnitContext  string
+	Model        string // spec-selected model override; empty means the runner's default
 
 	// Replayed inputs for "address comment" / "fix CI" invocations:
 	CommentBody string // populated for address-comment invocations
@@ -62,9 +63,9 @@ type Request struct {
 // transition via Decision.
 type Response struct {
 	Decision  Decision
-	Summary   string                 // one-paragraph "what I did this invocation"
-	Question  string                 // populated when Decision == Ask
-	Learnings Learnings              // see ADR-0018; populated when the subagent surfaces patterns worth caching
+	Summary   string    // one-paragraph "what I did this invocation"
+	Question  string    // populated when Decision == Ask
+	Learnings Learnings // see ADR-0018; populated when the subagent surfaces patterns worth caching
 	Tokens    int
 	StartedAt time.Time
 	EndedAt   time.Time
@@ -74,8 +75,8 @@ type Response struct {
 // Bounded by the per-Run cap (50 entries) before flagging for review;
 // promotion to global phrases is manual via `everflow phrases promote`.
 type Learnings struct {
-	AddPhrases  []string `json:"add_phrases"`   // skip-phrases to append to the per-Run file
-	SkillUpdate string   `json:"skill_update"`  // optional revised SKILL.md content
+	AddPhrases  []string `json:"add_phrases"`  // skip-phrases to append to the per-Run file
+	SkillUpdate string   `json:"skill_update"` // optional revised SKILL.md content
 }
 
 // Registry holds runners by name. Runners self-register at init() time.

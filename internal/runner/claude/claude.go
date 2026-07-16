@@ -110,14 +110,7 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 		defer cancel()
 	}
 
-	prompt := BuildPrompt(req)
-
-	args := append([]string{}, c.ExtraArgs...)
-	args = append(args,
-		"-p", prompt,
-		"--output-format", "json",          // machine-readable output + token counts
-		"--dangerously-skip-permissions",    // ADR-0006 — yolo inside the worktree
-	)
+	args := BuildArgs(req, c.ExtraArgs)
 
 	cmd := exec.CommandContext(ctx, c.Binary, args...)
 	if req.Worktree != "" {
@@ -153,12 +146,12 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 		decision, summary, question, parseErr := ParseDecision(resultText)
 		if parseErr != nil {
 			return runner.Response{
-				Decision:  runner.DecisionFail,
-				Summary:   strings.TrimSpace(stderr.String()),
-				Tokens:    tokens,
-				StartedAt: start, EndedAt: end,
-			}, fmt.Errorf("claude exec: %w (stderr: %s)", runErr,
-				strings.TrimSpace(stderr.String()))
+					Decision:  runner.DecisionFail,
+					Summary:   strings.TrimSpace(stderr.String()),
+					Tokens:    tokens,
+					StartedAt: start, EndedAt: end,
+				}, fmt.Errorf("claude exec: %w (stderr: %s)", runErr,
+					strings.TrimSpace(stderr.String()))
 		}
 		return runner.Response{
 			Decision:  decision,
@@ -183,16 +176,38 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 	}, nil
 }
 
+// --- argv construction ---
+
+// BuildArgs composes the argv passed to the claude binary (everything after
+// the binary name). extraArgs is prepended, mirroring Runner.ExtraArgs, so
+// callers can still override --model etc. by putting their own flag first —
+// claude uses last-flag-wins for repeated flags.
+//
+// Exported so step bodies / tests can assert what argv a given Request
+// produces without shelling out.
+func BuildArgs(req runner.Request, extraArgs []string) []string {
+	args := append([]string{}, extraArgs...)
+	args = append(args,
+		"-p", BuildPrompt(req),
+		"--output-format", "json", // machine-readable output + token counts
+		"--dangerously-skip-permissions", // ADR-0006 — yolo inside the worktree
+	)
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+	return args
+}
+
 // --- prompt construction ---
 
 // BuildPrompt composes the full prompt sent to claude. Exported so step
 // bodies can assert what their pre-cooked Goal will get wrapped with.
 //
 // Layout:
-//   1. Header lines (Skill / Unit / Worktree, if set)
-//   2. The body — req.Goal, taken verbatim
-//   3. Event-specific blocks (comment to address, CI failure to fix)
-//   4. The decision-marker protocol instructions (always appended)
+//  1. Header lines (Skill / Unit / Worktree, if set)
+//  2. The body — req.Goal, taken verbatim
+//  3. Event-specific blocks (comment to address, CI failure to fix)
+//  4. The decision-marker protocol instructions (always appended)
 func BuildPrompt(req runner.Request) string {
 	var b strings.Builder
 

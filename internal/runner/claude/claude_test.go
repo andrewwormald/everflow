@@ -199,6 +199,45 @@ func TestBuildPrompt_MinimalFields(t *testing.T) {
 	}
 }
 
+// --- BuildArgs tests ---
+
+func TestBuildArgs_NoModel(t *testing.T) {
+	req := runner.Request{Goal: "do the thing"}
+	args := BuildArgs(req, nil)
+	for _, a := range args {
+		if a == "--model" {
+			t.Fatalf("no --model flag expected when Model is unset; got %v", args)
+		}
+	}
+}
+
+func TestBuildArgs_WithModel(t *testing.T) {
+	req := runner.Request{Goal: "do the thing", Model: "claude-haiku-4-5"}
+	args := BuildArgs(req, nil)
+
+	idx := -1
+	for i, a := range args {
+		if a == "--model" {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		t.Fatalf("--model flag not found in args: %v", args)
+	}
+	if idx+1 >= len(args) || args[idx+1] != "claude-haiku-4-5" {
+		t.Errorf("--model value: got %v", args)
+	}
+}
+
+func TestBuildArgs_ExtraArgsPrepended(t *testing.T) {
+	req := runner.Request{Goal: "do the thing"}
+	args := BuildArgs(req, []string{"--debug"})
+	if args[0] != "--debug" {
+		t.Errorf("extraArgs should be prepended; got %v", args)
+	}
+}
+
 func TestRunner_Name(t *testing.T) {
 	if got := (&Runner{}).Name(); got != "claude" {
 		t.Errorf("Name: want claude, got %q", got)

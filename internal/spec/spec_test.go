@@ -64,6 +64,44 @@ Replace ` + "`github.com/sirupsen/logrus`" + ` imports with the stdlib
 	}
 }
 
+func TestParseBytes_Model(t *testing.T) {
+	in := []byte(`---
+goal: Small mechanical rename sweep
+provider: gitlab
+project: acme/example
+runner: claude
+model: claude-haiku-4-5
+---
+Body.
+`)
+	s, err := ParseBytes(in)
+	if err != nil {
+		t.Fatalf("ParseBytes: %v", err)
+	}
+	if s.Model != "claude-haiku-4-5" {
+		t.Errorf("Model: got %q", s.Model)
+	}
+}
+
+func TestParseBytes_ModelOptional(t *testing.T) {
+	// model is optional — omitting it should not fail validation.
+	in := []byte(`---
+goal: x
+provider: gitlab
+project: x/y
+runner: claude
+---
+Body.
+`)
+	s, err := ParseBytes(in)
+	if err != nil {
+		t.Fatalf("ParseBytes: %v", err)
+	}
+	if s.Model != "" {
+		t.Errorf("Model: want empty, got %q", s.Model)
+	}
+}
+
 func TestParseBytes_NoFrontmatter(t *testing.T) {
 	in := []byte("# Just a markdown file\n\nNo YAML at the top.\n")
 	_, err := ParseBytes(in)
