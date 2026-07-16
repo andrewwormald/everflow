@@ -73,6 +73,7 @@ func parseNote(body []byte, now int64) (provider.Event, error) {
 			ID:           p.ObjectAttributes.ID,
 			Body:         p.ObjectAttributes.Note,
 			DiscussionID: p.ObjectAttributes.DiscussionID,
+			Stream:       streamNote,
 		},
 		Raw:        body,
 		ReceivedAt: now,

@@ -72,7 +72,7 @@ type Provider interface {
 
 	// Polling support (used when EventSource=poll instead of webhook).
 	GetMRState(ctx context.Context, projectID string, mrIID int) (state string, err error)
-	ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]NotePoll, error)
+	ListNotesSince(ctx context.Context, projectID string, mrIID int, since NoteCursor) ([]NotePoll, error)
 
 	// ResolveDiscussion marks a comment thread as resolved on the platform.
 	// Called by invokeForEvent after a runner-driven change has been pushed
@@ -163,6 +163,24 @@ type Note struct {
 	ID            int64
 	Body          string
 	DiscussionID  string // platform-specific thread identifier; pass to Provider.ResolveDiscussion
+	// Stream identifies which comment endpoint this note came from
+	// (provider-defined, e.g. GitHub's "issue_comment" / "review_comment" /
+	// "review"; GitLab's single "note"). Used to advance the matching
+	// entry in AgentState.LastSeenNoteIDsByStream — see NoteCursor.
+	Stream string
+}
+
+// NoteCursor is the watermark ListNotesSince is called with. Some providers
+// (GitHub) surface comments across multiple endpoints whose IDs are drawn
+// from independent sequences, so a single scalar watermark can silently and
+// permanently drop a comment whose ID is lower than one already seen on a
+// different stream. ByStream tracks a high-water mark per provider-defined
+// stream key; Legacy is the pre-migration single scalar (AgentState's old
+// LastSeenNoteIDs), used as the floor for any stream not yet present in
+// ByStream so already-running Runs migrate additively — see ADR-0041.
+type NoteCursor struct {
+	ByStream map[string]int64
+	Legacy   int64
 }
 
 // NotePoll is the per-comment shape returned by ListNotesSince — used by
@@ -173,6 +191,9 @@ type NotePoll struct {
 	Body          string
 	Author        User
 	DiscussionID  string
+	// Stream identifies which comment endpoint this note came from; see
+	// Note.Stream and NoteCursor.
+	Stream string
 }
 
 // Pipeline is the CI payload on pipeline events.

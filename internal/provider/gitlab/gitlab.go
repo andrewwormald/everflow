@@ -217,10 +217,21 @@ func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) 
 	return resp.State, nil
 }
 
+// streamNote is GitLab's single comment stream — unlike GitHub, all MR
+// notes come from one endpoint with one monotonic id sequence, so there's
+// no cross-stream watermark hazard here. Kept as an explicit key (rather
+// than leaving NoteCursor.ByStream empty) so a provider.NoteCursor built
+// from AgentState behaves the same way for both providers.
+const streamNote = "note"
+
 // ListNotesSince → GET /api/v4/projects/:id/merge_requests/:iid/notes.
-// Returns notes whose `id` exceeds sinceNoteID (i.e. arrived since the
+// Returns notes whose `id` exceeds the watermark (i.e. arrived since the
 // last poll). The poller stores the highest id seen on AgentState.
-func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]provider.NotePoll, error) {
+func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, since provider.NoteCursor) ([]provider.NotePoll, error) {
+	sinceNoteID, ok := since.ByStream[streamNote]
+	if !ok {
+		sinceNoteID = since.Legacy
+	}
 	// GitLab's /notes endpoint only accepts order_by ∈ {created_at,
 	// updated_at} (sending order_by=id returns 400). We use the default
 	// (created_at) sort=desc and filter by id > sinceNoteID client-side —
@@ -256,6 +267,7 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 				Handle: n.Author.Username,
 				Bot:    n.Author.Bot,
 			},
+			Stream: streamNote,
 		})
 	}
 	// Reverse to ascending so callers process in chronological order.

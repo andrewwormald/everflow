@@ -304,12 +304,13 @@ func decodeActiveRun(object []byte) (poller.ActiveRun, bool) {
 		return poller.ActiveRun{}, false // nothing to poll
 	}
 	return poller.ActiveRun{
-		Provider:        s.ProviderName,
-		ProjectID:       s.ProjectID,
-		Author:          s.Author,
-		InFlight:        s.InFlight,
-		LastSeenNoteIDs: s.LastSeenNoteIDs,
-		LastMRStates:    s.LastMRStates,
+		Provider:            s.ProviderName,
+		ProjectID:           s.ProjectID,
+		Author:              s.Author,
+		InFlight:            s.InFlight,
+		LastSeenNoteIDs:     s.LastSeenNoteIDs,
+		LastSeenNoteCursors: s.LastSeenNoteIDsByStream,
+		LastMRStates:        s.LastMRStates,
 	}, true
 }
 

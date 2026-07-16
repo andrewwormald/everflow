@@ -836,6 +836,21 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		if ev.Note.ID > r.Object.LastSeenNoteIDs[ev.MR.IID] {
 			r.Object.LastSeenNoteIDs[ev.MR.IID] = ev.Note.ID
 		}
+		// Per-stream cursor (ADR-0041) — see provider.NoteCursor. Note.Stream
+		// is empty for events synthesised before this field existed (or from
+		// a provider that hasn't been updated); skip rather than bucket
+		// those under a bogus "" stream key.
+		if ev.Note.Stream != "" {
+			if r.Object.LastSeenNoteIDsByStream == nil {
+				r.Object.LastSeenNoteIDsByStream = map[int]map[string]int64{}
+			}
+			if r.Object.LastSeenNoteIDsByStream[ev.MR.IID] == nil {
+				r.Object.LastSeenNoteIDsByStream[ev.MR.IID] = map[string]int64{}
+			}
+			if ev.Note.ID > r.Object.LastSeenNoteIDsByStream[ev.MR.IID][ev.Note.Stream] {
+				r.Object.LastSeenNoteIDsByStream[ev.MR.IID][ev.Note.Stream] = ev.Note.ID
+			}
+		}
 	case provider.EventMRMerged:
 		if r.Object.LastMRStates == nil {
 			r.Object.LastMRStates = map[int]string{}
