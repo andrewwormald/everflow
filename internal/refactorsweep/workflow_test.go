@@ -615,6 +615,39 @@ func TestWork_HappyPath(t *testing.T) {
 	}
 }
 
+// TestWork_ThreadsRunnerModelIntoRequest is the regression guard for
+// ADR-0041: a spec's `model:` override (AgentState.RunnerModel) must reach
+// the runner via runner.Request.Model on every work() invocation, so
+// cheaper models can drive simple increments.
+func TestWork_ThreadsRunnerModelIntoRequest(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "did it",
+	}})
+	fp.createMRResult = provider.MR{ProjectID: "acme/example", IID: 42}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		RunnerModel:  "claude-haiku-4-5",
+		Goal:         "Migrate to slog",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+	})
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("want 1 runner call, got %d", len(fr.calls))
+	}
+	if got := fr.calls[0].Model; got != "claude-haiku-4-5" {
+		t.Errorf("Request.Model: want claude-haiku-4-5, got %q", got)
+	}
+}
+
 func TestWork_RunnerFails(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
