@@ -208,7 +208,7 @@ func BuildArgs(req runner.Request, extraArgs []string) []string {
 //  2. The body — req.Goal, taken verbatim
 //  3. Event-specific blocks (comment to address, CI failure to fix)
 //  4. The scope-discipline reminder (always appended; flavour depends on
-//     whether req.UnitID is set — see ADR-0043)
+//     whether req.UnitID is set — see ADR-0045)
 //  5. The decision-marker protocol instructions (always appended)
 func BuildPrompt(req runner.Request) string {
 	var b strings.Builder
@@ -244,7 +244,7 @@ func BuildPrompt(req runner.Request) string {
 }
 
 // planningScopeDiscipline is the scope-discipline flavour for planning
-// invocations (req.UnitID == ""). See ADR-0043: a planner left to its own
+// invocations (req.UnitID == ""). See ADR-0045: a planner left to its own
 // devices tends toward a handful of large increments, which is exactly the
 // shape that produces multi-concern MRs downstream. This instruction pushes
 // the bias the other way, toward more, smaller increments.
@@ -258,7 +258,7 @@ separate increments instead of bundling them together.
 `
 
 // unitScopeDiscipline is the scope-discipline flavour for unit-execution
-// invocations (req.UnitID != ""). See ADR-0043: units kept ballooning into
+// invocations (req.UnitID != ""). See ADR-0045: units kept ballooning into
 // multi-concern MRs because nothing in the prompt told the runner to stay
 // narrow — the model reasonably filled the silence by doing as much as it
 // could reach.
@@ -285,7 +285,7 @@ const decisionProtocol = `## How to finish
 After completing your work (or deciding you can't), end your response
 with EXACTLY ONE of these tags on its own line:
 
-- ` + "`<everflow-decision>continue</everflow-decision>`" + ` — there's more to do (used during planning to signal the next increment)
+- ` + "`<everflow-decision>continue</everflow-decision>`" + ` — during planning, there's more to do (signals the next increment). During a work turn on a unit, this also means: this unit turned out to be bigger than one turn, you shipped a real partial slice of it, and there's a well-defined remainder left. State the remainder clearly in your summary — what's done and what's left — so the planner can schedule it as a follow-on increment instead of assuming the unit is finished. Don't use it to avoid finishing small units; use it only when the unit genuinely doesn't fit in one turn.
 - ` + "`<everflow-decision>done</everflow-decision>`" + ` — task is complete
 - ` + "`<everflow-decision>ask: <one-line question></everflow-decision>`" + ` — you need the human's input before proceeding
 - ` + "`<everflow-decision>fail: <one-line reason></everflow-decision>`" + ` — you cannot proceed

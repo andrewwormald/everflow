@@ -213,7 +213,7 @@ func TestBuildPrompt_MinimalFields(t *testing.T) {
 func TestBuildPrompt_ScopeDiscipline_PlanningVsUnit(t *testing.T) {
 	// req.UnitID is the discriminator between the two scope-discipline
 	// flavours: empty means a planning invocation, set means a unit
-	// invocation. See ADR-0043.
+	// invocation. See ADR-0045.
 	planning := BuildPrompt(runner.Request{Goal: "plan the next increment"})
 	if !strings.Contains(planning, "more, smaller increments") {
 		t.Errorf("planning invocation (no UnitID) should get the planning flavour")
