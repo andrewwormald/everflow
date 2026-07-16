@@ -24,14 +24,24 @@ were trying to prevent.
 
 `BuildPrompt` (`internal/runner/claude/claude.go`) now always appends a
 `## Scope discipline` section, between the task/event blocks and the
-`## How to finish` decision-marker protocol. It instructs the runner to
-do only what's asked, not bundle in unrelated fixes/refactors, and to
-mention (not act on) other work it notices.
+`## How to finish` decision-marker protocol. It comes in two flavours,
+chosen by whether `req.UnitID` is set — the existing discriminator
+between planning invocations (`UnitID == ""`, see `discover()` in
+`internal/refactorsweep/workflow.go`) and unit-execution invocations
+(`UnitID` set, see `work()`):
 
-This is a standing instruction like `decisionProtocol` — always
-appended, not conditional on any `Request` field — so every runner
-invocation gets it regardless of caller (`work()`, `invokeForEvent()`,
-sweep mode, spec mode).
+- **Planning** (`planningScopeDiscipline`): biases the planner toward
+  more, smaller increments instead of a few large ones, since a
+  handful of broad increments is what produces multi-concern MRs
+  downstream in the first place.
+- **Unit-scoped** (`unitScopeDiscipline`): instructs the runner to do
+  only what's asked, not bundle in unrelated fixes/refactors, and to
+  mention (not act on) other work it notices.
+
+Both are standing instructions like `decisionProtocol` — always
+appended, not conditional on anything other than the UnitID check — so
+every runner invocation gets one flavour or the other regardless of
+caller (`work()`, `invokeForEvent()`, sweep mode, spec mode).
 
 ## Alternatives considered
 
@@ -70,10 +80,15 @@ sweep mode, spec mode).
 
 - `TestBuildPrompt_AllFields` — asserts the `## Scope discipline` header
   and its "small and narrowly scoped" text land in a fully-populated
-  prompt.
+  (unit-scoped) prompt.
 - `TestBuildPrompt_MinimalFields` — asserts the section is present even
   with only `Goal` set (i.e. it's unconditional, unlike the Skill/Unit/
-  Worktree/Comment/CI headers).
+  Worktree/Comment/CI headers), and that no-UnitID gets the planning
+  flavour, not the unit flavour.
+- `TestBuildPrompt_ScopeDiscipline_PlanningVsUnit` — asserts the
+  discriminator: `UnitID == ""` gets `planningScopeDiscipline`, `UnitID`
+  set gets `unitScopeDiscipline`, and each prompt contains only its own
+  flavour's text.
 - `TestBuildPrompt_ScopeDisciplinePrecedesDecisionProtocol` — asserts
   ordering: the scope reminder appears before the `## How to finish`
   decision-marker protocol.

@@ -207,7 +207,8 @@ func BuildArgs(req runner.Request, extraArgs []string) []string {
 //  1. Header lines (Skill / Unit / Worktree, if set)
 //  2. The body — req.Goal, taken verbatim
 //  3. Event-specific blocks (comment to address, CI failure to fix)
-//  4. The scope-discipline reminder (always appended)
+//  4. The scope-discipline reminder (always appended; flavour depends on
+//     whether req.UnitID is set — see ADR-0043)
 //  5. The decision-marker protocol instructions (always appended)
 func BuildPrompt(req runner.Request) string {
 	var b strings.Builder
@@ -231,17 +232,37 @@ func BuildPrompt(req runner.Request) string {
 		fmt.Fprintf(&b, "## CI failure to investigate\n\n```\n%s\n```\n\n", req.CIFailure)
 	}
 
-	b.WriteString(scopeDiscipline)
+	// UnitID is only set for unit-execution invocations (see work() in
+	// refactorsweep/workflow.go); planning invocations leave it empty.
+	if req.UnitID == "" {
+		b.WriteString(planningScopeDiscipline)
+	} else {
+		b.WriteString(unitScopeDiscipline)
+	}
 	b.WriteString(decisionProtocol)
 	return b.String()
 }
 
-// scopeDiscipline is a standing instruction, appended to every prompt, that
-// pushes back on scope-creep. See ADR-0043: units kept ballooning into
+// planningScopeDiscipline is the scope-discipline flavour for planning
+// invocations (req.UnitID == ""). See ADR-0043: a planner left to its own
+// devices tends toward a handful of large increments, which is exactly the
+// shape that produces multi-concern MRs downstream. This instruction pushes
+// the bias the other way, toward more, smaller increments.
+const planningScopeDiscipline = `## Scope discipline
+
+Bias toward more, smaller increments rather than fewer, larger ones. Each
+increment should cover a single concern that can land as its own small MR.
+If a candidate increment would touch more than one concern, split it into
+separate increments instead of bundling them together.
+
+`
+
+// unitScopeDiscipline is the scope-discipline flavour for unit-execution
+// invocations (req.UnitID != ""). See ADR-0043: units kept ballooning into
 // multi-concern MRs because nothing in the prompt told the runner to stay
 // narrow — the model reasonably filled the silence by doing as much as it
 // could reach.
-const scopeDiscipline = `## Scope discipline
+const unitScopeDiscipline = `## Scope discipline
 
 Keep this unit small and narrowly scoped to the task above. Do only what
 is asked — do not bundle in unrelated fixes, refactors, or improvements
