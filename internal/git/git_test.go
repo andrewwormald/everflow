@@ -146,6 +146,172 @@ func TestExecGit_HardReset_DiscardsLocalChanges(t *testing.T) {
 	}
 }
 
+// TestExecGit_SyncWithBase_FastForwardsWithoutLosingLocalCommits covers the
+// common case: base has moved on, the feature branch has its own commit,
+// and the two don't conflict. SyncWithBase should bring base's commit in
+// while keeping the feature branch's own commit intact.
+func TestExecGit_SyncWithBase_FastForwardsWithoutLosingLocalCommits(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "v1\n")
+	writeFile(t, baseRepo, "other.md", "unrelated\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/sync"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	// Feature branch gets its own commit, touching a file base never touches.
+	writeFile(t, worktreeDir, "feature.md", "my change\n")
+	if err := g.Commit(ctx, worktreeDir, "feature commit"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Meanwhile, base moves forward: push a new commit to origin/main that
+	// doesn't touch feature.md.
+	writeFile(t, baseRepo, "other.md", "unrelated v2\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "base moved on")
+	runMust(t, baseRepo, "push", "origin", "main")
+
+	if err := g.SyncWithBase(ctx, worktreeDir, "main"); err != nil {
+		t.Fatalf("SyncWithBase: %v", err)
+	}
+
+	// Base's new content should now be visible in the worktree.
+	other, err := os.ReadFile(filepath.Join(worktreeDir, "other.md"))
+	if err != nil {
+		t.Fatalf("read other.md: %v", err)
+	}
+	if string(other) != "unrelated v2\n" {
+		t.Errorf("other.md not synced from base: %q", other)
+	}
+	// The feature branch's own commit should still be there.
+	feature, err := os.ReadFile(filepath.Join(worktreeDir, "feature.md"))
+	if err != nil {
+		t.Fatalf("read feature.md: %v", err)
+	}
+	if string(feature) != "my change\n" {
+		t.Errorf("feature.md lost during sync: %q", feature)
+	}
+	// No leftover conflict state.
+	dirty, err := g.HasChanges(ctx, worktreeDir)
+	if err != nil {
+		t.Fatalf("HasChanges: %v", err)
+	}
+	if dirty {
+		t.Errorf("worktree should be clean after a conflict-free sync")
+	}
+}
+
+// TestExecGit_SyncWithBase_LeavesConflictForRunner covers the case that
+// motivates this method: base and the feature branch both touched the same
+// file. SyncWithBase must NOT error — the merge conflict is exactly the
+// state the runner (address-comment / fix-CI) is meant to resolve.
+func TestExecGit_SyncWithBase_LeavesConflictForRunner(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "shared.md", "v1\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/conflict"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	// Feature branch edits shared.md.
+	writeFile(t, worktreeDir, "shared.md", "feature version\n")
+	if err := g.Commit(ctx, worktreeDir, "feature edit"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// Base also edits shared.md, differently, and gets pushed.
+	writeFile(t, baseRepo, "shared.md", "base version\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "base edit")
+	runMust(t, baseRepo, "push", "origin", "main")
+
+	if err := g.SyncWithBase(ctx, worktreeDir, "main"); err != nil {
+		t.Fatalf("SyncWithBase should not error on an ordinary merge conflict, got: %v", err)
+	}
+
+	// The worktree should be left with unmerged paths / conflict markers so
+	// the runner can resolve them.
+	dirty, err := g.HasChanges(ctx, worktreeDir)
+	if err != nil {
+		t.Fatalf("HasChanges: %v", err)
+	}
+	if !dirty {
+		t.Errorf("worktree should show conflict state as changes")
+	}
+	content, err := os.ReadFile(filepath.Join(worktreeDir, "shared.md"))
+	if err != nil {
+		t.Fatalf("read shared.md: %v", err)
+	}
+	if !strings.Contains(string(content), "<<<<<<<") {
+		t.Errorf("shared.md should contain conflict markers, got: %q", content)
+	}
+}
+
+// TestExecGit_SyncWithBase_FetchErrorPropagates ensures a genuine
+// infrastructure failure (no such base branch) is returned as an error,
+// not silently swallowed like a real conflict would be.
+func TestExecGit_SyncWithBase_FetchErrorPropagates(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "v1\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/badbase"); err != nil {
+		t.Fatalf("EnsureBranch: %v", err)
+	}
+
+	if err := g.SyncWithBase(ctx, worktreeDir, "does-not-exist"); err == nil {
+		t.Errorf("SyncWithBase against a nonexistent base branch should error")
+	}
+}
+
 func TestExecGit_GIT_TERMINAL_PROMPT_DisablesPrompting(t *testing.T) {
 	// We can't really test that the env var is set without intercepting
 	// the subprocess. Smoke-check that the runner sets it by reading it

@@ -49,6 +49,22 @@ type Git interface {
 	// is already gone.
 	RemoveWorktree(ctx context.Context, baseRepo, dir string) error
 
+	// SyncWithBase fetches origin/baseBranch and merges it into dir's current
+	// branch, so the branch's own commits are preserved but base has moved
+	// forward to its current tip. Unlike HardReset (which discards local
+	// commits — used for the planning worktree), this is for worktrees with
+	// in-flight commits of their own: it refreshes the view of base without
+	// throwing that work away. Called before address-comment / fix-CI runner
+	// invocations so conflict resolution never judges against a stale base
+	// (see ADR-0045).
+	//
+	// If the merge produces conflicts, that's a legitimate outcome, not an
+	// error: SyncWithBase returns nil and leaves the worktree with unmerged
+	// paths for the runner to resolve as part of its turn. Only failures
+	// that aren't ordinary merge conflicts (fetch failure, unknown branch,
+	// etc.) are returned as errors.
+	SyncWithBase(ctx context.Context, dir, baseBranch string) error
+
 	// DiffShortstat returns the `--shortstat` summary of commits reachable from
 	// HEAD but not from origin/<baseBranch>, e.g.
 	// "3 files changed, 12 insertions(+), 4 deletions(-)".
@@ -247,6 +263,22 @@ func (g *ExecGit) RemoveWorktree(ctx context.Context, baseRepo, dir string) erro
 		// Fall back to manual removal if git refuses.
 		_ = os.RemoveAll(dir)
 		_ = g.run(ctx, baseRepo, "worktree", "prune")
+	}
+	return nil
+}
+
+func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) error {
+	if err := g.run(ctx, dir, "fetch", "origin", baseBranch); err != nil {
+		return fmt.Errorf("SyncWithBase: fetch: %w", err)
+	}
+	if err := g.run(ctx, dir, "merge", "--no-edit", "origin/"+baseBranch); err != nil {
+		// Distinguish "merge left conflicts" (expected, leave for the runner)
+		// from a genuine failure (bad ref, dirty working tree, etc.).
+		unmerged, uErr := g.runOut(ctx, dir, "diff", "--name-only", "--diff-filter=U")
+		if uErr == nil && strings.TrimSpace(unmerged) != "" {
+			return nil
+		}
+		return fmt.Errorf("SyncWithBase: merge: %w", err)
 	}
 	return nil
 }
