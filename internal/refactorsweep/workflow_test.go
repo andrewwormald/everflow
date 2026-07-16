@@ -1537,6 +1537,86 @@ func TestResume_PipelineFailed_InvokesSubagent(t *testing.T) {
 	}
 }
 
+// TestResume_NoteAdded_SyncsWithBaseBeforeRunner asserts invokeForEvent
+// refreshes the unit worktree against origin/<base> BEFORE the runner is
+// invoked (ADR-0045), so conflict resolution never judges against a stale
+// view of main. The fake runner snapshots fakeGit's sync log at the moment
+// Run() is called, so ordering — not just occurrence — is what's asserted.
+func TestResume_NoteAdded_SyncsWithBaseBeforeRunner(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fg := d.withGit(&fakeGit{})
+	var syncsWhenRunnerRan []string
+	fr := d.withRunner(t, &fakeRunner{
+		resp: runner.Response{Decision: DecisionDone, Summary: "Renamed."},
+		onRun: func(runner.Request) {
+			fg.mu.Lock()
+			syncsWhenRunnerRan = append([]string(nil), fg.syncs...)
+			fg.mu.Unlock()
+		},
+	})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should be called once; got %d", len(fr.calls))
+	}
+	wantSync := filepath.Join(d.RunsRoot, r.RunID, "worktrees", "u") + "@main"
+	if len(syncsWhenRunnerRan) != 1 || syncsWhenRunnerRan[0] != wantSync {
+		t.Errorf(
+			"SyncWithBase(unit worktree, base) must run before the runner; syncs at runner-call time: %v, want [%s]",
+			syncsWhenRunnerRan, wantSync,
+		)
+	}
+}
+
+// TestResume_NoteAdded_SyncWithBaseFails_Pauses: a genuine SyncWithBase
+// failure (e.g. dirty worktree or fetch error — NOT an ordinary merge
+// conflict, which SyncWithBase swallows by contract) must pause the Run
+// with an explanatory comment and never invoke the runner.
+func TestResume_NoteAdded_SyncWithBaseFails_Pauses(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withGit(&fakeGit{syncErr: errors.New("SyncWithBase: merge: dirty working tree")})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: want nil err (pause committed via state, not retried), got %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused on SyncWithBase failure, got %v", next)
+	}
+	if !strings.Contains(r.Object.PauseReason, "SyncWithBase") {
+		t.Errorf("PauseReason should name the failing step: %q", r.Object.PauseReason)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner must NOT be invoked when the pre-run sync fails; got %d calls", len(fr.calls))
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/everflow retry") {
+		t.Errorf("pause comment should tell the author how to retry; got %+v", fp.comments)
+	}
+}
+
 // Control-command dispatch is covered in controls_test.go.
 
 func TestResume_PausedRun_DropsNonControlEvents(t *testing.T) {

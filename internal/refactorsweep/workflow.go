@@ -983,7 +983,8 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 }
 
 // invokeForEvent runs a subagent against a NoteAdded or PipelineFailed
-// event. Builds a bounded RunRequest with the event-specific payload
+// event. Syncs the unit worktree with origin/<base> first (ADR-0045),
+// then builds a bounded RunRequest with the event-specific payload
 // (CommentBody or CIFailure), invokes the runner, records a Turn, and
 // branches on Decision:
 //
@@ -1003,8 +1004,25 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 	p := d.Providers[r.Object.ProviderName] // already validated in setup
 
+	worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID)
+	baseBranch := defaultIfEmpty(r.Object.BaseBranch, "main")
+
+	// Refresh the view of base before the runner judges anything, so
+	// conflict resolution never runs against a stale main (ADR-0045).
+	// An ordinary merge conflict is not an error — SyncWithBase leaves
+	// the unmerged paths in the worktree for the runner to resolve as
+	// part of its turn. A genuine failure (fetch error, dirty worktree)
+	// pauses the Run like the other git failures below.
+	if sErr := d.Git.SyncWithBase(ctx, worktree, baseBranch); sErr != nil {
+		mr := r.Object.InFlight[unitID]
+		r.Object.PauseReason = fmt.Sprintf("git SyncWithBase failed before handling %s: %v", ev.Kind, sErr)
+		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+			fmt.Sprintf("⚠️ Paused — couldn't sync this branch with `%s` before handling the event: `%v`. Reply `/everflow retry` after fixing.", baseBranch, sErr))
+		return StatusPaused, nil
+	}
+
 	req := runner.Request{
-		Worktree: filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID),
+		Worktree: worktree,
 		Goal:     r.Object.Goal,
 		UnitID:   unitID,
 		Model:    r.Object.RunnerModel,
@@ -1146,7 +1164,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		// can see whether the runner's summary matches what was actually pushed.
 		addressedBody := fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
 		if d.Git != nil {
-			if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, defaultIfEmpty(r.Object.BaseBranch, "main")); sErr == nil && stat != "" {
+			if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, baseBranch); sErr == nil && stat != "" {
 				addressedBody += "\n\nDiff: " + stat
 			}
 		}
