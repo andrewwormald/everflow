@@ -172,6 +172,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		"## Task", "Migrate logrus",
 		"## Reviewer feedback to address", "rename the LogContext",
 		"## CI failure to investigate", "TestSomething",
+		"## Scope discipline", "small and narrowly scoped",
 		"## How to finish", "<everflow-decision>",
 	} {
 		if !strings.Contains(prompt, want) {
@@ -181,8 +182,9 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 }
 
 func TestBuildPrompt_MinimalFields(t *testing.T) {
-	// Only Goal set — no headers should be rendered for empty fields,
-	// but the decision protocol is always present.
+	// Only Goal set, no UnitID — this is the planning shape. No headers
+	// should be rendered for empty fields, but the decision protocol and
+	// the planning flavour of scope discipline are always present.
 	req := runner.Request{Goal: "just do the thing"}
 	prompt := BuildPrompt(req)
 	if strings.Contains(prompt, "## Skill") {
@@ -196,6 +198,52 @@ func TestBuildPrompt_MinimalFields(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "<everflow-decision>") {
 		t.Errorf("decision protocol should always be appended")
+	}
+	if !strings.Contains(prompt, "## Scope discipline") {
+		t.Errorf("scope discipline reminder should always be appended, even with minimal fields")
+	}
+	if !strings.Contains(prompt, "more, smaller increments") {
+		t.Errorf("no UnitID should get the planning scope-discipline flavour")
+	}
+	if strings.Contains(prompt, "small and narrowly scoped") {
+		t.Errorf("no UnitID should not get the unit-scoped flavour")
+	}
+}
+
+func TestBuildPrompt_ScopeDiscipline_PlanningVsUnit(t *testing.T) {
+	// req.UnitID is the discriminator between the two scope-discipline
+	// flavours: empty means a planning invocation, set means a unit
+	// invocation. See ADR-0045.
+	planning := BuildPrompt(runner.Request{Goal: "plan the next increment"})
+	if !strings.Contains(planning, "more, smaller increments") {
+		t.Errorf("planning invocation (no UnitID) should get the planning flavour")
+	}
+	if strings.Contains(planning, "small and narrowly scoped") {
+		t.Errorf("planning invocation should not get the unit flavour")
+	}
+
+	unit := BuildPrompt(runner.Request{Goal: "do the unit", UnitID: "svc-payments"})
+	if !strings.Contains(unit, "small and narrowly scoped") {
+		t.Errorf("unit invocation (UnitID set) should get the unit flavour")
+	}
+	if strings.Contains(unit, "more, smaller increments") {
+		t.Errorf("unit invocation should not get the planning flavour")
+	}
+}
+
+func TestBuildPrompt_ScopeDisciplinePrecedesDecisionProtocol(t *testing.T) {
+	// The scope reminder must land before the decision-marker instructions,
+	// so it reads as guidance on the work rather than on how to answer.
+	req := runner.Request{Goal: "just do the thing"}
+	prompt := BuildPrompt(req)
+
+	scopeIdx := strings.Index(prompt, "## Scope discipline")
+	decisionIdx := strings.Index(prompt, "## How to finish")
+	if scopeIdx == -1 || decisionIdx == -1 {
+		t.Fatalf("expected both sections present: scopeIdx=%d decisionIdx=%d", scopeIdx, decisionIdx)
+	}
+	if scopeIdx >= decisionIdx {
+		t.Errorf("scope discipline should precede the decision protocol; scopeIdx=%d decisionIdx=%d", scopeIdx, decisionIdx)
 	}
 }
 

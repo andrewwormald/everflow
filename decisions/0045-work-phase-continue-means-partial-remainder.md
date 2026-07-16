@@ -1,4 +1,4 @@
-# ADR-0043: Work-phase `DecisionContinue` means "partial slice, remainder follows"
+# ADR-0045: Work-phase `DecisionContinue` means "partial slice, remainder follows"
 
 **Status**: Accepted
 **Date**: 2026-07-16

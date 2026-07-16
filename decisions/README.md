@@ -90,4 +90,6 @@ forces or unlocks.
 | 0040 | Adopt the "Flow Chevrons" brand mark (supersedes ADR-0013)      | Accepted | 2026-07-03 |
 | 0041 | Per-stream comment watermarks (fix cross-stream drop)           | Accepted | 2026-07-16 |
 | 0042 | Unrecognised `/everflow` verbs become freeform instructions     | Accepted | 2026-07-16 |
-| 0043 | Work-phase `DecisionContinue` means "partial slice, remainder follows" | Accepted | 2026-07-16 |
+| 0043 | Standing scope-discipline instruction on every runner prompt    | Accepted | 2026-07-16 |
+| 0044 | Per-spec model selection for the runner                         | Accepted | 2026-07-16 |
+| 0045 | Work-phase `DecisionContinue` means "partial slice, remainder follows" | Accepted | 2026-07-16 |
