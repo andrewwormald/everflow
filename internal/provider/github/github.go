@@ -228,14 +228,31 @@ func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) 
 	}
 }
 
+// GitHub's three comment endpoints (see ListNotesSince) each draw their
+// `id` from an independent sequence — they are NOT a single globally
+// monotonic counter shared across resource types. A review comment can
+// easily have a lower id than an issue comment posted earlier in wall-clock
+// time. These match the X-GitHub-Event webhook names so poll- and
+// webhook-sourced notes bucket into the same AgentState cursor entries.
+const (
+	streamIssueComment  = "issue_comment"
+	streamReviewComment = "pull_request_review_comment"
+	streamReview        = "pull_request_review"
+)
+
 // ListNotesSince fetches new comments on a PR across GitHub's three
-// comment streams and returns them merged + sorted by ID ascending.
-// GitHub IDs are globally monotonic across all resources, so a single
-// int64 watermark suffices even though we're polling three endpoints:
+// comment streams and returns them merged + sorted by ID ascending:
 //
-//   - issue_comment   → /repos/.../issues/{n}/comments    (PR conversation)
-//   - pr_review       → /repos/.../pulls/{n}/reviews      (top-level reviews)
-//   - pr_review_comment → /repos/.../pulls/{n}/comments   (inline line comments)
+//   - issue_comment              → /repos/.../issues/{n}/comments  (PR conversation)
+//   - pull_request_review        → /repos/.../pulls/{n}/reviews    (top-level reviews)
+//   - pull_request_review_comment → /repos/.../pulls/{n}/comments  (inline line comments)
+//
+// Each stream is filtered against its own watermark in `since`, falling
+// back to since.Legacy for any stream not yet tracked individually. See
+// provider.NoteCursor and ADR-0041 for why a single shared watermark is
+// wrong here: mixing the three streams' ids into one scalar can cause a
+// lower-id comment on one stream to be silently and permanently dropped
+// after a higher-id comment arrives on a different stream.
 //
 // Only inline review comments carry a `node_id` we can hand to
 // ResolveDiscussion; the other two come back with DiscussionID="".
@@ -246,10 +263,17 @@ func (p *Provider) GetMRState(ctx context.Context, projectID string, mrIID int) 
 // Pagination cap: 100 per endpoint per tick. For dogfood / personal
 // use this is fine; if a single 30s window ever sees >100 new comments
 // across all streams we'll need to paginate.
-func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, sinceNoteID int64) ([]provider.NotePoll, error) {
+func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID int, since provider.NoteCursor) ([]provider.NotePoll, error) {
 	owner, repo, err := splitProjectID(projectID)
 	if err != nil {
 		return nil, err
+	}
+
+	threshold := func(stream string) int64 {
+		if v, ok := since.ByStream[stream]; ok {
+			return v
+		}
+		return since.Legacy
 	}
 
 	out := make([]provider.NotePoll, 0)
@@ -265,14 +289,16 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 		nil, &issueComments); err != nil {
 		return nil, fmt.Errorf("ListNotesSince: issue comments: %w", err)
 	}
+	issueSince := threshold(streamIssueComment)
 	for _, c := range issueComments {
-		if c.ID <= sinceNoteID {
+		if c.ID <= issueSince {
 			continue
 		}
 		out = append(out, provider.NotePoll{
 			ID:     c.ID,
 			Body:   c.Body,
 			Author: c.User.toProviderUser(),
+			Stream: streamIssueComment,
 		})
 	}
 
@@ -288,8 +314,9 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 		nil, &prReviewComments); err != nil {
 		return nil, fmt.Errorf("ListNotesSince: pr review comments: %w", err)
 	}
+	reviewCommentSince := threshold(streamReviewComment)
 	for _, c := range prReviewComments {
-		if c.ID <= sinceNoteID {
+		if c.ID <= reviewCommentSince {
 			continue
 		}
 		out = append(out, provider.NotePoll{
@@ -297,6 +324,7 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 			Body:         c.Body,
 			DiscussionID: c.NodeID,
 			Author:       c.User.toProviderUser(),
+			Stream:       streamReviewComment,
 		})
 	}
 
@@ -312,8 +340,9 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 		nil, &reviews); err != nil {
 		return nil, fmt.Errorf("ListNotesSince: reviews: %w", err)
 	}
+	reviewSince := threshold(streamReview)
 	for _, r := range reviews {
-		if r.ID <= sinceNoteID {
+		if r.ID <= reviewSince {
 			continue
 		}
 		if r.Body == "" && r.State == "APPROVED" {
@@ -323,6 +352,7 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 			ID:     r.ID,
 			Body:   r.Body,
 			Author: r.User.toProviderUser(),
+			Stream: streamReview,
 		})
 	}
 

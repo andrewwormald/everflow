@@ -96,8 +96,24 @@ type AgentState struct {
 	// Polling state — populated only in poll mode (ADR-0031).
 	// Keyed by MR IID. Updated by the poller as new comments arrive and
 	// MR states transition.
-	LastSeenNoteIDs map[int]int64  `json:"last_seen_note_ids,omitempty"`
-	LastMRStates    map[int]string `json:"last_mr_states,omitempty"`
+	//
+	// LastSeenNoteIDs is the pre-ADR-0041 single scalar watermark per MR.
+	// It's still updated (never removed — old Runs in flight depend on
+	// it) and used as provider.NoteCursor.Legacy: the floor applied to
+	// any comment stream not yet present in LastSeenNoteIDsByStream.
+	LastSeenNoteIDs map[int]int64 `json:"last_seen_note_ids,omitempty"`
+	// LastSeenNoteIDsByStream maps MR IID → per-stream (provider-defined,
+	// e.g. GitHub's "issue_comment" / "pull_request_review_comment" /
+	// "pull_request_review"; GitLab's single "note") high-water mark.
+	// Added by ADR-0041 to fix a cross-stream watermark bug: GitHub's
+	// comment endpoints draw ids from independent sequences, so the old
+	// single LastSeenNoteIDs scalar could silently and permanently drop
+	// a comment whose id was lower than one already seen on a different
+	// stream. Additive: existing Runs have this field empty/nil and fall
+	// back to LastSeenNoteIDs per stream until each stream sees its first
+	// comment post-migration.
+	LastSeenNoteIDsByStream map[int]map[string]int64 `json:"last_seen_note_ids_by_stream,omitempty"`
+	LastMRStates            map[int]string            `json:"last_mr_states,omitempty"`
 
 	// RecentOutgoingHashes is a bounded FIFO of SHA-256 hex hashes of the
 	// most recent comment bodies the daemon has posted on behalf of this
