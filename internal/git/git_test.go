@@ -497,6 +497,105 @@ func TestExecGit_Commit_OnlyBinaries_ReturnsNoChanges(t *testing.T) {
 	}
 }
 
+// TestExecGit_HasWorkBeyondBase covers the four cases that motivate the
+// method (a porcelain-only HasChanges misses committed-but-unpushed work,
+// see ADR on the correctness check): fresh worktree → false; dirty tree →
+// true; self-committed work with a clean tree → true; base moved forward
+// while the unit sat idle → false.
+func TestExecGit_HasWorkBeyondBase(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "v1\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	// Case 1: fresh worktree, runner did nothing → false.
+	wt1 := filepath.Join(t.TempDir(), "wt1")
+	if err := g.EnsureBranch(ctx, wt1, baseRepo, "main", "everflow/test/work-a"); err != nil {
+		t.Fatalf("EnsureBranch wt1: %v", err)
+	}
+	got, err := g.HasWorkBeyondBase(ctx, wt1, "main")
+	if err != nil {
+		t.Fatalf("HasWorkBeyondBase (fresh): %v", err)
+	}
+	if got {
+		t.Errorf("fresh worktree: want false, got true")
+	}
+
+	// Case 2: dirty tree (uncommitted change) → true.
+	writeFile(t, wt1, "wip.md", "uncommitted\n")
+	got, err = g.HasWorkBeyondBase(ctx, wt1, "main")
+	if err != nil {
+		t.Fatalf("HasWorkBeyondBase (dirty): %v", err)
+	}
+	if !got {
+		t.Errorf("dirty tree: want true, got false")
+	}
+
+	// Case 3: the motivating case — runner committed its own work, tree is
+	// clean again. Porcelain-only HasChanges says false; this must say true.
+	if err := g.Commit(ctx, wt1, "self-committed work"); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if dirty, _ := g.HasChanges(ctx, wt1); dirty {
+		t.Fatalf("precondition: tree should be clean after commit")
+	}
+	got, err = g.HasWorkBeyondBase(ctx, wt1, "main")
+	if err != nil {
+		t.Fatalf("HasWorkBeyondBase (committed): %v", err)
+	}
+	if !got {
+		t.Errorf("committed-but-unpushed work: want true, got false")
+	}
+
+	// Case 4: base moves forward while a second, idle worktree does nothing.
+	// Comparing HEAD to origin/main directly could misread this; merge-base
+	// must not count upstream's commits as the unit's work.
+	wt2 := filepath.Join(t.TempDir(), "wt2")
+	if err := g.EnsureBranch(ctx, wt2, baseRepo, "main", "everflow/test/work-b"); err != nil {
+		t.Fatalf("EnsureBranch wt2: %v", err)
+	}
+	writeFile(t, baseRepo, "README.md", "v2 — base moved on\n")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "base moved on")
+	runMust(t, baseRepo, "push", "origin", "main")
+	runMust(t, wt2, "fetch", "origin", "main")
+
+	got, err = g.HasWorkBeyondBase(ctx, wt2, "main")
+	if err != nil {
+		t.Fatalf("HasWorkBeyondBase (upstream moved, idle): %v", err)
+	}
+	if got {
+		t.Errorf("base moved but unit idle: want false, got true")
+	}
+
+	// wt1's committed work must still register after base moved forward.
+	got, err = g.HasWorkBeyondBase(ctx, wt1, "main")
+	if err != nil {
+		t.Fatalf("HasWorkBeyondBase (committed, base moved): %v", err)
+	}
+	if !got {
+		t.Errorf("committed work after base moved: want true, got false")
+	}
+
+	// A nonexistent base branch is an error, not a silent false.
+	if _, err := g.HasWorkBeyondBase(ctx, wt1, "does-not-exist"); err == nil {
+		t.Errorf("HasWorkBeyondBase against a nonexistent base branch should error")
+	}
+}
+
 // --- helpers ---
 
 func runMust(t *testing.T, dir string, args ...string) {
