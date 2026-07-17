@@ -924,6 +924,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		if ev.IsAuthor && ev.Kind == provider.EventNoteAdded {
 			verb, _ := parseControlVerb(ev.Note.Body)
 			if verb == "abandon" {
+				d.reactToNote(ctx, r, ev)
 				return d.handleControlCommand(ctx, r, ev)
 			}
 		}
@@ -934,6 +935,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// dispatcher: parseControlVerb + handleControlCommand.
 	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded &&
 		strings.HasPrefix(strings.TrimSpace(ev.Note.Body), "/everflow") {
+		d.reactToNote(ctx, r, ev)
 		return d.handleControlCommand(ctx, r, ev)
 	}
 
@@ -995,6 +997,14 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		return d.invokeForEvent(ctx, r, unitID, ev)
 	}
 	return StatusAwaitingMerge, fmt.Errorf("resume: unknown filter outcome %v", outcome)
+}
+
+// reactToNote acknowledges receipt of a control-command comment immediately,
+// before handleControlCommand runs, so the author knows everflow picked it
+// up. Best-effort — reaction failure must never block command handling.
+func (d *Deps) reactToNote(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) {
+	p := d.Providers[r.Object.ProviderName] // already validated in setup
+	_ = p.ReactToNote(ctx, ev.MR.ProjectID, ev.MR.IID, ev.Note.ID, ev.Note.Stream, "eyes")
 }
 
 // invokeForEvent runs a subagent against a NoteAdded or PipelineFailed

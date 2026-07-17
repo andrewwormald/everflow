@@ -15,6 +15,7 @@ import (
 
 	"github.com/luno/workflow"
 
+	"github.com/andrewwormald/everflow/internal/filter"
 	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/runner"
@@ -1825,6 +1826,48 @@ func TestResume_PipelineFailed_DoesNotReact(t *testing.T) {
 	}
 	if len(fp.reactions) != 0 {
 		t.Errorf("PipelineFailed must not trigger a reaction; got %+v", fp.reactions)
+	}
+}
+
+// skipFilter always returns OutcomeSkip, regardless of the event.
+type skipFilter struct{}
+
+func (skipFilter) Eval(provider.Event, any, filter.PhraseSet) (filter.Outcome, error) {
+	return filter.OutcomeSkip, nil
+}
+
+// TestResume_OutcomeSkip_DoesNotReact asserts a filter-skipped NoteAdded
+// event triggers no reaction — only events that actually get invoked (via
+// invokeForEvent) or dispatched as control commands should acknowledge.
+func TestResume_OutcomeSkip_DoesNotReact(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.Filter = skipFilter{}
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "n/a"}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 42, Stream: "issue_comment", Body: "just chatting"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if r.Object.EventsSkippedByFilter != 1 {
+		t.Errorf("EventsSkippedByFilter = %d, want 1", r.Object.EventsSkippedByFilter)
+	}
+	if len(fp.reactions) != 0 {
+		t.Errorf("OutcomeSkip must not trigger a reaction; got %+v", fp.reactions)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("OutcomeSkip must not invoke the runner; got %d calls", len(fr.calls))
 	}
 }
 

@@ -69,6 +69,42 @@ func TestCmdAbandon_SecondTap_Confirms(t *testing.T) {
 	}
 }
 
+// TestCmdAbandon_SecondTap_ReactsBeforeConfirming asserts the
+// AwaitingAbandonConfirm dispatch path (workflow.go's first
+// handleControlCommand call site) acknowledges the confirming comment with
+// a reaction, same as the generic control-command path does.
+func TestCmdAbandon_SecondTap_ReactsBeforeConfirming(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "u", mr)
+	r.Status = StatusAwaitingAbandonConfirm
+	r.Object.AbandonRequestedAt = time.Now().Add(-1 * time.Minute)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "andreww"},
+		Note:   provider.Note{ID: 9, Stream: "issue_comment", Body: "/everflow abandon"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusCancelled {
+		t.Errorf("want StatusCancelled, got %v", next)
+	}
+	if len(fp.reactions) != 1 {
+		t.Fatalf("want exactly 1 reaction; got %+v", fp.reactions)
+	}
+	got := fp.reactions[0]
+	want := reactToNoteCall{ProjectID: "x/y", MRIID: 7, NoteID: 9, Stream: "issue_comment", Emoji: "eyes"}
+	if got != want {
+		t.Errorf("ReactToNote call = %+v, want %+v", got, want)
+	}
+}
+
 func TestResume_NonAbandonEventInConfirmWindow_DropsBack(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
