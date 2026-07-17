@@ -1,4 +1,4 @@
-# ADR-0048 — `ReactToNote`: instant emoji acknowledgement of picked-up comments
+# ADR-0050 — `ReactToNote`: instant emoji acknowledgement of picked-up comments
 
 **Date:** 2026-07-17
 **Status:** Accepted

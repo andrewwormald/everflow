@@ -518,7 +518,7 @@ func (p *Provider) RetryPipelineJob(ctx context.Context, projectID string, jobID
 //   - streamIssueComment  → POST /repos/{o}/{r}/issues/comments/{id}/reactions
 //   - streamReviewComment → POST /repos/{o}/{r}/pulls/comments/{id}/reactions
 //   - streamReview        → no reactions endpoint exists for top-level PR
-//     reviews; this is a no-op (nil), not an error — see ADR-0048.
+//     reviews; this is a no-op (nil), not an error — see ADR-0050.
 func (p *Provider) ReactToNote(ctx context.Context, projectID string, _ int, noteID int64, stream, emoji string) error {
 	owner, repo, err := splitProjectID(projectID)
 	if err != nil {

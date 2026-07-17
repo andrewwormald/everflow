@@ -151,10 +151,15 @@ func cmdDaemon(args []string) error {
 		logger.Warn("no providers configured — set GITLAB_TOKEN / GITHUB_TOKEN or run `glab auth login`")
 	}
 
-	recordStore, timeoutStore, err := store.Open(*storePath)
+	// storePath is always non-empty here (defaulted above), so OpenSqlite
+	// (rather than store.Open) is used directly: it hands back the shared
+	// *sql.DB so the EventStreamer's durable event log lives in the same
+	// sqlite file as the RecordStore/TimeoutStore, not a second handle.
+	backend, err := store.OpenSqlite(*storePath)
 	if err != nil {
 		return fmt.Errorf("open store: %w", err)
 	}
+	recordStore, timeoutStore := backend.RecordStore(), backend.TimeoutStore()
 
 	// Per-Run filesystem layout sits next to the store file. If --store is
 	// /tmp/x/store.db, runs root is /tmp/x/runs/. Both happily live under
@@ -177,7 +182,7 @@ func cmdDaemon(args []string) error {
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
 		TimeoutStore:  timeoutStore,
-		EventStreamer: eventstream.New(),
+		EventStreamer: eventstream.New(backend.DB()),
 		RoleScheduler: memrolescheduler.New(),
 		Providers:     providers,
 		Runners:       runners,

@@ -78,7 +78,7 @@ type Provider interface {
 	// platform-neutral short name (e.g. "eyes", "hourglass"). Reacting is
 	// best-effort acknowledgement, not part of the durable Run state: if the
 	// platform has no reaction support for this comment's stream (see
-	// ADR-0048), implementations return nil rather than an error.
+	// ADR-0050), implementations return nil rather than an error.
 	ReactToNote(ctx context.Context, projectID string, mrIID int, noteID int64, stream, emoji string) error
 
 	// Polling support (used when EventSource=poll instead of webhook).
