@@ -53,6 +53,40 @@ func controlEvent(body string, mr provider.MR) provider.Event {
 
 // --- individual verb tests ---
 
+// TestResume_ControlCommand_ReactsBeforeHandling asserts the generic
+// /everflow dispatch path (workflow.go's second handleControlCommand call
+// site) acknowledges the triggering comment with a reaction, same as the
+// subagent-invocation path does.
+func TestResume_ControlCommand_ReactsBeforeHandling(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "andreww"},
+		Note:   provider.Note{ID: 7, Stream: "issue_comment", Body: "/everflow pause taking lunch"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused, got %v", next)
+	}
+	if len(fp.reactions) != 1 {
+		t.Fatalf("want exactly 1 reaction; got %+v", fp.reactions)
+	}
+	got := fp.reactions[0]
+	want := reactToNoteCall{ProjectID: "x/y", MRIID: 1, NoteID: 7, Stream: "issue_comment", Emoji: "eyes"}
+	if got != want {
+		t.Errorf("ReactToNote call = %+v, want %+v", got, want)
+	}
+}
+
 func TestCmdPause(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
