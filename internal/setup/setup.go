@@ -18,6 +18,14 @@ import (
 //go:embed SKILL.md
 var skillMD []byte
 
+// KnownRunners lists the coding-agent runners `everflow setup` can offer as
+// a default. Mirrors the runners actually registered in main() (ADR-0007) —
+// "claude" is the only one today. Kept here rather than introspecting a live
+// runner.Registry so setup can validate --runner and auto-select a default
+// without constructing runners (and their subprocess dependencies) just to
+// list their names.
+var KnownRunners = []string{"claude"}
+
 // SkillPath returns the path where the Claude Code Skill bundle lives under
 // the given home directory.
 func SkillPath(home string) string {

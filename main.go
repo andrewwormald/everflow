@@ -5,6 +5,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -25,9 +26,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/luno/workflow"
+	"github.com/mattn/go-isatty"
 
 	"github.com/luno/workflow/adapters/memrolescheduler"
 
+	"github.com/andrewwormald/everflow/internal/config"
 	"github.com/andrewwormald/everflow/internal/eventstream"
 	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/poller"
@@ -61,7 +64,7 @@ var commands = map[string]command{
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
-	"setup":   {usage: "install the Claude Code Skill integration (Claude only for now; see ADR-0002)", run: cmdSetup},
+	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model (see ADR-0002, ADR-0050)", run: cmdSetup},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
 
@@ -1430,10 +1433,11 @@ func cmdPhrases(args []string) error {
 	}
 }
 
-// cmdSetup installs the Claude Code Skill bundle (ADR-0002) on demand. Unlike
-// the automatic first-run hook in main(), this doesn't require ~/.claude to
-// already exist, and --force lets a user pull down the current SKILL.md over
-// a locally-edited copy.
+// cmdSetup installs the Claude Code Skill bundle (ADR-0002) and persists the
+// user's default runner + model choice to ~/.everflow/config.yaml (ADR-0050).
+// Unlike the automatic first-run hook in main(), this doesn't require
+// ~/.claude to already exist, and --force lets a user pull down the current
+// SKILL.md over a locally-edited copy.
 //
 // Claude-only today by design (ADR-0002); a companion command for another
 // coding agent's own integration format (Codex, Qwen, ...) would live
@@ -1441,6 +1445,8 @@ func cmdPhrases(args []string) error {
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	force := fs.Bool("force", false, "overwrite an existing Skill file with the current bundled version")
+	runnerFlag := fs.String("runner", "", "default runner to persist (default: the only registered runner, \"claude\")")
+	modelFlag := fs.String("model", "", "default model override to persist for the chosen runner (default: prompt if interactive, else leave unset)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1460,7 +1466,58 @@ func cmdSetup(args []string) error {
 	} else {
 		fmt.Printf("Claude Code Skill already installed at %s (pass --force to overwrite)\n", skillPath)
 	}
+
+	cfg, err := config.Load(home)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+
+	runnerName, err := setup.ResolveRunner(*runnerFlag)
+	if err != nil {
+		return fmt.Errorf("resolve runner: %w", err)
+	}
+
+	interactive := isatty.IsTerminal(os.Stdin.Fd())
+	model, err := setup.ResolveModel(*modelFlag, cfg.Model, interactive, promptForModel(runnerName, os.Stdin, os.Stdout))
+	if err != nil {
+		return fmt.Errorf("resolve model: %w", err)
+	}
+
+	cfg.Runner = runnerName
+	cfg.Model = model
+	if err := config.Save(home, cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	fmt.Printf("Default runner: %s\n", runnerName)
+	if model != "" {
+		fmt.Printf("Default model: %s\n", model)
+	} else {
+		fmt.Printf("Default model: (none set — %s's own default; pass --model or rerun interactively to set one)\n", runnerName)
+	}
+	fmt.Printf("Saved to %s\n", config.Path(home))
 	return nil
+}
+
+// promptForModel returns a setup.ResolveModel prompt func that asks the user
+// for a default model on r, showing existing as the value a blank answer
+// keeps. Only called when stdin is a TTY and no --model flag was given.
+func promptForModel(runnerName string, r io.Reader, w io.Writer) func(existing string) (string, error) {
+	return func(existing string) (string, error) {
+		if existing != "" {
+			fmt.Fprintf(w, "Default model for %s (blank keeps %q): ", runnerName, existing)
+		} else {
+			fmt.Fprintf(w, "Default model for %s (blank = %s's own default): ", runnerName, runnerName)
+		}
+		scanner := bufio.NewScanner(r)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		}
+		return strings.TrimSpace(scanner.Text()), nil
+	}
 }
 
 func versionString() string {

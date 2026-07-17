@@ -14,6 +14,7 @@ import (
 
 	"github.com/luno/workflow"
 
+	"github.com/andrewwormald/everflow/internal/config"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/store"
@@ -410,5 +411,81 @@ func TestDaemonUnreachableHint(t *testing.T) {
 				t.Errorf("want 'is unreachable' and '--store' hint in error; got: %s", msg)
 			}
 		})
+	}
+}
+
+// TestCmdSetup_NonInteractiveDefaultsToClaudeNoModel asserts that a
+// non-interactive `everflow setup` (test binaries don't run with a stdin
+// TTY) with no flags auto-selects the sole registered runner and leaves the
+// model unset rather than hanging on a prompt.
+func TestCmdSetup_NonInteractiveDefaultsToClaudeNoModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := cmdSetup(nil); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.Runner != "claude" {
+		t.Fatalf("got runner %q, want %q", cfg.Runner, "claude")
+	}
+	if cfg.Model != "" {
+		t.Fatalf("got model %q, want empty (no TTY, no --model)", cfg.Model)
+	}
+}
+
+// TestCmdSetup_ModelFlagPersists asserts --model is persisted verbatim.
+func TestCmdSetup_ModelFlagPersists(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := cmdSetup([]string{"--model", "claude-haiku-4-5"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.Model != "claude-haiku-4-5" {
+		t.Fatalf("got model %q, want %q", cfg.Model, "claude-haiku-4-5")
+	}
+}
+
+// TestCmdSetup_RerunWithoutModelFlagKeepsExisting asserts that re-running
+// setup non-interactively without --model doesn't clobber a previously
+// persisted model back to empty.
+func TestCmdSetup_RerunWithoutModelFlagKeepsExisting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := cmdSetup([]string{"--model", "claude-sonnet-5"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+	if err := cmdSetup(nil); err != nil {
+		t.Fatalf("cmdSetup (rerun): %v", err)
+	}
+
+	cfg, err := config.Load(home)
+	if err != nil {
+		t.Fatalf("config.Load: %v", err)
+	}
+	if cfg.Model != "claude-sonnet-5" {
+		t.Fatalf("got model %q, want previously persisted value kept", cfg.Model)
+	}
+}
+
+// TestCmdSetup_UnknownRunnerFlagErrors asserts an unrecognised --runner
+// fails loudly instead of silently persisting a bogus default.
+func TestCmdSetup_UnknownRunnerFlagErrors(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	if err := cmdSetup([]string{"--runner", "not-a-real-runner"}); err == nil {
+		t.Fatal("expected an error for an unknown runner")
 	}
 }
