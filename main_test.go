@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/luno/workflow"
 
 	"github.com/andrewwormald/everflow/internal/config"
+	"github.com/andrewwormald/everflow/internal/eventstream"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/store"
@@ -279,6 +281,57 @@ func TestDaemonBannerLine(t *testing.T) {
 			t.Errorf("banner missing %q\n\nfull banner: %s", w, banner)
 		}
 	}
+}
+
+func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
+	dir := t.TempDir()
+	backend, err := store.OpenSqlite(filepath.Join(dir, "store.db"))
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	recordStore := backend.RecordStore()
+	streamer := eventstream.New(backend.DB())
+	threshold := 42 * time.Minute
+	logger := discardLogger()
+
+	sweeper := buildSweeper(recordStore, streamer, threshold, logger)
+
+	if sweeper.Store != recordStore {
+		t.Errorf("Store = %v, want the daemon's recordStore", sweeper.Store)
+	}
+	if sweeper.Streamer != streamer {
+		t.Errorf("Streamer = %v, want the daemon's EventStreamer", sweeper.Streamer)
+	}
+	if sweeper.WorkflowName != workflowName {
+		t.Errorf("WorkflowName = %q, want %q", sweeper.WorkflowName, workflowName)
+	}
+	if sweeper.Threshold != threshold {
+		t.Errorf("Threshold = %v, want %v", sweeper.Threshold, threshold)
+	}
+	if sweeper.Logger != logger {
+		t.Errorf("Logger = %v, want the daemon's logger", sweeper.Logger)
+	}
+}
+
+func TestReconcilerStuckThresholdDefault(t *testing.T) {
+	t.Setenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD", "")
+	if got := reconcilerStuckThresholdDefault(); got != 10*time.Minute {
+		t.Errorf("default with no env set = %v, want 10m", got)
+	}
+
+	t.Setenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD", "5m")
+	if got := reconcilerStuckThresholdDefault(); got != 5*time.Minute {
+		t.Errorf("default with env set to 5m = %v, want 5m", got)
+	}
+
+	t.Setenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD", "not-a-duration")
+	if got := reconcilerStuckThresholdDefault(); got != 10*time.Minute {
+		t.Errorf("default with unparseable env = %v, want fallback 10m", got)
+	}
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func TestDirectStatus_ListAllRuns(t *testing.T) {

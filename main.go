@@ -37,6 +37,7 @@ import (
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/provider/github"
 	"github.com/andrewwormald/everflow/internal/provider/gitlab"
+	"github.com/andrewwormald/everflow/internal/reconciler"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/runner/claude"
@@ -117,17 +118,47 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "\nrun `everflow <command> -h` for command-specific flags.\n")
 }
 
+// reconcilerStuckThresholdDefault returns the --reconciler-stuck-threshold
+// flag's default: EVERFLOW_RECONCILER_STUCK_THRESHOLD if set and parseable
+// (e.g. "10m"), else 10 minutes.
+func reconcilerStuckThresholdDefault() time.Duration {
+	const fallback = 10 * time.Minute
+	v := os.Getenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD")
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+	return d
+}
+
+// buildSweeper constructs the reconciler.Sweeper the daemon runs alongside
+// pollerLoop. Split out from cmdDaemon so tests can assert it's wired to the
+// same store/streamer/workflow name as the rest of the daemon.
+func buildSweeper(rs workflow.RecordStore, streamer workflow.EventStreamer, threshold time.Duration, logger *slog.Logger) *reconciler.Sweeper {
+	return &reconciler.Sweeper{
+		Store:        rs,
+		Streamer:     streamer,
+		WorkflowName: workflowName,
+		Threshold:    threshold,
+		Logger:       logger,
+	}
+}
+
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
-		storePath     = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db; pass ':memory:' for volatile)")
-		listenAddr    = fs.String("listen", ":8080", "address for the webhook HTTP server")
-		publicBaseURL = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
-		gitlabBaseURL = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
-		githubBaseURL = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
-		triggerAddr   = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `everflow start`)")
-		commitAuthor  = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
-		commitEmail   = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
+		storePath      = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db; pass ':memory:' for volatile)")
+		listenAddr     = fs.String("listen", ":8080", "address for the webhook HTTP server")
+		publicBaseURL  = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
+		gitlabBaseURL  = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
+		githubBaseURL  = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
+		triggerAddr    = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `everflow start`)")
+		commitAuthor   = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
+		commitEmail    = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
+		stuckThreshold = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault(), "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033); overridable via EVERFLOW_RECONCILER_STUCK_THRESHOLD")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -182,10 +213,11 @@ func cmdDaemon(args []string) error {
 	// (rare; useful for shared-bot deployments).
 	gitClient := git.NewExec(*commitAuthor, *commitEmail)
 
+	eventStreamer := eventstream.New(backend.DB())
 	wf := refactorsweep.Build(workflowName, refactorsweep.Deps{
 		RecordStore:   recordStore,
 		TimeoutStore:  timeoutStore,
-		EventStreamer: eventstream.New(backend.DB()),
+		EventStreamer: eventStreamer,
 		RoleScheduler: memrolescheduler.New(),
 		Providers:     providers,
 		Runners:       runners,
@@ -281,6 +313,12 @@ func cmdDaemon(args []string) error {
 		Logger:     logger,
 	}
 	go pollerLoop.Run(ctx)
+
+	// Start the reconciliation sweep — detects Runs stuck on a lost
+	// in-memory event (ADR-0033's EventStreamer has no durable queue) and
+	// re-triggers them. See internal/reconciler's package doc.
+	sweeper := buildSweeper(recordStore, eventStreamer, *stuckThreshold, logger)
+	go sweeper.Run(ctx)
 
 	fmt.Fprintf(os.Stderr, "%s\n", daemonBannerLine())
 	logger.Info("everflow daemon started",
