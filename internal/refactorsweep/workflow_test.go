@@ -185,13 +185,17 @@ type fakeGit struct {
 	pushErr    error
 	hasChanges *bool // nil → default true; set to a bool pointer for explicit
 	hasChErr   error
+	hasWork    *bool   // HasWorkBeyondBase; nil → mirror hasChanges
+	hasWorkErr error
+	diffStat   *string // nil → default "1 file changed, 5 insertions(+)"
 
-	ensures []ensureCall
-	resets  []string
-	syncs   []string
-	commits []string
-	pushes  []string
-	removes []string
+	ensures      []ensureCall
+	resets       []string
+	syncs        []string
+	commits      []string
+	pushes       []string
+	removes      []string
+	hasWorkCalls []string // dir+"@"+baseBranch, to assert the comparison ref
 }
 
 type ensureCall struct {
@@ -231,9 +235,22 @@ func (g *fakeGit) HasChanges(_ context.Context, _ string) (bool, error) {
 	return true, nil // default: assume runner did make changes
 }
 
-func (g *fakeGit) HasWorkBeyondBase(ctx context.Context, dir, _ string) (bool, error) {
-	// Call sites still use HasChanges (wiring lands in a later increment);
-	// mirror its behaviour so tests keep a single dirty/clean knob.
+func (g *fakeGit) HasWorkBeyondBase(ctx context.Context, dir, baseBranch string) (bool, error) {
+	g.mu.Lock()
+	g.hasWorkCalls = append(g.hasWorkCalls, dir+"@"+baseBranch)
+	if g.hasWorkErr != nil {
+		g.mu.Unlock()
+		return false, g.hasWorkErr
+	}
+	if g.hasWork != nil {
+		v := *g.hasWork
+		g.mu.Unlock()
+		return v, nil
+	}
+	g.mu.Unlock()
+	// Default: mirror HasChanges so tests that only care about dirty vs
+	// clean keep a single knob. Set hasWork explicitly to model a
+	// self-committing runner (clean tree, committed work).
 	return g.HasChanges(ctx, dir)
 }
 
@@ -259,10 +276,17 @@ func (g *fakeGit) RemoveWorktree(_ context.Context, _, dir string) error {
 }
 
 func (g *fakeGit) DiffShortstat(_ context.Context, _, _ string) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.diffStat != nil {
+		return *g.diffStat, nil
+	}
 	return "1 file changed, 5 insertions(+)", nil
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+func strPtr(s string) *string { return &s }
 
 // --- Helpers ---
 
@@ -1118,6 +1142,83 @@ func TestWork_RunnerDoneButCleanWorktree_BlacklistsAndMovesOn(t *testing.T) {
 	}
 }
 
+// The spec bug this wiring fixes: a runner that commits its own work leaves
+// a clean tree, so the old porcelain-only HasChanges check discarded the
+// unit as "no changes". work() must instead see the commits beyond base
+// (HasWorkBeyondBase), tolerate Commit's ErrNoChanges (nothing left to
+// stage), and push + open the MR as usual.
+func TestWork_SelfCommittingRunner_PushesAndOpensMR(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "ok"}})
+	g := d.withGit(&fakeGit{
+		hasChanges: boolPtr(false),   // tree clean — runner committed its own work
+		hasWork:    boolPtr(true),    // …but commits exist beyond origin/<base>
+		commitErr:  git.ErrNoChanges, // Commit on a clean tree
+	})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		BaseBranch: "develop", CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("self-committed work should reach AwaitingMerge, got %v", next)
+	}
+	if len(r.Object.Blacklisted) != 0 {
+		t.Errorf("unit must not be blacklisted; got %+v", r.Object.Blacklisted)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("self-committed work should be pushed; pushes=%v", g.pushes)
+	}
+	if len(fp.createMRCalls) != 1 {
+		t.Errorf("an MR should be opened for self-committed work; got %d", len(fp.createMRCalls))
+	}
+	// work()'s "did the runner do anything" check compares against the
+	// spec's base branch.
+	if len(g.hasWorkCalls) == 0 || !strings.HasSuffix(g.hasWorkCalls[0], "@develop") {
+		t.Errorf("HasWorkBeyondBase should be called with base branch develop; calls=%v", g.hasWorkCalls)
+	}
+}
+
+// ErrNoChanges with no commits beyond base (e.g. the runner produced only
+// a binary artefact Commit's filter excluded) must still blacklist rather
+// than push a branch with nothing on it.
+func TestWork_CommitNoStageableAndNoCommits_Blacklists(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "ok"}})
+	g := d.withGit(&fakeGit{
+		hasChanges: boolPtr(true),    // dirty (e.g. compiled binary present)
+		commitErr:  git.ErrNoChanges, // nothing stageable
+		diffStat:   strPtr(""),       // and nothing committed beyond base
+	})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if next != StatusDiscovering {
+		t.Errorf("nothing stageable and nothing committed should go to Discovering, got %v", next)
+	}
+	if len(g.pushes) != 0 {
+		t.Errorf("nothing should be pushed; pushes=%v", g.pushes)
+	}
+	if len(fp.createMRCalls) != 0 {
+		t.Errorf("no MR should be opened; got %d", len(fp.createMRCalls))
+	}
+	if len(r.Object.Blacklisted) != 1 || !strings.Contains(r.Object.Blacklisted[0].Reason, "no stageable changes") {
+		t.Errorf("unit should be blacklisted with a no-stageable-changes reason; got %+v", r.Object.Blacklisted)
+	}
+}
+
 func TestWork_PushFails(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
@@ -1204,8 +1305,9 @@ func TestResume_NoteAdded_CommitReturnsNoChanges_StaysAwaitingMerge(t *testing.T
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Considered but no code change needed"}})
 	d.withGit(&fakeGit{
-		hasChanges: boolPtr(true),       // worktree dirty (e.g. compiled binary present)
-		commitErr:  git.ErrNoChanges,    // but Commit's filter saw nothing stageable
+		hasChanges: boolPtr(true),    // worktree dirty (e.g. compiled binary present)
+		commitErr:  git.ErrNoChanges, // but Commit's filter saw nothing stageable
+		diffStat:   strPtr(""),       // and no committed work beyond the pushed tip
 	})
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
@@ -1227,6 +1329,51 @@ func TestResume_NoteAdded_CommitReturnsNoChanges_StaysAwaitingMerge(t *testing.T
 	}
 	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-xyz" {
 		t.Errorf("expected ResolveDiscussion(disc-xyz); got %+v", fp.resolves)
+	}
+}
+
+// Self-committing runner during address-comment: clean tree but unpushed
+// commits on the branch. The commits must be pushed and the thread
+// resolved — not dropped with "No code changes were needed" (the spec bug).
+func TestResume_NoteAdded_SelfCommittingRunner_PushesAndResolves(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Renamed Foo to Bar."}})
+	g := d.withGit(&fakeGit{
+		hasChanges: boolPtr(false),   // clean — runner committed its own work
+		hasWork:    boolPtr(true),    // …with commits not yet on origin/<branch>
+		commitErr:  git.ErrNoChanges, // Commit on a clean tree
+	})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar", DiscussionID: "disc-42"},
+	}
+	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
+	if next != StatusAwaitingMerge {
+		t.Errorf("self-committed work should stay AwaitingMerge, got %v", next)
+	}
+	if r.Object.PauseReason != "" {
+		t.Errorf("Run should not be paused; PauseReason=%q", r.Object.PauseReason)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("self-committed work should be pushed; pushes=%v", g.pushes)
+	}
+	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-42" {
+		t.Errorf("expected ResolveDiscussion(disc-42); got %+v", fp.resolves)
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "Addressed") {
+		t.Errorf("expected an Addressed comment, not a no-changes note; got %+v", fp.comments)
+	}
+	// invokeForEvent's per-turn check must compare against the unit's own
+	// pushed tip, not base — the branch always has the original work
+	// commits beyond base, which would make a base comparison vacuous.
+	wantRef := "@" + branchName(r.RunID, "u")
+	if len(g.hasWorkCalls) == 0 || !strings.HasSuffix(g.hasWorkCalls[0], wantRef) {
+		t.Errorf("HasWorkBeyondBase should be called with the unit branch (%s); calls=%v", wantRef, g.hasWorkCalls)
 	}
 }
 
