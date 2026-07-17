@@ -97,4 +97,5 @@ forces or unlocks.
 | 0047 | `HasWorkBeyondBase` — the "did the runner do anything" check    | Accepted | 2026-07-17 |
 | 0048 | File-presence-as-marker for first-run Skill install             | Accepted | 2026-07-17 |
 | 0049 | Sqlite-backed EventStreamer event log (supersedes ADR-0033's in-memory-log consequence) | Accepted | 2026-07-17 |
-| 0050 | `everflow setup` picks and persists a default runner + model             | Accepted | 2026-07-17 |
+| 0050 | `ReactToNote` — instant emoji acknowledgement of picked-up comments | Accepted | 2026-07-17 |
+| 0051 | `everflow setup` picks and persists a default runner + model             | Accepted | 2026-07-17 |

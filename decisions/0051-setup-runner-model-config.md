@@ -1,4 +1,4 @@
-# ADR-0050: `everflow setup` picks and persists a default runner + model
+# ADR-0051: `everflow setup` picks and persists a default runner + model
 
 **Status**: Accepted
 **Date**: 2026-07-17

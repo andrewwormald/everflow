@@ -1,6 +1,6 @@
 // Package config reads and writes everflow's per-user config file,
 // ~/.everflow/config.yaml. It's the persisted counterpart to the
-// interactive choices `everflow setup` walks a user through (ADR-0050):
+// interactive choices `everflow setup` walks a user through (ADR-0051):
 // which runner and model to use by default when a spec doesn't pin its
 // own.
 package config

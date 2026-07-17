@@ -513,6 +513,29 @@ func (p *Provider) RetryPipelineJob(ctx context.Context, projectID string, jobID
 	return p.doJSON(ctx, http.MethodPost, path, nil, nil)
 }
 
+// ReactToNote adds a reaction to a comment. GitHub's reactions API is keyed
+// per comment type, so which endpoint we hit depends on stream:
+//   - streamIssueComment  → POST /repos/{o}/{r}/issues/comments/{id}/reactions
+//   - streamReviewComment → POST /repos/{o}/{r}/pulls/comments/{id}/reactions
+//   - streamReview        → no reactions endpoint exists for top-level PR
+//     reviews; this is a no-op (nil), not an error — see ADR-0050.
+func (p *Provider) ReactToNote(ctx context.Context, projectID string, _ int, noteID int64, stream, emoji string) error {
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	var path string
+	switch stream {
+	case streamIssueComment:
+		path = fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions", owner, repo, noteID)
+	case streamReviewComment:
+		path = fmt.Sprintf("/repos/%s/%s/pulls/comments/%d/reactions", owner, repo, noteID)
+	default:
+		return nil
+	}
+	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"content": emoji}, nil)
+}
+
 // IsBot covers GitHub Apps (Type=Bot) and the trailing `[bot]` username
 // convention used by integrations like dependabot, renovate, and codecov.
 func (p *Provider) IsBot(u provider.User) bool {

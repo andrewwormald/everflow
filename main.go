@@ -64,7 +64,7 @@ var commands = map[string]command{
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
-	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model (see ADR-0002, ADR-0050)", run: cmdSetup},
+	"setup":   {usage: "install the Claude Code Skill integration and set a default runner/model (see ADR-0002, ADR-0051)", run: cmdSetup},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
 
@@ -1434,7 +1434,7 @@ func cmdPhrases(args []string) error {
 }
 
 // cmdSetup installs the Claude Code Skill bundle (ADR-0002) and persists the
-// user's default runner + model choice to ~/.everflow/config.yaml (ADR-0050).
+// user's default runner + model choice to ~/.everflow/config.yaml (ADR-0051).
 // Unlike the automatic first-run hook in main(), this doesn't require
 // ~/.claude to already exist, and --force lets a user pull down the current
 // SKILL.md over a locally-edited copy.

@@ -142,7 +142,10 @@ func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) err
 	return f.closeErr
 }
 func (f *fakeProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error      { return nil }
-func (f *fakeProvider) IsBot(u provider.User) bool                                       { return u.Bot }
+func (f *fakeProvider) ReactToNote(_ context.Context, _ string, _ int, _ int64, _, _ string) error {
+	return nil
+}
+func (f *fakeProvider) IsBot(u provider.User) bool { return u.Bot }
 
 // --- Test fake: runner.Runner ---
 
