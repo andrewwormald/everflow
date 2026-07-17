@@ -1496,9 +1496,10 @@ func cmdPhrases(args []string) error {
 // alongside this one rather than be bolted onto it.
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	force := fs.Bool("force", false, "overwrite an existing Skill file with the current bundled version")
+	force := fs.Bool("force", false, "overwrite an existing Skill file or .everflow.yml with the current/given value")
 	runnerFlag := fs.String("runner", "", "default runner to persist (default: the only registered runner, \"claude\")")
 	modelFlag := fs.String("model", "", "default model override to persist for the chosen runner (default: prompt if interactive, else leave unset)")
+	titleConventionFlag := fs.String("title-convention", "", "this repo's PR/MR title convention, written to .everflow.yml (default: prompt if interactive, else leave unset)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1548,7 +1549,43 @@ func cmdSetup(args []string) error {
 		fmt.Printf("Default model: (none set — %s's own default; pass --model or rerun interactively to set one)\n", runnerName)
 	}
 	fmt.Printf("Saved to %s\n", config.Path(home))
+
+	repoDir, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("cwd: %w", err)
+	}
+	titleConvention, err := setup.ResolveTitleConvention(*titleConventionFlag, interactive, promptForTitleConvention(os.Stdin, os.Stdout))
+	if err != nil {
+		return fmt.Errorf("resolve title convention: %w", err)
+	}
+	wroteRepoConfig, err := setup.WriteRepoConfig(repoDir, titleConvention, *force)
+	if err != nil {
+		return fmt.Errorf("write .everflow.yml: %w", err)
+	}
+	switch {
+	case wroteRepoConfig:
+		fmt.Printf("Wrote title convention to %s\n", setup.RepoConfigPath(repoDir))
+	case titleConvention != "":
+		fmt.Printf(".everflow.yml already exists at %s (pass --force to overwrite)\n", setup.RepoConfigPath(repoDir))
+	}
 	return nil
+}
+
+// promptForTitleConvention returns a setup.ResolveTitleConvention prompt
+// func that asks the user for this repo's PR/MR title convention on r.
+// Only called when stdin is a TTY and no --title-convention flag was given.
+func promptForTitleConvention(r io.Reader, w io.Writer) func() (string, error) {
+	return func() (string, error) {
+		fmt.Fprint(w, "This repo's PR/MR title convention (blank = none): ")
+		scanner := bufio.NewScanner(r)
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return "", err
+			}
+			return "", nil
+		}
+		return strings.TrimSpace(scanner.Text()), nil
+	}
 }
 
 // promptForModel returns a setup.ResolveModel prompt func that asks the user
