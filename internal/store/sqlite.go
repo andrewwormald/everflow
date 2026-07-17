@@ -68,6 +68,10 @@ func OpenSqlite(path string) (*Backend, error) {
 // Close releases the database handle.
 func (b *Backend) Close() error { return b.db.Close() }
 
+// DB returns the underlying *sql.DB, for callers (e.g. internal/eventstream)
+// that need to share this connection for their own durable tables.
+func (b *Backend) DB() *sql.DB { return b.db }
+
 // RecordStore returns the workflow.RecordStore facade.
 func (b *Backend) RecordStore() *RecordStore { return &RecordStore{b: b} }
 
