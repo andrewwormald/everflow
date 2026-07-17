@@ -269,11 +269,25 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 		return nil, err
 	}
 
+	// Legacy is only a safe floor for a stream while this MR has never had
+	// ANY per-stream entry recorded (true pre-ADR-0041 migration case): in
+	// that case Legacy is the max id ever seen across all streams for this
+	// MR, so no stream can have a comment above it go undelivered. Once
+	// resume() has written at least one entry to ByStream for this MR,
+	// Legacy keeps advancing on every stream's notes (see workflow.go's
+	// resume()) and is no longer specific to this MR's un-migrated state —
+	// falling back to it for a still-untracked stream reintroduces the
+	// exact cross-stream drop ADR-0041 fixed (PR #30). Floor at 0 instead:
+	// worst case is refetching a stream's full history once, not a silent
+	// permanent drop.
 	threshold := func(stream string) int64 {
 		if v, ok := since.ByStream[stream]; ok {
 			return v
 		}
-		return since.Legacy
+		if len(since.ByStream) == 0 {
+			return since.Legacy
+		}
+		return 0
 	}
 
 	out := make([]provider.NotePoll, 0)
