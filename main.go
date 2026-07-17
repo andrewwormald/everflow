@@ -837,6 +837,20 @@ func cmdStart(args []string) error {
 		}
 	}
 
+	if req.RunnerModel == "" {
+		// Neither --model nor (in spec mode) the spec's `model:` set one;
+		// fall back to the default persisted by `everflow setup` (ADR-0051).
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return fmt.Errorf("home dir: %w", err)
+		}
+		cfg, err := config.Load(home)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		req.RunnerModel = cfg.Model
+	}
+
 	if req.ProviderName == "" || req.ProjectID == "" {
 		return errors.New("provider and project are required (set --provider/--project or via spec frontmatter)")
 	}

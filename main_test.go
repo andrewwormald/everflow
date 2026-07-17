@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -487,5 +490,99 @@ func TestCmdSetup_UnknownRunnerFlagErrors(t *testing.T) {
 
 	if err := cmdSetup([]string{"--runner", "not-a-real-runner"}); err == nil {
 		t.Fatal("expected an error for an unknown runner")
+	}
+}
+
+// startTriggerCapture spins up a fake daemon that records the decoded
+// triggerRequest of the last /trigger POST it receives.
+func startTriggerCapture(t *testing.T) (url string, got *triggerRequest) {
+	t.Helper()
+	got = &triggerRequest{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(got); err != nil {
+			t.Errorf("decode trigger request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(triggerResponse{RunID: "run-1", ForeignID: "foreign-1"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL, got
+}
+
+// TestCmdStart_FallsBackToPersistedDefaultModel asserts that when neither
+// --model nor the spec's `model:` set a runner model, cmdStart falls back
+// to the default persisted by `everflow setup` (ADR-0051).
+func TestCmdStart_FallsBackToPersistedDefaultModel(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.Save(home, config.Config{Runner: "claude", Model: "claude-haiku-4-5"}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	daemonURL, got := startTriggerCapture(t)
+
+	err := cmdStart([]string{
+		"--units", "u1",
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--base-repo", "/tmp/repo",
+		"--daemon", daemonURL,
+	})
+	if err != nil {
+		t.Fatalf("cmdStart: %v", err)
+	}
+	if got.RunnerModel != "claude-haiku-4-5" {
+		t.Fatalf("got runner model %q, want persisted default %q", got.RunnerModel, "claude-haiku-4-5")
+	}
+}
+
+// TestCmdStart_ModelFlagOverridesPersistedDefault asserts --model still
+// wins over a persisted default.
+func TestCmdStart_ModelFlagOverridesPersistedDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := config.Save(home, config.Config{Runner: "claude", Model: "claude-haiku-4-5"}); err != nil {
+		t.Fatalf("config.Save: %v", err)
+	}
+
+	daemonURL, got := startTriggerCapture(t)
+
+	err := cmdStart([]string{
+		"--units", "u1",
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--base-repo", "/tmp/repo",
+		"--daemon", daemonURL,
+		"--model", "claude-sonnet-5",
+	})
+	if err != nil {
+		t.Fatalf("cmdStart: %v", err)
+	}
+	if got.RunnerModel != "claude-sonnet-5" {
+		t.Fatalf("got runner model %q, want flag override %q", got.RunnerModel, "claude-sonnet-5")
+	}
+}
+
+// TestCmdStart_NoConfigLeavesModelEmpty asserts that with no persisted
+// config and no --model, the runner model stays empty (runner's own
+// default applies).
+func TestCmdStart_NoConfigLeavesModelEmpty(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	daemonURL, got := startTriggerCapture(t)
+
+	err := cmdStart([]string{
+		"--units", "u1",
+		"--provider", "gitlab",
+		"--project", "acme/example",
+		"--base-repo", "/tmp/repo",
+		"--daemon", daemonURL,
+	})
+	if err != nil {
+		t.Fatalf("cmdStart: %v", err)
+	}
+	if got.RunnerModel != "" {
+		t.Fatalf("got runner model %q, want empty", got.RunnerModel)
 	}
 }
