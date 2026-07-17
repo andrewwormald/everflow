@@ -1,14 +1,19 @@
 package reconciler
 
 import (
+	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/luno/workflow"
 	"github.com/luno/workflow/adapters/memrecordstore"
+	"github.com/luno/workflow/adapters/memrolescheduler"
 
+	"github.com/andrewwormald/everflow/internal/eventstream"
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
+	"github.com/andrewwormald/everflow/internal/store"
 )
 
 const testWorkflowName = "refactor-sweep-reconciler-test"
@@ -158,4 +163,176 @@ func TestScan(t *testing.T) {
 	if len(got) != len(want) || (len(got) > 0 && got[0] != want[0]) {
 		t.Errorf("Scan() = %v, want %v", got, want)
 	}
+}
+
+// retriggerObj and retriggerStatus are a minimal workflow Type/Status pair
+// used only to exercise Retrigger against a real workflow.Workflow, so the
+// tests below drive the vendored library's own step consumer rather than
+// re-implementing its idempotency guard.
+type retriggerObj struct{}
+
+type retriggerStatus int
+
+const (
+	retriggerStatusA retriggerStatus = 1
+	retriggerStatusB retriggerStatus = 2
+)
+
+func (s retriggerStatus) String() string {
+	if s == retriggerStatusB {
+		return "B"
+	}
+	return "A"
+}
+
+func TestRetrigger_EventShape(t *testing.T) {
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
+
+	record := workflow.Record{
+		WorkflowName: "retrigger-shape-test",
+		ForeignID:    "fid-1",
+		RunID:        "00000000-0000-0000-0000-000000000001",
+		RunState:     workflow.RunStateRunning,
+		Status:       int(retriggerStatusA),
+		Meta:         workflow.Meta{Version: 3},
+	}
+
+	rec, err := streamer.NewReceiver(t.Context(), workflow.Topic(record.WorkflowName, record.Status), "shape-test")
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	if err := Retrigger(t.Context(), streamer, record); err != nil {
+		t.Fatalf("Retrigger() error = %v", err)
+	}
+
+	e, ack, err := rec.Recv(t.Context())
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	defer ack()
+
+	wantTopic := workflow.Topic(record.WorkflowName, record.Status)
+	wantHeaders := map[workflow.Header]string{
+		workflow.HeaderForeignID:     record.ForeignID,
+		workflow.HeaderWorkflowName:  record.WorkflowName,
+		workflow.HeaderTopic:         wantTopic,
+		workflow.HeaderRunID:         record.RunID,
+		workflow.HeaderRunState:      "2",
+		workflow.HeaderRecordVersion: "3",
+	}
+
+	// Event.ForeignID carries the RunID (what the step consumer's
+	// lookupFn keys on), not the business ForeignID — see Retrigger's
+	// comment on this.
+	if e.ForeignID != record.RunID {
+		t.Errorf("ForeignID = %q, want %q (the RunID)", e.ForeignID, record.RunID)
+	}
+	if e.Type != record.Status {
+		t.Errorf("Type = %d, want %d", e.Type, record.Status)
+	}
+	for k, want := range wantHeaders {
+		if got := e.Headers[k]; got != want {
+			t.Errorf("header %q = %q, want %q", k, got, want)
+		}
+	}
+}
+
+// TestRetrigger_SkipsStaleOrDuplicate drives a real workflow.Workflow (using
+// the project's sqlite-backed EventStreamer) so the assertion exercises the
+// vendored library's own stepConsumer idempotency guard rather than a
+// reimplementation of it: an event whose HeaderRecordVersion no longer
+// matches the record's current version is skipped, not double-processed.
+func TestRetrigger_SkipsStaleOrDuplicate(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
+	recordStore := memrecordstore.New()
+
+	var processed atomic.Int32
+	builder := workflow.NewBuilder[retriggerObj, retriggerStatus]("retrigger-skip-test")
+	builder.AddStep(retriggerStatusA, func(ctx context.Context, r *workflow.Run[retriggerObj, retriggerStatus]) (retriggerStatus, error) {
+		processed.Add(1)
+		return retriggerStatusB, nil
+	}, retriggerStatusB)
+
+	wf := builder.Build(streamer, recordStore, memrolescheduler.New(), workflow.WithoutOutbox())
+	wf.Run(ctx)
+	t.Cleanup(wf.Stop)
+
+	const foreignID = "fid-1"
+	obj, err := workflow.Marshal(&retriggerObj{})
+	if err != nil {
+		t.Fatalf("marshal retriggerObj: %v", err)
+	}
+	seeded := &workflow.Record{
+		WorkflowName: wf.Name(),
+		ForeignID:    foreignID,
+		RunID:        "00000000-0000-0000-0000-000000000001",
+		RunState:     workflow.RunStateRunning,
+		Status:       int(retriggerStatusA),
+		Object:       obj,
+	}
+	if err := recordStore.Store(ctx, seeded); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	// Snapshot exactly what reconciler.Scan would have seen: the stuck
+	// record before anything re-triggers it.
+	stale, err := recordStore.Latest(ctx, wf.Name(), foreignID)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+
+	if err := Retrigger(ctx, streamer, *stale); err != nil {
+		t.Fatalf("Retrigger() error = %v", err)
+	}
+
+	waitFor(t, func() bool { return processed.Load() == 1 })
+
+	current, err := recordStore.Latest(ctx, wf.Name(), foreignID)
+	if err != nil {
+		t.Fatalf("Latest: %v", err)
+	}
+	if current.Status != int(retriggerStatusB) {
+		t.Fatalf("record status = %d, want %d (StatusB) after first retrigger processed", current.Status, retriggerStatusB)
+	}
+
+	// Retrigger again using the now-stale snapshot (Meta.Version from
+	// before the first retrigger advanced it). The real consumer must
+	// skip this rather than reprocessing the record.
+	if err := Retrigger(ctx, streamer, *stale); err != nil {
+		t.Fatalf("Retrigger() (stale) error = %v", err)
+	}
+
+	// Give the consumer a chance to (wrongly) reprocess before asserting
+	// it didn't.
+	time.Sleep(100 * time.Millisecond)
+	if got := processed.Load(); got != 1 {
+		t.Errorf("processed = %d, want 1 (duplicate/stale retrigger must be skipped)", got)
+	}
+}
+
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within timeout")
 }
