@@ -70,6 +70,17 @@ type Provider interface {
 	UpdateMRTitle(ctx context.Context, projectID string, mrIID int, title string) error
 	CloseMR(ctx context.Context, projectID string, mrIID int) error
 
+	// ReactToNote adds an emoji reaction to a comment, used to acknowledge
+	// receipt the instant everflow picks a comment up — before the
+	// (potentially long) subagent invocation runs, so the author knows it
+	// wasn't missed. noteID and stream identify the comment as reported on
+	// Note.ID/Note.Stream or NotePoll.ID/NotePoll.Stream; emoji is a
+	// platform-neutral short name (e.g. "eyes", "hourglass"). Reacting is
+	// best-effort acknowledgement, not part of the durable Run state: if the
+	// platform has no reaction support for this comment's stream (see
+	// ADR-0048), implementations return nil rather than an error.
+	ReactToNote(ctx context.Context, projectID string, mrIID int, noteID int64, stream, emoji string) error
+
 	// Polling support (used when EventSource=poll instead of webhook).
 	GetMRState(ctx context.Context, projectID string, mrIID int) (state string, err error)
 	ListNotesSince(ctx context.Context, projectID string, mrIID int, since NoteCursor) ([]NotePoll, error)

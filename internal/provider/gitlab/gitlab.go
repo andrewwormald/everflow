@@ -298,6 +298,16 @@ func (p *Provider) ResolveDiscussion(ctx context.Context, projectID string, mrII
 	return p.doJSON(ctx, http.MethodPut, path, nil, nil)
 }
 
+// ReactToNote → POST /api/v4/projects/:id/merge_requests/:iid/notes/:note_id/award_emoji.
+// GitLab has a single notes endpoint (see streamNote), so stream is unused —
+// kept in the signature for parity with GitHub, which needs it to pick an
+// endpoint. See ADR-0048.
+func (p *Provider) ReactToNote(ctx context.Context, projectID string, mrIID int, noteID int64, _, emoji string) error {
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/notes/%d/award_emoji",
+		url.PathEscape(projectID), mrIID, noteID)
+	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"name": emoji}, nil)
+}
+
 // IsBot inspects the user.bot field set by GitLab on bot accounts.
 // Some long-lived integrations (Danger, sonar) use regular accounts; the
 // caller can layer name-pattern matching on top if needed.
