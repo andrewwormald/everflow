@@ -94,3 +94,4 @@ forces or unlocks.
 | 0044 | Per-spec model selection for the runner                         | Accepted | 2026-07-16 |
 | 0045 | Work-phase `DecisionContinue` means "partial slice, remainder follows" | Accepted | 2026-07-16 |
 | 0046 | `SyncWithBase` — refresh the feature branch before conflict-resolution turns | Accepted | 2026-07-16 |
+| 0047 | `HasWorkBeyondBase` — the "did the runner do anything" check    | Accepted | 2026-07-17 |
