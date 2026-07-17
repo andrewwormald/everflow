@@ -493,6 +493,65 @@ func TestCmdSetup_UnknownRunnerFlagErrors(t *testing.T) {
 	}
 }
 
+// TestCmdSetup_NoTitleConventionFlagWritesNothing asserts a non-interactive
+// setup with no --title-convention leaves .everflow.yml absent rather than
+// writing an empty convention.
+func TestCmdSetup_NoTitleConventionFlagWritesNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	if err := cmdSetup(nil); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	if _, err := os.Stat(".everflow.yml"); !os.IsNotExist(err) {
+		t.Fatalf("expected no .everflow.yml, stat err = %v", err)
+	}
+}
+
+// TestCmdSetup_TitleConventionFlagPersists asserts --title-convention is
+// written verbatim to .everflow.yml in the current directory.
+func TestCmdSetup_TitleConventionFlagPersists(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	if err := cmdSetup([]string{"--title-convention", "Conventional Commits"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(".everflow.yml")
+	if err != nil {
+		t.Fatalf("read .everflow.yml: %v", err)
+	}
+	if !strings.Contains(string(data), "title_convention: Conventional Commits") {
+		t.Fatalf("got %q, want it to contain the given title convention", string(data))
+	}
+}
+
+// TestCmdSetup_TitleConventionDoesNotClobberExistingWithoutForce asserts a
+// rerun without --force leaves a pre-existing .everflow.yml untouched, even
+// when a new --title-convention is passed.
+func TestCmdSetup_TitleConventionDoesNotClobberExistingWithoutForce(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
+	if err := os.WriteFile(".everflow.yml", []byte("title_convention: existing\n"), 0o644); err != nil {
+		t.Fatalf("seed existing .everflow.yml: %v", err)
+	}
+
+	if err := cmdSetup([]string{"--title-convention", "new convention"}); err != nil {
+		t.Fatalf("cmdSetup: %v", err)
+	}
+
+	data, err := os.ReadFile(".everflow.yml")
+	if err != nil {
+		t.Fatalf("read .everflow.yml: %v", err)
+	}
+	if string(data) != "title_convention: existing\n" {
+		t.Fatalf("existing .everflow.yml was clobbered: %q", string(data))
+	}
+}
+
 // startTriggerCapture spins up a fake daemon that records the decoded
 // triggerRequest of the last /trigger POST it receives.
 func startTriggerCapture(t *testing.T) (url string, got *triggerRequest) {
