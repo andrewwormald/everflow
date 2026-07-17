@@ -112,6 +112,23 @@ CREATE TABLE IF NOT EXISTS timeouts (
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_timeouts_workflow_status_expire ON timeouts(workflow_name, status, expire_at, completed);
+
+CREATE TABLE IF NOT EXISTS event_log (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic      TEXT    NOT NULL,
+    foreign_id TEXT    NOT NULL,
+    type       INTEGER NOT NULL,
+    headers    BLOB,
+    created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_event_log_topic_id ON event_log(topic, id);
+
+CREATE TABLE IF NOT EXISTS event_cursors (
+    name       TEXT    NOT NULL PRIMARY KEY,
+    topic      TEXT    NOT NULL,
+    cursor     INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
 `
 
 // --- RecordStore ---
