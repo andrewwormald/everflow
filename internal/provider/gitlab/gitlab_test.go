@@ -93,3 +93,31 @@ func TestCreateMR_DraftPrefix(t *testing.T) {
 		t.Errorf("double-draft: want %q, got %q", "Draft: already", seenTitle)
 	}
 }
+
+func TestReactToNote(t *testing.T) {
+	var gotPath, gotMethod, gotName string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotName, _ = body["name"].(string)
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ReactToNote(t.Context(), "owner/repo", 42, 99, streamNote, "eyes"); err != nil {
+		t.Fatalf("ReactToNote: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: want POST, got %s", gotMethod)
+	}
+	// httptest decodes URL paths, so the escaped "/" in the project ID
+	// comes through unescaped here.
+	if gotPath != "/api/v4/projects/owner/repo/merge_requests/42/notes/99/award_emoji" {
+		t.Errorf("path: got %s", gotPath)
+	}
+	if gotName != "eyes" {
+		t.Errorf("name: want eyes, got %s", gotName)
+	}
+}

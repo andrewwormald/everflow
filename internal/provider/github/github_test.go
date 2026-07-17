@@ -490,6 +490,65 @@ func TestListNotesSince_ReviewWithBody(t *testing.T) {
 	}
 }
 
+// --- ReactToNote ---
+
+func TestReactToNote_IssueComment(t *testing.T) {
+	var gotPath, gotMethod, gotContent string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotContent, _ = body["content"].(string)
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ReactToNote(t.Context(), "owner/repo", 42, 99, streamIssueComment, "eyes"); err != nil {
+		t.Fatalf("ReactToNote: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: want POST, got %s", gotMethod)
+	}
+	if gotPath != "/repos/owner/repo/issues/comments/99/reactions" {
+		t.Errorf("path: got %s", gotPath)
+	}
+	if gotContent != "eyes" {
+		t.Errorf("content: want eyes, got %s", gotContent)
+	}
+}
+
+func TestReactToNote_ReviewComment(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ReactToNote(t.Context(), "owner/repo", 42, 123, streamReviewComment, "eyes"); err != nil {
+		t.Fatalf("ReactToNote: %v", err)
+	}
+	if gotPath != "/repos/owner/repo/pulls/comments/123/reactions" {
+		t.Errorf("path: got %s", gotPath)
+	}
+}
+
+// TestReactToNote_Review documents that top-level PR reviews have no
+// reactions endpoint on GitHub — ReactToNote must no-op rather than error.
+func TestReactToNote_Review(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ReactToNote(t.Context(), "owner/repo", 42, 7, streamReview, "eyes"); err != nil {
+		t.Fatalf("ReactToNote: %v", err)
+	}
+	if called {
+		t.Errorf("no reactions endpoint should be hit for streamReview")
+	}
+}
+
 // TestGraphQLEndpoint_GHE verifies the GHE path-rewrite logic.
 func TestGraphQLEndpoint_GHE(t *testing.T) {
 	p := &Provider{baseURL: "https://ghe.example.com/api/v3"}
