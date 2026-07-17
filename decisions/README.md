@@ -100,3 +100,4 @@ forces or unlocks.
 | 0050 | `ReactToNote` — instant emoji acknowledgement of picked-up comments | Accepted | 2026-07-17 |
 | 0051 | `everflow setup` picks and persists a default runner + model             | Accepted | 2026-07-17 |
 | 0052 | `.everflow.yml` holds a per-repo free-text `title_convention`            | Accepted | 2026-07-17 |
+| 0053 | Reconciliation sweep for Runs stuck on a lost event                      | Accepted | 2026-07-17 |
