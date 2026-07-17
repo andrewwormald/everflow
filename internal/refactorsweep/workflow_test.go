@@ -49,12 +49,23 @@ type fakeProvider struct {
 
 	resolveErr error
 	resolves   []resolvedDiscussion
+
+	reactErr   error
+	reactions  []reactToNoteCall
 }
 
 type resolvedDiscussion struct {
 	ProjectID    string
 	MRIID        int
 	DiscussionID string
+}
+
+type reactToNoteCall struct {
+	ProjectID string
+	MRIID     int
+	NoteID    int64
+	Stream    string
+	Emoji     string
 }
 
 type closedMR struct {
@@ -142,8 +153,13 @@ func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) err
 	return f.closeErr
 }
 func (f *fakeProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error      { return nil }
-func (f *fakeProvider) ReactToNote(_ context.Context, _ string, _ int, _ int64, _, _ string) error {
-	return nil
+func (f *fakeProvider) ReactToNote(_ context.Context, projectID string, mrIID int, noteID int64, stream, emoji string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reactions = append(f.reactions, reactToNoteCall{
+		ProjectID: projectID, MRIID: mrIID, NoteID: noteID, Stream: stream, Emoji: emoji,
+	})
+	return f.reactErr
 }
 func (f *fakeProvider) IsBot(u provider.User) bool { return u.Bot }
 
@@ -1735,6 +1751,108 @@ func TestResume_NoteAdded_SyncsWithBaseBeforeRunner(t *testing.T) {
 			"SyncWithBase(unit worktree, base) must run before the runner; syncs at runner-call time: %v, want [%s]",
 			syncsWhenRunnerRan, wantSync,
 		)
+	}
+}
+
+// TestResume_NoteAdded_ReactsBeforeInvokingRunner asserts invokeForEvent
+// acknowledges the triggering comment with a reaction BEFORE the
+// (potentially long) runner invocation, so the commenter sees it was picked
+// up rather than missed. Ordering, not just occurrence, is what's asserted
+// — mirrors TestResume_NoteAdded_SyncsWithBaseBeforeRunner.
+func TestResume_NoteAdded_ReactsBeforeInvokingRunner(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	var reactionsWhenRunnerRan int
+	fr := d.withRunner(t, &fakeRunner{
+		resp: runner.Response{Decision: DecisionDone, Summary: "Renamed."},
+		onRun: func(runner.Request) {
+			fp.mu.Lock()
+			reactionsWhenRunnerRan = len(fp.reactions)
+			fp.mu.Unlock()
+		},
+	})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 42, Stream: "issue_comment", Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Fatalf("runner should be called once; got %d", len(fr.calls))
+	}
+	if reactionsWhenRunnerRan != 1 {
+		t.Errorf("ReactToNote must run before the runner; reactions at runner-call time: %d, want 1", reactionsWhenRunnerRan)
+	}
+	if len(fp.reactions) != 1 {
+		t.Fatalf("want exactly 1 reaction; got %+v", fp.reactions)
+	}
+	got := fp.reactions[0]
+	want := reactToNoteCall{ProjectID: "x/y", MRIID: 1, NoteID: 42, Stream: "issue_comment", Emoji: "eyes"}
+	if got != want {
+		t.Errorf("ReactToNote call = %+v, want %+v", got, want)
+	}
+}
+
+// TestResume_PipelineFailed_DoesNotReact asserts invokeForEvent only reacts
+// on NoteAdded events — PipelineFailed has no comment to acknowledge.
+func TestResume_PipelineFailed_DoesNotReact(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Fixed flaky test"}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventPipelineFailed,
+		MR:   mr,
+		Pipeline: provider.Pipeline{
+			ID: 99, Status: "failed",
+			FailedJobs: []provider.Job{{ID: 1, Name: "test 3/5", Stage: "test", Status: "failed"}},
+		},
+	}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(fp.reactions) != 0 {
+		t.Errorf("PipelineFailed must not trigger a reaction; got %+v", fp.reactions)
+	}
+}
+
+// TestResume_NoteAdded_ReactToNoteFails_DoesNotBlockRunner asserts a
+// reaction failure is swallowed — best-effort acknowledgement must never
+// prevent the actual work from running.
+func TestResume_NoteAdded_ReactToNoteFails_DoesNotBlockRunner(t *testing.T) {
+	fp := &fakeProvider{reactErr: errors.New("reactions: 404 no such endpoint")}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone, Summary: "Renamed."}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{ID: 42, Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge despite ReactToNote error, got %v", next)
+	}
+	if len(fr.calls) != 1 {
+		t.Errorf("runner should still be called when ReactToNote fails; got %d calls", len(fr.calls))
 	}
 }
 

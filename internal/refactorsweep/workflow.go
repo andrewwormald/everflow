@@ -1019,6 +1019,15 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 	p := d.Providers[r.Object.ProviderName] // already validated in setup
 
+	// Acknowledge receipt immediately, before the (potentially long) runner
+	// invocation below, so the commenter knows everflow picked it up rather
+	// than missed it. Only NoteAdded events carry a comment to react to;
+	// best-effort — reaction failure (or a stream with no reactions
+	// endpoint, see ADR-0050) must never block the actual work.
+	if ev.Kind == provider.EventNoteAdded {
+		_ = p.ReactToNote(ctx, ev.MR.ProjectID, ev.MR.IID, ev.Note.ID, ev.Note.Stream, "eyes")
+	}
+
 	worktree := filepath.Join(d.RunsRoot, r.RunID, "worktrees", unitID)
 	baseBranch := defaultIfEmpty(r.Object.BaseBranch, "main")
 
