@@ -325,6 +325,81 @@ func TestRetrigger_SkipsStaleOrDuplicate(t *testing.T) {
 	}
 }
 
+// TestSweeper_Run drives the real ticker-based loop (rather than calling
+// sweepOnce directly) so the assertion exercises Run's tick-and-sweep wiring,
+// not just the underlying Scan/Retrigger calls it composes.
+func TestSweeper_Run(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
+	recordStore := memrecordstore.New()
+
+	stale := time.Now().Add(-time.Hour)
+	fresh := time.Now().Add(-time.Minute)
+	const threshold = 30 * time.Minute
+
+	stuckRunID := "00000000-0000-0000-0000-000000000010"
+	freshRunID := "00000000-0000-0000-0000-000000000011"
+
+	// seedRecord always stamps WorkflowName as testWorkflowName, so the
+	// Sweeper under test must target that same workflow name.
+	seedRecord(t, recordStore, stuckRunID, workflow.RunStateRunning, refactorsweep.StatusWorking,
+		refactorsweep.AgentState{History: []refactorsweep.Turn{{StartedAt: stale, EndedAt: stale}}}, stale)
+	seedRecord(t, recordStore, freshRunID, workflow.RunStateRunning, refactorsweep.StatusWorking,
+		refactorsweep.AgentState{History: []refactorsweep.Turn{{StartedAt: fresh, EndedAt: fresh}}}, fresh)
+
+	topic := workflow.Topic(testWorkflowName, int(refactorsweep.StatusWorking))
+	rec, err := streamer.NewReceiver(ctx, topic, "sweeper-test")
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	sweeper := &Sweeper{
+		Store:        recordStore,
+		Streamer:     streamer,
+		WorkflowName: testWorkflowName,
+		Interval:     10 * time.Millisecond,
+		Threshold:    threshold,
+	}
+	go sweeper.Run(ctx)
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, 2*time.Second)
+	defer recvCancel()
+	e, ack, err := rec.Recv(recvCtx)
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	ack()
+
+	if e.ForeignID != stuckRunID {
+		t.Errorf("retriggered run = %q, want %q (the stuck run)", e.ForeignID, stuckRunID)
+	}
+
+	// The fresh run must never be retriggered. Nothing here advances the
+	// stuck record's status (there's no step consumer wired up), so the
+	// loop keeps re-sending for it every tick; drain a few more of those
+	// and confirm the fresh run's ID never appears among them.
+	for i := 0; i < 5; i++ {
+		recvCtx2, recvCancel2 := context.WithTimeout(ctx, 200*time.Millisecond)
+		e2, ack2, err := rec.Recv(recvCtx2)
+		recvCancel2()
+		if err != nil {
+			break
+		}
+		ack2()
+		if e2.ForeignID == freshRunID {
+			t.Fatalf("fresh run %q was retriggered, want only %q", freshRunID, stuckRunID)
+		}
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
