@@ -1,5 +1,12 @@
 // Package setup installs the Claude Code Skill bundle that ADR-0002 decided
 // on, so that Claude Code knows when and how to invoke the everflow binary.
+//
+// This is deliberately Claude-only for now: ADR-0002 picked the Skill bundle
+// as the first integration, not the only one. everflow's Runner interface
+// (ADR-0007) already anticipates other coding agents (Codex, Qwen,
+// OpenHands, ...); adding one there needs a companion integration bundle in
+// that agent's own distribution format, added alongside this package rather
+// than folded into it.
 package setup
 
 import (

@@ -61,7 +61,7 @@ var commands = map[string]command{
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
-	"setup":   {usage: "install the Claude Code Skill integration", run: cmdSetup},
+	"setup":   {usage: "install the Claude Code Skill integration (Claude only for now; see ADR-0002)", run: cmdSetup},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
 
@@ -1429,6 +1429,10 @@ func cmdPhrases(args []string) error {
 // the automatic first-run hook in main(), this doesn't require ~/.claude to
 // already exist, and --force lets a user pull down the current SKILL.md over
 // a locally-edited copy.
+//
+// Claude-only today by design (ADR-0002); a companion command for another
+// coding agent's own integration format (Codex, Qwen, ...) would live
+// alongside this one rather than be bolted onto it.
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
 	force := fs.Bool("force", false, "overwrite an existing Skill file with the current bundled version")
