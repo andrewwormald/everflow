@@ -61,6 +61,7 @@ var commands = map[string]command{
 	"abandon": {usage: "request abandonment of a Run (two-tap confirmation)", run: cmdAbandon},
 	"resume":  {usage: "resume a paused Run", run: cmdResume},
 	"phrases": {usage: "manage the per-Run + global skip-phrase files", run: cmdPhrases},
+	"setup":   {usage: "install the Claude Code Skill integration", run: cmdSetup},
 	"version": {usage: "print the build version", run: cmdVersion},
 }
 
@@ -87,10 +88,16 @@ func main() {
 	}
 	// Best-effort, non-interactive first-run hook (ADR-0002): install the
 	// Claude Code Skill bundle if it isn't there yet. Never blocks the
-	// actual command on failure.
-	if home, err := os.UserHomeDir(); err == nil {
-		if err := setup.EnsureClaudeSkill(home); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: skill setup: %v\n", err)
+	// actual command on failure. Skipped for `everflow setup`, which is the
+	// explicit, authoritative way to (re)install it.
+	if verb != "setup" {
+		if home, err := os.UserHomeDir(); err == nil {
+			installed, err := setup.EnsureClaudeSkill(home)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "warning: skill setup: %v\n", err)
+			} else if installed {
+				fmt.Fprintf(os.Stderr, "everflow: installed the Claude Code Skill at %s (run `everflow setup` to reinstall or customize)\n", setup.SkillPath(home))
+			}
 		}
 	}
 	if err := cmd.run(os.Args[2:]); err != nil {
@@ -101,7 +108,7 @@ func main() {
 
 func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "everflow — bulk-refactor sweep daemon\n\nusage: everflow <command> [flags]\n\ncommands:\n")
-	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "version"} {
+	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "setup", "version"} {
 		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
 	fmt.Fprintf(w, "\nrun `everflow <command> -h` for command-specific flags.\n")
@@ -1416,6 +1423,35 @@ func cmdPhrases(args []string) error {
 	default:
 		return fmt.Errorf("unknown subcommand %q (try list, promote)", args[0])
 	}
+}
+
+// cmdSetup installs the Claude Code Skill bundle (ADR-0002) on demand. Unlike
+// the automatic first-run hook in main(), this doesn't require ~/.claude to
+// already exist, and --force lets a user pull down the current SKILL.md over
+// a locally-edited copy.
+func cmdSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ExitOnError)
+	force := fs.Bool("force", false, "overwrite an existing Skill file with the current bundled version")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("home dir: %w", err)
+	}
+	skillPath := setup.SkillPath(home)
+
+	installed, err := setup.InstallClaudeSkill(home, *force)
+	if err != nil {
+		return fmt.Errorf("install Claude Code Skill: %w", err)
+	}
+	if installed {
+		fmt.Printf("Installed the Claude Code Skill at %s\n", skillPath)
+	} else {
+		fmt.Printf("Claude Code Skill already installed at %s (pass --force to overwrite)\n", skillPath)
+	}
+	return nil
 }
 
 func versionString() string {
