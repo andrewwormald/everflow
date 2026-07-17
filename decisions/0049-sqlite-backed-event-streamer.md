@@ -1,4 +1,4 @@
-# ADR-0048: Sqlite-backed EventStreamer event log
+# ADR-0049: Sqlite-backed EventStreamer event log
 
 **Status**: Accepted
 **Date**: 2026-07-17

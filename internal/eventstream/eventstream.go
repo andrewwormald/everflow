@@ -15,7 +15,7 @@
 // cond.Wait until a Send broadcasts (or ctx is cancelled), and the log +
 // cursors live in sqlite rather than an in-process slice/map, so a daemon
 // restart resumes every receiver from its last acked position instead of
-// replaying (or losing) events. See ADR-0048.
+// replaying (or losing) events. See ADR-0049.
 package eventstream
 
 import (
