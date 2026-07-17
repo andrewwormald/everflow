@@ -57,6 +57,9 @@ func (f *fakeAuthProvider) UpdateMRTitle(_ context.Context, _ string, _ int, _ s
 func (f *fakeAuthProvider) CloseMR(_ context.Context, _ string, _ int) error { return nil }
 func (f *fakeAuthProvider) ListNotesSince(_ context.Context, _ string, _ int, _ provider.NoteCursor) ([]provider.NotePoll, error) { return nil, nil }
 func (f *fakeAuthProvider) ResolveDiscussion(_ context.Context, _ string, _ int, _ string) error { return nil }
+func (f *fakeAuthProvider) ReactToNote(_ context.Context, _ string, _ int, _ int64, _, _ string) error {
+	return nil
+}
 func (f *fakeAuthProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error { return nil }
 func (f *fakeAuthProvider) IsBot(_ provider.User) bool { return false }
 func (f *fakeAuthProvider) GetMRState(_ context.Context, _ string, _ int) (string, error) {
