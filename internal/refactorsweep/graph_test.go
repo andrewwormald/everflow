@@ -15,6 +15,7 @@ import (
 
 	"github.com/andrewwormald/everflow/internal/eventstream"
 	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/everflow/internal/store"
 )
 
 // TestStatusGraph_PausedAllowsSelfLoop is a regression guard for
@@ -192,7 +193,12 @@ func TestStatusGraph_AwaitingAbandonConfirmAllowsSelfLoop(t *testing.T) {
 // the workflow plumbing.
 func integrationDeps(t *testing.T) Deps {
 	t.Helper()
-	streamer := eventstream.New()
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
 	rs := memrecordstore.New(memrecordstore.WithOutbox(t.Context(), streamer, discardLogger{}))
 	return Deps{
 		RecordStore:   rs,

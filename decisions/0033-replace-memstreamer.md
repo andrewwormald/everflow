@@ -93,3 +93,8 @@ saturating multiple cores.
 - Tests live alongside the implementation: a 200 ms "no goroutine growth
   while idle" smoke check serves as a regression guard against
   reintroducing a busy loop.
+
+**Update (2026-07-17, ADR-0048):** the "streamer itself is intentionally
+in-memory" framing above is superseded — the log and per-receiver cursors
+now live in sqlite so a daemon restart can't lose an in-flight event. The
+`cond.Wait`-not-busy-spin decision this ADR records is unaffected.
