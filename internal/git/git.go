@@ -35,6 +35,28 @@ type Git interface {
 	// modifications (staged or unstaged, including untracked files).
 	HasChanges(ctx context.Context, dir string) (bool, error)
 
+	// HasWorkBeyondBase reports whether the worktree at `dir` contains any
+	// work of its own relative to origin/<baseBranch>: uncommitted
+	// modifications OR commits beyond the merge-base with origin/<baseBranch>.
+	//
+	// This is the "did the runner do anything?" check. HasChanges alone is
+	// wrong for that purpose when the runner commits its own work — the
+	// tree is clean afterwards, and porcelain-only detection would discard
+	// the real work as "no changes". Using the merge-base (rather than
+	// comparing HEAD to origin/<baseBranch> directly) means a base branch
+	// that moved forward while the unit sat idle does NOT count as work.
+	//
+	// The four cases:
+	//   - runner committed its own work (clean tree)   → true
+	//   - runner left uncommitted changes (dirty tree) → true
+	//   - fresh worktree, runner did nothing           → false
+	//   - base moved forward, unit idle                → false
+	//
+	// Purely local — reads the origin/<baseBranch> tracking ref as last
+	// fetched; it does not fetch. HasChanges remains the right check for
+	// the Commit flow (is there anything to stage?).
+	HasWorkBeyondBase(ctx context.Context, dir, baseBranch string) (bool, error)
+
 	// Commit stages every change in the worktree and creates a commit with
 	// the given message. Returns ErrNoChanges if nothing was staged — the
 	// caller decides whether that's worth treating as an error.
@@ -154,6 +176,25 @@ func (g *ExecGit) HasChanges(ctx context.Context, dir string) (bool, error) {
 		return false, fmt.Errorf("HasChanges: %w", err)
 	}
 	return strings.TrimSpace(out) != "", nil
+}
+
+func (g *ExecGit) HasWorkBeyondBase(ctx context.Context, dir, baseBranch string) (bool, error) {
+	dirty, err := g.HasChanges(ctx, dir)
+	if err != nil {
+		return false, fmt.Errorf("HasWorkBeyondBase: %w", err)
+	}
+	if dirty {
+		return true, nil
+	}
+	mergeBase, err := g.runOut(ctx, dir, "merge-base", "origin/"+baseBranch, "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("HasWorkBeyondBase: merge-base: %w", err)
+	}
+	count, err := g.runOut(ctx, dir, "rev-list", "--count", strings.TrimSpace(mergeBase)+"..HEAD")
+	if err != nil {
+		return false, fmt.Errorf("HasWorkBeyondBase: rev-list: %w", err)
+	}
+	return strings.TrimSpace(count) != "0", nil
 }
 
 func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {

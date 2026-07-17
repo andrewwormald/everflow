@@ -231,6 +231,12 @@ func (g *fakeGit) HasChanges(_ context.Context, _ string) (bool, error) {
 	return true, nil // default: assume runner did make changes
 }
 
+func (g *fakeGit) HasWorkBeyondBase(ctx context.Context, dir, _ string) (bool, error) {
+	// Call sites still use HasChanges (wiring lands in a later increment);
+	// mirror its behaviour so tests keep a single dirty/clean knob.
+	return g.HasChanges(ctx, dir)
+}
+
 func (g *fakeGit) Commit(_ context.Context, _, msg string) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
