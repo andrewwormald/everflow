@@ -125,7 +125,7 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 | [`internal/store/`](internal/store/) | Sqlite-backed `workflow.RecordStore` + `TimeoutStore` |
 | [`internal/spec/`](internal/spec/) | Spec markdown parser (frontmatter + body) |
 | [`internal/filter/`](internal/filter/) | Starlark event filter with per-Run override + phrase learning |
-| [`internal/eventstream/`](internal/eventstream/) | In-process `workflow.EventStreamer` (cond.Wait based) |
+| [`internal/eventstream/`](internal/eventstream/) | In-process `workflow.EventStreamer`, cond.Wait signalling over a sqlite-backed durable log |
 | [`internal/poller/`](internal/poller/) | Poll-mode event ingress |
 | [`internal/webhook/`](internal/webhook/) | HTTP webhook ingress (opt-in) |
 | [`_v0/`](_v0/) | Archived scheduled-skill PoC, separate module |

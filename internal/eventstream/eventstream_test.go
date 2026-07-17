@@ -8,16 +8,31 @@ import (
 	"time"
 
 	"github.com/luno/workflow"
+
+	"github.com/andrewwormald/everflow/internal/store"
 )
 
 const testTopic = "refactor-sweep"
+
+// newTestStreamer gives each test its own in-memory sqlite db (with the
+// event_log / event_cursors schema already applied) so tests can't leak
+// state into one another.
+func newTestStreamer(t *testing.T) *Streamer {
+	t.Helper()
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	return New(b.DB())
+}
 
 // TestRecv_BlocksUntilSend proves the headline fix: with no events in the
 // log, a Recv goroutine parks rather than burning CPU. We check that the
 // goroutine count stays flat (it's sleeping on cond.Wait) and that the
 // receiver wakes up promptly when a Send arrives.
 func TestRecv_BlocksUntilSend(t *testing.T) {
-	s := New()
+	s := newTestStreamer(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -68,7 +83,7 @@ func TestRecv_BlocksUntilSend(t *testing.T) {
 // is hard to assert deterministically — this is a sanity guard against
 // regressions reintroducing a spin loop.
 func TestRecv_DoesNotBusySpin(t *testing.T) {
-	s := New()
+	s := newTestStreamer(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -106,7 +121,7 @@ func TestRecv_DoesNotBusySpin(t *testing.T) {
 // TestRecv_CtxCancelUnblocks proves that ctx cancellation wakes a parked
 // Recv — otherwise the daemon would hang on shutdown.
 func TestRecv_CtxCancelUnblocks(t *testing.T) {
-	s := New()
+	s := newTestStreamer(t)
 	ctx, cancel := context.WithCancel(t.Context())
 
 	rec, err := s.NewReceiver(ctx, testTopic, "cancel-test")
@@ -138,7 +153,7 @@ func TestRecv_CtxCancelUnblocks(t *testing.T) {
 // event tagged for topic B. Cursor advances past the skipped event so we
 // don't see it again.
 func TestRecv_SkipsOtherTopics(t *testing.T) {
-	s := New()
+	s := newTestStreamer(t)
 	ctx := t.Context()
 
 	send, _ := s.NewSender(ctx, "other-topic")
@@ -167,7 +182,7 @@ func TestRecv_SkipsOtherTopics(t *testing.T) {
 // TestRecv_StreamFromLatest: when the option is set, the receiver should
 // skip events already in the log at creation time.
 func TestRecv_StreamFromLatest(t *testing.T) {
-	s := New()
+	s := newTestStreamer(t)
 	ctx := t.Context()
 
 	send, _ := s.NewSender(ctx, testTopic)
@@ -210,7 +225,7 @@ func TestRecv_StreamFromLatest(t *testing.T) {
 // TestRecv_ConcurrentConsumersIndependentCursors: two consumers on the
 // same topic must both see every event (each has its own cursor).
 func TestRecv_ConcurrentConsumersIndependentCursors(t *testing.T) {
-	s := New()
+	s := newTestStreamer(t)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
@@ -245,4 +260,54 @@ func TestRecv_ConcurrentConsumersIndependentCursors(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Errorf("each consumer should have seen %d events; got a=%d b=%d", n, aCount.Load(), bCount.Load())
+}
+
+// TestRestart_ResumesFromPersistedCursor is the headline durability
+// guarantee: a fresh Streamer opened against the same db (standing in for
+// a daemon restart) must neither lose an unacked in-flight event nor
+// redeliver one that was already acked.
+func TestRestart_ResumesFromPersistedCursor(t *testing.T) {
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	defer b.Close()
+	db := b.DB()
+	ctx := t.Context()
+
+	s1 := New(db)
+	send, _ := s1.NewSender(ctx, testTopic)
+	if err := send.Send(ctx, "fid-1", 1, map[workflow.Header]string{workflow.HeaderTopic: testTopic}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := send.Send(ctx, "fid-2", 1, map[workflow.Header]string{workflow.HeaderTopic: testTopic}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	rec1, _ := s1.NewReceiver(ctx, testTopic, "consumer")
+	e, ack, err := rec1.Recv(ctx)
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	if e.ForeignID != "fid-1" {
+		t.Fatalf("got %q, want fid-1", e.ForeignID)
+	}
+	if err := ack(); err != nil {
+		t.Fatalf("ack: %v", err)
+	}
+
+	// "Restart": a new Streamer + receiver over the same db, never touching s1 again.
+	s2 := New(db)
+	rec2, err := s2.NewReceiver(ctx, testTopic, "consumer")
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	e2, ack2, err := rec2.Recv(ctx)
+	if err != nil {
+		t.Fatalf("Recv after restart: %v", err)
+	}
+	if e2.ForeignID != "fid-2" {
+		t.Fatalf("after restart got %q, want fid-2 (fid-1 already acked, fid-2 still in-flight)", e2.ForeignID)
+	}
+	_ = ack2()
 }

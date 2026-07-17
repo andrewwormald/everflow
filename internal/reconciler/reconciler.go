@@ -24,3 +24,19 @@ func IsStuck(status refactorsweep.AgentStatus, lastProgress time.Time, now time.
 	}
 	return now.Sub(lastProgress) >= threshold
 }
+
+// LastProgress returns when state last made progress: the EndedAt of the
+// last Turn in state.History, or its StartedAt if the turn is still
+// in-flight (EndedAt zero). If History is empty, it returns fallback
+// (typically the Run record's own timestamp), since a Run with no turns
+// yet has no history to derive progress from.
+func LastProgress(state refactorsweep.AgentState, fallback time.Time) time.Time {
+	if len(state.History) == 0 {
+		return fallback
+	}
+	turn := state.History[len(state.History)-1]
+	if turn.EndedAt.IsZero() {
+		return turn.StartedAt
+	}
+	return turn.EndedAt
+}
