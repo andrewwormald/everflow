@@ -8,6 +8,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -122,4 +123,62 @@ func Retrigger(ctx context.Context, streamer workflow.EventStreamer, record work
 		return fmt.Errorf("send retrigger event: %w", err)
 	}
 	return nil
+}
+
+// Sweeper periodically sweeps a workflow's Runs for ones stuck on a lost
+// in-memory event (see the package doc) and re-triggers them. It ticks on
+// Interval (defaulting to 30s, matching internal/poller's cadence) for as
+// long as Run's ctx is live.
+type Sweeper struct {
+	Store        workflow.RecordStore
+	Streamer     workflow.EventStreamer
+	WorkflowName string
+	Interval     time.Duration
+	Threshold    time.Duration
+	Logger       *slog.Logger
+}
+
+// Run ticks every s.Interval, sweeping stuck Runs each tick. It returns when
+// ctx is cancelled.
+func (s *Sweeper) Run(ctx context.Context) {
+	if s.Interval <= 0 {
+		s.Interval = 30 * time.Second
+	}
+	if s.Logger == nil {
+		s.Logger = slog.Default()
+	}
+
+	t := time.NewTicker(s.Interval)
+	defer t.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			s.sweepOnce(ctx)
+		}
+	}
+}
+
+// sweepOnce runs a single Scan + Retrigger pass over s.WorkflowName.
+func (s *Sweeper) sweepOnce(ctx context.Context) {
+	stuck, err := Scan(ctx, s.Store, s.WorkflowName, time.Now(), s.Threshold)
+	if err != nil {
+		s.Logger.Warn("reconciler: scan", "err", err)
+		return
+	}
+
+	for _, runID := range stuck {
+		record, err := s.Store.Lookup(ctx, runID)
+		if err != nil {
+			s.Logger.Warn("reconciler: lookup stuck run", "run_id", runID, "err", err)
+			continue
+		}
+		if err := Retrigger(ctx, s.Streamer, *record); err != nil {
+			s.Logger.Warn("reconciler: retrigger stuck run", "run_id", runID, "err", err)
+			continue
+		}
+		s.Logger.Info("reconciler: re-triggered stuck run", "run_id", runID)
+	}
 }
