@@ -37,6 +37,7 @@ import (
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 	"github.com/andrewwormald/everflow/internal/runner"
 	"github.com/andrewwormald/everflow/internal/runner/claude"
+	"github.com/andrewwormald/everflow/internal/setup"
 	"github.com/andrewwormald/everflow/internal/spec"
 	"github.com/andrewwormald/everflow/internal/store"
 	"github.com/andrewwormald/everflow/internal/webhook"
@@ -83,6 +84,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", verb)
 		printUsage(os.Stderr)
 		os.Exit(2)
+	}
+	// Best-effort, non-interactive first-run hook (ADR-0002): install the
+	// Claude Code Skill bundle if it isn't there yet. Never blocks the
+	// actual command on failure.
+	if home, err := os.UserHomeDir(); err == nil {
+		if err := setup.EnsureClaudeSkill(home); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: skill setup: %v\n", err)
+		}
 	}
 	if err := cmd.run(os.Args[2:]); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
