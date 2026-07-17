@@ -6,7 +6,11 @@
 package reconciler
 
 import (
+	"context"
+	"fmt"
 	"time"
+
+	"github.com/luno/workflow"
 
 	"github.com/andrewwormald/everflow/internal/refactorsweep"
 )
@@ -39,4 +43,44 @@ func LastProgress(state refactorsweep.AgentState, fallback time.Time) time.Time 
 		return turn.StartedAt
 	}
 	return turn.EndedAt
+}
+
+// scanPageSize is the page size used when paginating through the
+// RecordStore in Scan, mirroring rehydrateSecrets in main.go.
+const scanPageSize = 200
+
+// Scan queries rs for Runs in RunStateRunning (excluding Paused, which is a
+// deliberate stop rather than a lost event — see Pause in the workflow
+// library) and returns the RunIDs of those IsStuck flags as stale. now is
+// passed in rather than read from time.Now() so callers control elapsed
+// time in tests.
+func Scan(ctx context.Context, rs workflow.RecordStore, workflowName string, now time.Time, threshold time.Duration) ([]string, error) {
+	var stuck []string
+	var offset int64
+	for {
+		records, err := rs.List(ctx, workflowName, offset, scanPageSize, workflow.OrderTypeAscending,
+			workflow.FilterByRunState(workflow.RunStateRunning))
+		if err != nil {
+			return nil, fmt.Errorf("list records at offset %d: %w", offset, err)
+		}
+		if len(records) == 0 {
+			break
+		}
+		for _, rec := range records {
+			status := refactorsweep.AgentStatus(rec.Status)
+			var state refactorsweep.AgentState
+			if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+				continue
+			}
+			lastProgress := LastProgress(state, rec.CreatedAt)
+			if IsStuck(status, lastProgress, now, threshold) {
+				stuck = append(stuck, rec.RunID)
+			}
+		}
+		if int64(len(records)) < scanPageSize {
+			break
+		}
+		offset += int64(len(records))
+	}
+	return stuck, nil
 }
