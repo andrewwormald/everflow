@@ -313,23 +313,6 @@ func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
 	}
 }
 
-func TestReconcilerStuckThresholdDefault(t *testing.T) {
-	t.Setenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD", "")
-	if got := reconcilerStuckThresholdDefault(); got != 10*time.Minute {
-		t.Errorf("default with no env set = %v, want 10m", got)
-	}
-
-	t.Setenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD", "5m")
-	if got := reconcilerStuckThresholdDefault(); got != 5*time.Minute {
-		t.Errorf("default with env set to 5m = %v, want 5m", got)
-	}
-
-	t.Setenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD", "not-a-duration")
-	if got := reconcilerStuckThresholdDefault(); got != 10*time.Minute {
-		t.Errorf("default with unparseable env = %v, want fallback 10m", got)
-	}
-}
-
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }

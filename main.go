@@ -118,21 +118,10 @@ func printUsage(w io.Writer) {
 	fmt.Fprintf(w, "\nrun `everflow <command> -h` for command-specific flags.\n")
 }
 
-// reconcilerStuckThresholdDefault returns the --reconciler-stuck-threshold
-// flag's default: EVERFLOW_RECONCILER_STUCK_THRESHOLD if set and parseable
-// (e.g. "10m"), else 10 minutes.
-func reconcilerStuckThresholdDefault() time.Duration {
-	const fallback = 10 * time.Minute
-	v := os.Getenv("EVERFLOW_RECONCILER_STUCK_THRESHOLD")
-	if v == "" {
-		return fallback
-	}
-	d, err := time.ParseDuration(v)
-	if err != nil {
-		return fallback
-	}
-	return d
-}
+// reconcilerStuckThresholdDefault is the --reconciler-stuck-threshold flag's
+// default: how long a Run may sit in Working/Discovering with no progress
+// before the reconciler re-triggers it.
+const reconcilerStuckThresholdDefault = 10 * time.Minute
 
 // buildSweeper constructs the reconciler.Sweeper the daemon runs alongside
 // pollerLoop. Split out from cmdDaemon so tests can assert it's wired to the
@@ -158,7 +147,7 @@ func cmdDaemon(args []string) error {
 		triggerAddr    = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `everflow start`)")
 		commitAuthor   = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
 		commitEmail    = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
-		stuckThreshold = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault(), "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033); overridable via EVERFLOW_RECONCILER_STUCK_THRESHOLD")
+		stuckThreshold = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
