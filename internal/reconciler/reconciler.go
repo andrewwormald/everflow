@@ -8,6 +8,7 @@ package reconciler
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/luno/workflow"
@@ -83,4 +84,42 @@ func Scan(ctx context.Context, rs workflow.RecordStore, workflowName string, now
 		offset += int64(len(records))
 	}
 	return stuck, nil
+}
+
+// Retrigger builds and sends an event for record to its current status
+// topic, carrying the same headers a normal transition would produce (see
+// MakeOutboxEventData in the vendored library's event.go). Because the
+// event's HeaderRecordVersion is taken from record.Meta.Version, the step
+// consumer's existing idempotency guard (step.go's stepConsumer, which
+// skips any event whose HeaderRecordVersion doesn't match the record's
+// current version) applies unchanged: retriggering a record more than
+// once, or retriggering a stale snapshot after the record has since
+// advanced, is a no-op rather than a double-process.
+func Retrigger(ctx context.Context, streamer workflow.EventStreamer, record workflow.Record) error {
+	topic := workflow.Topic(record.WorkflowName, record.Status)
+
+	headers := map[workflow.Header]string{
+		workflow.HeaderForeignID:     record.ForeignID,
+		workflow.HeaderWorkflowName:  record.WorkflowName,
+		workflow.HeaderTopic:         topic,
+		workflow.HeaderRunID:         record.RunID,
+		workflow.HeaderRunState:      strconv.FormatInt(int64(record.RunState), 10),
+		workflow.HeaderRecordVersion: strconv.FormatInt(int64(record.Meta.Version), 10),
+	}
+
+	sender, err := streamer.NewSender(ctx, topic)
+	if err != nil {
+		return fmt.Errorf("new sender for topic %q: %w", topic, err)
+	}
+	defer sender.Close()
+
+	// The step consumer looks up records by RunID (see stepConsumer in the
+	// vendored library's step.go), so despite the Event.ForeignID field
+	// name, the value sent here must be the RunID — mirroring how
+	// purgeOutbox in outbox.go sends outboxRecord.RunId, not the business
+	// ForeignID, as the event's foreign ID.
+	if err := sender.Send(ctx, record.RunID, record.Status, headers); err != nil {
+		return fmt.Errorf("send retrigger event: %w", err)
+	}
+	return nil
 }
