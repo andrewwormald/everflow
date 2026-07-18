@@ -607,12 +607,13 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 
 	// 2. Invoke runner inside the worktree.
 	req := runner.Request{
-		Worktree:     worktree,
-		SkillCommand: fmt.Sprintf("/everflow-unit %s", unitID), // overridden once SkillPath integration lands
-		Goal:         r.Object.Goal,
-		UnitID:       unitID,
-		Model:        r.Object.RunnerModel,
-		Budget:       r.Object.Budget,
+		Worktree:        worktree,
+		SkillCommand:    fmt.Sprintf("/everflow-unit %s", unitID), // overridden once SkillPath integration lands
+		Goal:            r.Object.Goal,
+		UnitID:          unitID,
+		Model:           r.Object.RunnerModel,
+		Budget:          r.Object.Budget,
+		TitleConvention: r.Object.TitleConvention,
 	}
 	// Prepend the planner's per-increment rationale so the runner sees
 	// this increment's scope directly, not just the whole-spec Goal. See
@@ -1071,11 +1072,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 
 	req := runner.Request{
-		Worktree: worktree,
-		Goal:     r.Object.Goal,
-		UnitID:   unitID,
-		Model:    r.Object.RunnerModel,
-		Budget:   r.Object.Budget,
+		Worktree:        worktree,
+		Goal:            r.Object.Goal,
+		UnitID:          unitID,
+		Model:           r.Object.RunnerModel,
+		Budget:          r.Object.Budget,
+		TitleConvention: r.Object.TitleConvention,
 	}
 	var phase string
 	switch ev.Kind {

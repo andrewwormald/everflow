@@ -238,6 +238,9 @@ func BuildPrompt(req runner.Request) string {
 		b.WriteString(planningScopeDiscipline)
 	} else {
 		b.WriteString(unitScopeDiscipline)
+		if req.TitleConvention != "" {
+			fmt.Fprintf(&b, "## MR title convention\n\n%s\n\n", req.TitleConvention)
+		}
 	}
 	b.WriteString(decisionProtocol)
 	return b.String()

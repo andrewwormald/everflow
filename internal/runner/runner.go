@@ -51,6 +51,11 @@ type Request struct {
 	UnitContext  string
 	Model        string // spec-selected model override; empty means the runner's default
 
+	// TitleConvention is the BaseRepo's .everflow.yml title_convention
+	// (ADR-0052), read once in setup() and threaded through unit-scoped
+	// invocations so the runner shapes MR titles accordingly.
+	TitleConvention string
+
 	// Replayed inputs for "address comment" / "fix CI" invocations:
 	CommentBody string // populated for address-comment invocations
 	CIFailure   string // populated for fix-CI invocations (last ~2KB of log)
