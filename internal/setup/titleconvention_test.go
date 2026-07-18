@@ -100,6 +100,45 @@ func TestWriteRepoConfig_DoesNotClobberExistingWithoutForce(t *testing.T) {
 	}
 }
 
+func TestReadRepoConfig_AbsentFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg, err := ReadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TitleConvention != "" {
+		t.Fatalf("got %q, want empty TitleConvention for absent file", cfg.TitleConvention)
+	}
+}
+
+func TestReadRepoConfig_PresentConvention(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(RepoConfigPath(dir), []byte("title_convention: Conventional Commits\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	cfg, err := ReadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TitleConvention != "Conventional Commits" {
+		t.Fatalf("got %q, want %q", cfg.TitleConvention, "Conventional Commits")
+	}
+}
+
+func TestReadRepoConfig_BlankField(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(RepoConfigPath(dir), []byte("# no convention set\n"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	cfg, err := ReadRepoConfig(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.TitleConvention != "" {
+		t.Fatalf("got %q, want empty TitleConvention for blank field", cfg.TitleConvention)
+	}
+}
+
 func TestWriteRepoConfig_ForceOverwritesExisting(t *testing.T) {
 	dir := t.TempDir()
 	path := RepoConfigPath(dir)
