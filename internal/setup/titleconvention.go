@@ -8,6 +8,26 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// ReadRepoConfig reads `.everflow.yml` from repoDir, returning a zero-value
+// RepoConfig (no error) if the file doesn't exist — absence means "no
+// convention set", not a failure. Mirrors WriteRepoConfig's file-presence
+// convention (ADR-0052).
+func ReadRepoConfig(repoDir string) (RepoConfig, error) {
+	path := RepoConfigPath(repoDir)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return RepoConfig{}, nil
+		}
+		return RepoConfig{}, fmt.Errorf("read %s: %w", path, err)
+	}
+	var cfg RepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return RepoConfig{}, fmt.Errorf("parse %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
 // RepoConfig is the on-disk shape of `.everflow.yml`, a per-repo (not
 // per-user) config file living at the root of a spec's `base_repo`.
 type RepoConfig struct {

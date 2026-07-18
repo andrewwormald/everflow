@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/luno/workflow"
 
@@ -505,6 +506,94 @@ func TestSetup_Idempotent_SkipsWebhookRegistration(t *testing.T) {
 	got, ok := d.Secrets.Get("fake", r.RunID)
 	if !ok || got != "previously-set" {
 		t.Errorf("Secret should be re-populated in registry; got %q, ok=%v", got, ok)
+	}
+}
+
+func TestSetup_TitleConvention_AbsentFile(t *testing.T) {
+	// No .everflow.yml at BaseRepo — TitleConvention stays empty, no error.
+	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
+	d := newDeps(t, fp)
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "x/y",
+		BaseRepo:     t.TempDir(),
+	})
+
+	if _, err := d.setup(t.Context(), r); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if r.Object.TitleConvention != "" {
+		t.Errorf("TitleConvention: want empty, got %q", r.Object.TitleConvention)
+	}
+}
+
+func TestSetup_TitleConvention_PresentConvention(t *testing.T) {
+	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
+	d := newDeps(t, fp)
+	baseRepo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseRepo, ".everflow.yml"), []byte("title_convention: Conventional Commits\n"), 0o644); err != nil {
+		t.Fatalf("write .everflow.yml: %v", err)
+	}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "x/y",
+		BaseRepo:     baseRepo,
+	})
+
+	if _, err := d.setup(t.Context(), r); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if r.Object.TitleConvention != "Conventional Commits" {
+		t.Errorf("TitleConvention: want %q, got %q", "Conventional Commits", r.Object.TitleConvention)
+	}
+}
+
+func TestSetup_TitleConvention_BlankField(t *testing.T) {
+	// .everflow.yml exists but has no title_convention line — treated the
+	// same as an absent file: empty TitleConvention, no error.
+	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
+	d := newDeps(t, fp)
+	baseRepo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseRepo, ".everflow.yml"), []byte("# no convention set\n"), 0o644); err != nil {
+		t.Fatalf("write .everflow.yml: %v", err)
+	}
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "x/y",
+		BaseRepo:     baseRepo,
+	})
+
+	if _, err := d.setup(t.Context(), r); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if r.Object.TitleConvention != "" {
+		t.Errorf("TitleConvention: want empty, got %q", r.Object.TitleConvention)
+	}
+}
+
+func TestSetup_TitleConvention_NotReReadMidRun(t *testing.T) {
+	// StartedAt already set (Run past its first setup() pass) — a second
+	// invocation (retry/restart) must not re-read .everflow.yml even though
+	// the file on disk has since changed.
+	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
+	d := newDeps(t, fp)
+	baseRepo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(baseRepo, ".everflow.yml"), []byte("title_convention: new convention\n"), 0o644); err != nil {
+		t.Fatalf("write .everflow.yml: %v", err)
+	}
+	r := newRun(t, &AgentState{
+		ProviderName:    "fake",
+		ProjectID:       "x/y",
+		BaseRepo:        baseRepo,
+		StartedAt:       time.Now(),
+		TitleConvention: "original convention",
+	})
+
+	if _, err := d.setup(t.Context(), r); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if r.Object.TitleConvention != "original convention" {
+		t.Errorf("TitleConvention should not be re-read mid-Run; got %q", r.Object.TitleConvention)
 	}
 }
 

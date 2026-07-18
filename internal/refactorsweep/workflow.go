@@ -26,6 +26,7 @@ import (
 	"github.com/andrewwormald/everflow/internal/git"
 	"github.com/andrewwormald/everflow/internal/provider"
 	"github.com/andrewwormald/everflow/internal/runner"
+	"github.com/andrewwormald/everflow/internal/setup"
 	"github.com/andrewwormald/everflow/internal/webhook"
 )
 
@@ -228,6 +229,20 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 	if r.Object.InFlight == nil {
 		r.Object.InFlight = map[string]provider.MR{}
 	}
+
+	// Read BaseRepo's .everflow.yml once, gated on StartedAt so a retry or
+	// daemon restart replaying this step doesn't re-read it: an author
+	// editing the file mid-Run shouldn't retroactively change the
+	// convention already recorded for in-flight work (ADR-0052). Threading
+	// TitleConvention into MR-title generation is a follow-on increment.
+	if r.Object.StartedAt.IsZero() && r.Object.BaseRepo != "" {
+		cfg, err := setup.ReadRepoConfig(r.Object.BaseRepo)
+		if err != nil {
+			return StatusFailed, fmt.Errorf("setup: read repo config: %w", err)
+		}
+		r.Object.TitleConvention = cfg.TitleConvention
+	}
+
 	// Record when this Run first entered Discovering so MaxRuntime can be
 	// checked on every subsequent discover() call.
 	if r.Object.StartedAt.IsZero() {
