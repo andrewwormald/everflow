@@ -16,11 +16,11 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/filter"
-	"github.com/andrewwormald/everflow/internal/git"
-	"github.com/andrewwormald/everflow/internal/provider"
-	"github.com/andrewwormald/everflow/internal/runner"
-	"github.com/andrewwormald/everflow/internal/webhook"
+	"github.com/andrewwormald/syntropy/internal/filter"
+	"github.com/andrewwormald/syntropy/internal/git"
+	"github.com/andrewwormald/syntropy/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/webhook"
 )
 
 // --- Test fake: provider.Provider ---
@@ -908,7 +908,7 @@ func TestWork_RunnerDeclines(t *testing.T) {
 // Regression: when the runner returns DecisionNoChange in the work phase,
 // the unit must be blacklisted and the Run must return to Discovering —
 // NOT terminate as StatusFailed. The first cross-MR-chain dogfood spike
-// against github.com/andrewwormald/everflow ended the whole Run when the
+// against github.com/andrewwormald/syntropy ended the whole Run when the
 // planner picked a third increment, the runner correctly evaluated it as
 // no-op, and work() routed NoChange through the catch-all "unexpected
 // decision" → StatusFailed branch.

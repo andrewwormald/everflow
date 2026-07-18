@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // Server is the HTTP front for webhook ingestion. Mount it onto an

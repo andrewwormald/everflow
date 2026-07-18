@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // NormaliseEvent decodes a GitLab webhook POST into provider.Event. Routes

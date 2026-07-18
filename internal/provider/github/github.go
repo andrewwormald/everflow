@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // Provider is the GitHub implementation of provider.Provider.

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // writeFilter creates a .star file in t.TempDir() with the given content

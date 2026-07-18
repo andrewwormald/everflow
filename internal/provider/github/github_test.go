@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // sign produces a valid X-Hub-Signature-256 value for body+secret.

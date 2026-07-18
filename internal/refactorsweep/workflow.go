@@ -22,12 +22,12 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/filter"
-	"github.com/andrewwormald/everflow/internal/git"
-	"github.com/andrewwormald/everflow/internal/provider"
-	"github.com/andrewwormald/everflow/internal/runner"
-	"github.com/andrewwormald/everflow/internal/setup"
-	"github.com/andrewwormald/everflow/internal/webhook"
+	"github.com/andrewwormald/syntropy/internal/filter"
+	"github.com/andrewwormald/syntropy/internal/git"
+	"github.com/andrewwormald/syntropy/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/setup"
+	"github.com/andrewwormald/syntropy/internal/webhook"
 )
 
 // Deps is the set of collaborators a built workflow needs. The store /

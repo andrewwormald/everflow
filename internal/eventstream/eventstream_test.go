@@ -9,7 +9,7 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/store"
+	"github.com/andrewwormald/syntropy/internal/store"
 )
 
 const testTopic = "refactor-sweep"

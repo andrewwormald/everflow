@@ -13,9 +13,9 @@ import (
 	"github.com/luno/workflow/adapters/memrolescheduler"
 	"github.com/luno/workflow/adapters/memtimeoutstore"
 
-	"github.com/andrewwormald/everflow/internal/eventstream"
-	"github.com/andrewwormald/everflow/internal/provider"
-	"github.com/andrewwormald/everflow/internal/store"
+	"github.com/andrewwormald/syntropy/internal/eventstream"
+	"github.com/andrewwormald/syntropy/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/store"
 )
 
 // TestStatusGraph_PausedAllowsSelfLoop is a regression guard for

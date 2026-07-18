@@ -11,9 +11,9 @@ import (
 	"github.com/luno/workflow/adapters/memrecordstore"
 	"github.com/luno/workflow/adapters/memrolescheduler"
 
-	"github.com/andrewwormald/everflow/internal/eventstream"
-	"github.com/andrewwormald/everflow/internal/refactorsweep"
-	"github.com/andrewwormald/everflow/internal/store"
+	"github.com/andrewwormald/syntropy/internal/eventstream"
+	"github.com/andrewwormald/syntropy/internal/refactorsweep"
+	"github.com/andrewwormald/syntropy/internal/store"
 )
 
 const testWorkflowName = "refactor-sweep-reconciler-test"

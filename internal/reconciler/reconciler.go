@@ -14,7 +14,7 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/refactorsweep"
+	"github.com/andrewwormald/syntropy/internal/refactorsweep"
 )
 
 // IsStuck reports whether a Run sitting in status since lastProgress has

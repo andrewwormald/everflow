@@ -8,8 +8,8 @@ package refactorsweep
 import (
 	"time"
 
-	"github.com/andrewwormald/everflow/internal/provider"
-	"github.com/andrewwormald/everflow/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/runner"
 )
 
 // AgentStatus enumerates the workflow states. Cycles allowed:
