@@ -11,10 +11,10 @@ import (
 )
 
 // YAMLPhraseSet is a Filter PhraseSet backed by two YAML files:
-//   1. Per-Run phrases at ~/.everflow/runs/<runID>/phrases.yaml — learned
+//   1. Per-Run phrases at ~/.syntropy/runs/<runID>/phrases.yaml — learned
 //      via the runner's Learnings.AddPhrases, capped at MaxPerRunEntries
 //      (50 — ADR-0018 §4.2).
-//   2. Global phrases at ~/.everflow/phrases.global.yaml — human-curated
+//   2. Global phrases at ~/.syntropy/phrases.global.yaml — human-curated
 //      only; never auto-written.
 //
 // Contains() checks BOTH sources case-insensitively. Add() appends to the

@@ -63,10 +63,10 @@ type AgentState struct {
 	DraftMRs        bool           `json:"draft_mrs"`         // when true, opened MRs are marked Draft / WIP (safety net for spikes against shared repos)
 	EventSource     string         `json:"event_source"`      // "poll" (default) | "webhook" — ADR-0031
 
-	SkillPath       string         `json:"skill_path"`        // ~/.everflow/runs/<runID>/SKILL.md
-	FilterPath      string         `json:"filter_path"`       // ~/.everflow/runs/<runID>/note_added.star
+	SkillPath       string         `json:"skill_path"`        // ~/.syntropy/runs/<runID>/SKILL.md
+	FilterPath      string         `json:"filter_path"`       // ~/.syntropy/runs/<runID>/note_added.star
 	DiscoveryPath   string         `json:"discovery_path"`    // optional discovery rule
-	TitleConvention string         `json:"title_convention"`  // BaseRepo's .everflow.yml title_convention, read once in setup() — ADR-0052
+	TitleConvention string         `json:"title_convention"`  // BaseRepo's .syntropy.yml title_convention, read once in setup() — ADR-0052
 	WebhookID       string         `json:"webhook_id"`        // platform's hook ID, for cleanup
 	WebhookSecret   string         `json:"webhook_secret"`    // HMAC secret we registered with
 	WebhookURL      string         `json:"webhook_url"`       // public URL we registered

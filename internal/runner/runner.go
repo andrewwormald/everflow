@@ -51,7 +51,7 @@ type Request struct {
 	UnitContext  string
 	Model        string // spec-selected model override; empty means the runner's default
 
-	// TitleConvention is the BaseRepo's .everflow.yml title_convention
+	// TitleConvention is the BaseRepo's .syntropy.yml title_convention
 	// (ADR-0052), read once in setup() and threaded through unit-scoped
 	// invocations so the runner shapes MR titles accordingly.
 	TitleConvention string

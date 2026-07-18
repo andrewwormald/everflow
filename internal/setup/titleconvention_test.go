@@ -67,7 +67,7 @@ func TestWriteRepoConfig_WritesFile(t *testing.T) {
 	if !wrote {
 		t.Fatalf("expected write to happen")
 	}
-	data, err := os.ReadFile(filepath.Join(dir, ".everflow.yml"))
+	data, err := os.ReadFile(filepath.Join(dir, ".syntropy.yml"))
 	if err != nil {
 		t.Fatalf("read repo config: %v", err)
 	}

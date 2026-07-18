@@ -510,7 +510,7 @@ func TestSetup_Idempotent_SkipsWebhookRegistration(t *testing.T) {
 }
 
 func TestSetup_TitleConvention_AbsentFile(t *testing.T) {
-	// No .everflow.yml at BaseRepo — TitleConvention stays empty, no error.
+	// No .syntropy.yml at BaseRepo — TitleConvention stays empty, no error.
 	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
 	d := newDeps(t, fp)
 	r := newRun(t, &AgentState{
@@ -531,8 +531,8 @@ func TestSetup_TitleConvention_PresentConvention(t *testing.T) {
 	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
 	d := newDeps(t, fp)
 	baseRepo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(baseRepo, ".everflow.yml"), []byte("title_convention: Conventional Commits\n"), 0o644); err != nil {
-		t.Fatalf("write .everflow.yml: %v", err)
+	if err := os.WriteFile(filepath.Join(baseRepo, ".syntropy.yml"), []byte("title_convention: Conventional Commits\n"), 0o644); err != nil {
+		t.Fatalf("write .syntropy.yml: %v", err)
 	}
 	r := newRun(t, &AgentState{
 		ProviderName: "fake",
@@ -549,13 +549,13 @@ func TestSetup_TitleConvention_PresentConvention(t *testing.T) {
 }
 
 func TestSetup_TitleConvention_BlankField(t *testing.T) {
-	// .everflow.yml exists but has no title_convention line — treated the
+	// .syntropy.yml exists but has no title_convention line — treated the
 	// same as an absent file: empty TitleConvention, no error.
 	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
 	d := newDeps(t, fp)
 	baseRepo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(baseRepo, ".everflow.yml"), []byte("# no convention set\n"), 0o644); err != nil {
-		t.Fatalf("write .everflow.yml: %v", err)
+	if err := os.WriteFile(filepath.Join(baseRepo, ".syntropy.yml"), []byte("# no convention set\n"), 0o644); err != nil {
+		t.Fatalf("write .syntropy.yml: %v", err)
 	}
 	r := newRun(t, &AgentState{
 		ProviderName: "fake",
@@ -573,13 +573,13 @@ func TestSetup_TitleConvention_BlankField(t *testing.T) {
 
 func TestSetup_TitleConvention_NotReReadMidRun(t *testing.T) {
 	// StartedAt already set (Run past its first setup() pass) — a second
-	// invocation (retry/restart) must not re-read .everflow.yml even though
+	// invocation (retry/restart) must not re-read .syntropy.yml even though
 	// the file on disk has since changed.
 	fp := &fakeProvider{authedUser: provider.User{Handle: "andreww"}, webhookID: "wh-1"}
 	d := newDeps(t, fp)
 	baseRepo := t.TempDir()
-	if err := os.WriteFile(filepath.Join(baseRepo, ".everflow.yml"), []byte("title_convention: new convention\n"), 0o644); err != nil {
-		t.Fatalf("write .everflow.yml: %v", err)
+	if err := os.WriteFile(filepath.Join(baseRepo, ".syntropy.yml"), []byte("title_convention: new convention\n"), 0o644); err != nil {
+		t.Fatalf("write .syntropy.yml: %v", err)
 	}
 	r := newRun(t, &AgentState{
 		ProviderName:    "fake",
@@ -764,7 +764,7 @@ func TestWork_HappyPath(t *testing.T) {
 }
 
 // TestWork_MRTitle_UsesRunnerSuggestion covers ADR-0054: when the runner
-// reports a Title (phrased per BaseRepo's .everflow.yml title_convention),
+// reports a Title (phrased per BaseRepo's .syntropy.yml title_convention),
 // CreateMR must use it verbatim instead of the "Goal: unitID" default.
 func TestWork_MRTitle_UsesRunnerSuggestion(t *testing.T) {
 	fp := &fakeProvider{}
