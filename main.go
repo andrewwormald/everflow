@@ -1,4 +1,4 @@
-// Everflow — bulk-refactor sweep CLI. See README.md, DESIGN.md, and the
+// Syntropy — bulk-refactor sweep CLI. See README.md, DESIGN.md, and the
 // decisions/ log for the project's purpose and design.
 //
 // This file is the CLI surface; business logic lives under internal/.
@@ -92,7 +92,7 @@ func main() {
 	}
 	// Best-effort, non-interactive first-run hook (ADR-0002): install the
 	// Claude Code Skill bundle if it isn't there yet. Never blocks the
-	// actual command on failure. Skipped for `everflow setup`, which is the
+	// actual command on failure. Skipped for `syntropy setup`, which is the
 	// explicit, authoritative way to (re)install it.
 	if verb != "setup" {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -100,7 +100,7 @@ func main() {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "warning: skill setup: %v\n", err)
 			} else if installed {
-				fmt.Fprintf(os.Stderr, "everflow: installed the Claude Code Skill at %s (run `everflow setup` to reinstall or customize)\n", setup.SkillPath(home))
+				fmt.Fprintf(os.Stderr, "syntropy: installed the Claude Code Skill at %s (run `syntropy setup` to reinstall or customize)\n", setup.SkillPath(home))
 			}
 		}
 	}
@@ -111,11 +111,11 @@ func main() {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintf(w, "everflow — bulk-refactor sweep daemon\n\nusage: everflow <command> [flags]\n\ncommands:\n")
+	fmt.Fprintf(w, "syntropy — bulk-refactor sweep daemon\n\nusage: syntropy <command> [flags]\n\ncommands:\n")
 	for _, name := range []string{"daemon", "start", "status", "list", "abandon", "resume", "phrases", "setup", "version"} {
 		fmt.Fprintf(w, "  %-9s %s\n", name, commands[name].usage)
 	}
-	fmt.Fprintf(w, "\nrun `everflow <command> -h` for command-specific flags.\n")
+	fmt.Fprintf(w, "\nrun `syntropy <command> -h` for command-specific flags.\n")
 }
 
 // reconcilerStuckThresholdDefault is the --reconciler-stuck-threshold flag's
@@ -144,7 +144,7 @@ func cmdDaemon(args []string) error {
 		publicBaseURL  = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
 		gitlabBaseURL  = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
 		githubBaseURL  = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
-		triggerAddr    = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `everflow start`)")
+		triggerAddr    = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `syntropy start`)")
 		commitAuthor   = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
 		commitEmail    = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
 		stuckThreshold = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
@@ -310,7 +310,7 @@ func cmdDaemon(args []string) error {
 	go sweeper.Run(ctx)
 
 	fmt.Fprintf(os.Stderr, "%s\n", daemonBannerLine())
-	logger.Info("everflow daemon started",
+	logger.Info("syntropy daemon started",
 		"version", version,
 		"listen", *listenAddr,
 		"trigger_listen", *triggerAddr,
@@ -866,7 +866,7 @@ func cmdStart(args []string) error {
 
 	if req.RunnerModel == "" {
 		// Neither --model nor (in spec mode) the spec's `model:` set one;
-		// fall back to the default persisted by `everflow setup` (ADR-0051).
+		// fall back to the default persisted by `syntropy setup` (ADR-0051).
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("home dir: %w", err)
@@ -929,7 +929,7 @@ func cmdStatus(args []string) error {
 			// possible; otherwise surface a hint pointing at --store.
 			if isDaemonUnreachable(err) {
 				if fallback, ok := tryStoreFallback(*storePath); ok {
-					fmt.Fprintf(os.Stderr, "everflow: daemon unreachable (%v); reading store directly\n", err)
+					fmt.Fprintf(os.Stderr, "syntropy: daemon unreachable (%v); reading store directly\n", err)
 					return directStatus(context.Background(), fallback, runID)
 				}
 				return daemonUnreachableError(*daemonURL, err)
@@ -944,7 +944,7 @@ func cmdStatus(args []string) error {
 		// Daemon unreachable — fall back to a direct sqlite read when the
 		// store exists; otherwise emit a hint pointing at --store.
 		if fallback, ok := tryStoreFallback(*storePath); ok {
-			fmt.Fprintf(os.Stderr, "everflow: daemon unreachable (%v); reading store directly\n", err)
+			fmt.Fprintf(os.Stderr, "syntropy: daemon unreachable (%v); reading store directly\n", err)
 			return directStatus(context.Background(), fallback, runID)
 		}
 		return daemonUnreachableError(*daemonURL, err)
@@ -1007,7 +1007,7 @@ func directStatus(ctx context.Context, storePath, runID string) error {
 		}
 		rec, err := rs.Lookup(ctx, full)
 		if err != nil {
-			return fmt.Errorf("run %s not found: %w (hint: use 'everflow list' or query the store directly)", full, err)
+			return fmt.Errorf("run %s not found: %w (hint: use 'syntropy list' or query the store directly)", full, err)
 		}
 		s, err := recordToStatus(rec)
 		if err != nil {
@@ -1243,7 +1243,7 @@ func cmdAbandon(args []string) error {
 	}
 	runID := fs.Arg(0)
 	if runID == "" {
-		return errors.New("usage: everflow abandon <run-id>")
+		return errors.New("usage: syntropy abandon <run-id>")
 	}
 
 	// Try daemon first (preferred path: daemon handles two-tap confirmation
@@ -1264,7 +1264,7 @@ func cmdAbandon(args []string) error {
 	if !ok {
 		return daemonUnreachableError(*daemonURL, resolveErr)
 	}
-	fmt.Fprintln(os.Stderr, "everflow: daemon unreachable; falling back to direct store write")
+	fmt.Fprintln(os.Stderr, "syntropy: daemon unreachable; falling back to direct store write")
 	return directAbandon(context.Background(), fallback, runID, *reasonFlag, *gitlabBaseURL, *githubBaseURL)
 }
 
@@ -1277,7 +1277,7 @@ func cmdResume(args []string) error {
 	}
 	runID := fs.Arg(0)
 	if runID == "" {
-		return errors.New("usage: everflow resume <run-id>")
+		return errors.New("usage: syntropy resume <run-id>")
 	}
 
 	// Try daemon first (preferred: daemon can resume Paused → AwaitingMerge).
@@ -1299,7 +1299,7 @@ func cmdResume(args []string) error {
 	if !ok {
 		return daemonUnreachableError(*daemonURL, resolveErr)
 	}
-	fmt.Fprintln(os.Stderr, "everflow: daemon unreachable; falling back to direct store write")
+	fmt.Fprintln(os.Stderr, "syntropy: daemon unreachable; falling back to direct store write")
 	return directResume(context.Background(), fallback, runID)
 }
 
@@ -1352,7 +1352,7 @@ func directAbandon(ctx context.Context, storePath, runID, reason, gitlabBaseURL,
 	if p, ok := providers[state.ProviderName]; ok {
 		for _, mr := range state.InFlight {
 			if cErr := p.CloseMR(ctx, mr.ProjectID, mr.IID); cErr != nil {
-				fmt.Fprintf(os.Stderr, "everflow: close MR #%d (best-effort): %v\n", mr.IID, cErr)
+				fmt.Fprintf(os.Stderr, "syntropy: close MR #%d (best-effort): %v\n", mr.IID, cErr)
 			}
 		}
 	}
@@ -1363,7 +1363,7 @@ func directAbandon(ctx context.Context, storePath, runID, reason, gitlabBaseURL,
 	for unitID := range state.InFlight {
 		wt := filepath.Join(runsRoot, runID, "worktrees", unitID)
 		if rErr := g.RemoveWorktree(ctx, state.BaseRepo, wt); rErr != nil {
-			fmt.Fprintf(os.Stderr, "everflow: remove worktree %s (best-effort): %v\n", wt, rErr)
+			fmt.Fprintf(os.Stderr, "syntropy: remove worktree %s (best-effort): %v\n", wt, rErr)
 		}
 	}
 
@@ -1463,12 +1463,12 @@ func sendControl(daemonURL, runID, verb, args string) error {
 
 func cmdPhrases(args []string) error {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Println("usage: everflow phrases <list|promote> [args]")
+		fmt.Println("usage: syntropy phrases <list|promote> [args]")
 		return nil
 	}
 	switch args[0] {
 	case "list", "promote":
-		return fmt.Errorf("everflow phrases %s: not implemented in scaffold", args[0])
+		return fmt.Errorf("syntropy phrases %s: not implemented in scaffold", args[0])
 	default:
 		return fmt.Errorf("unknown subcommand %q (try list, promote)", args[0])
 	}
@@ -1599,11 +1599,11 @@ func promptForModel(runnerName string, r io.Reader, w io.Writer) func(existing s
 }
 
 func versionString() string {
-	return fmt.Sprintf("everflow %s (commit: %s, built: %s)", strings.TrimSpace(version), gitCommit, buildTime)
+	return fmt.Sprintf("syntropy %s (commit: %s, built: %s)", strings.TrimSpace(version), gitCommit, buildTime)
 }
 
 func daemonBannerLine() string {
-	return fmt.Sprintf("everflow daemon starting version=%s commit=%s pid=%d go=%s os=%s arch=%s",
+	return fmt.Sprintf("syntropy daemon starting version=%s commit=%s pid=%d go=%s os=%s arch=%s",
 		version, gitCommit, os.Getpid(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
 }
 
