@@ -16,16 +16,16 @@ func TestParseControlVerb(t *testing.T) {
 		wantVerb string
 		wantArgs string
 	}{
-		{"/everflow pause", "pause", ""},
-		{"  /everflow pause  ", "pause", ""},
-		{"/everflow PAUSE", "pause", ""},
-		{"/everflow skip ran out of time", "skip", "ran out of time"},
-		{"/everflow prompt focus on auth first", "prompt", "focus on auth first"},
-		{"/everflow prompt\nuse log/slog\nnot logrus", "prompt", "use log/slog\nnot logrus"},
-		{"/everflow", "", ""},
-		{"/everflow   ", "", ""},
+		{"/syntropy pause", "pause", ""},
+		{"  /syntropy pause  ", "pause", ""},
+		{"/syntropy PAUSE", "pause", ""},
+		{"/syntropy skip ran out of time", "skip", "ran out of time"},
+		{"/syntropy prompt focus on auth first", "prompt", "focus on auth first"},
+		{"/syntropy prompt\nuse log/slog\nnot logrus", "prompt", "use log/slog\nnot logrus"},
+		{"/syntropy", "", ""},
+		{"/syntropy   ", "", ""},
 		{"not a command", "", ""},
-		{"hello /everflow pause", "", ""}, // must be at start
+		{"hello /syntropy pause", "", ""}, // must be at start
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -40,7 +40,7 @@ func TestParseControlVerb(t *testing.T) {
 
 // --- helpers ---
 
-// controlEvent builds a /everflow comment event from the author, on the
+// controlEvent builds a /syntropy comment event from the author, on the
 // MR the awaitingRun helper already has in flight.
 func controlEvent(body string, mr provider.MR) provider.Event {
 	return provider.Event{
@@ -54,7 +54,7 @@ func controlEvent(body string, mr provider.MR) provider.Event {
 // --- individual verb tests ---
 
 // TestResume_ControlCommand_ReactsBeforeHandling asserts the generic
-// /everflow dispatch path (workflow.go's second handleControlCommand call
+// /syntropy dispatch path (workflow.go's second handleControlCommand call
 // site) acknowledges the triggering comment with a reaction, same as the
 // subagent-invocation path does.
 func TestResume_ControlCommand_ReactsBeforeHandling(t *testing.T) {
@@ -68,7 +68,7 @@ func TestResume_ControlCommand_ReactsBeforeHandling(t *testing.T) {
 		Kind:   provider.EventNoteAdded,
 		MR:     mr,
 		Author: provider.User{Handle: "andreww"},
-		Note:   provider.Note{ID: 7, Stream: "issue_comment", Body: "/everflow pause taking lunch"},
+		Note:   provider.Note{ID: 7, Stream: "issue_comment", Body: "/syntropy pause taking lunch"},
 	}
 	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
 	if err != nil {
@@ -94,7 +94,7 @@ func TestCmdPause(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow pause taking lunch", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy pause taking lunch", mr)))
 	if next != StatusPaused {
 		t.Errorf("want Paused, got %v", next)
 	}
@@ -115,7 +115,7 @@ func TestCmdResume(t *testing.T) {
 	r.Status = StatusPaused
 	r.Object.PauseReason = "was paused for a reason"
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow resume", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy resume", mr)))
 	if next != StatusAwaitingMerge {
 		t.Errorf("want AwaitingMerge, got %v", next)
 	}
@@ -131,7 +131,7 @@ func TestCmdSkip(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 42}
 	r := awaitingRun(t, "svc-a", mr)
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow skip too risky", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy skip too risky", mr)))
 	if next != StatusDiscovering {
 		t.Errorf("want Discovering after skip, got %v", next)
 	}
@@ -154,7 +154,7 @@ func TestCmdSkip_UnknownMR(t *testing.T) {
 	r := awaitingRun(t, "u", mr)
 
 	otherMR := provider.MR{ProjectID: "x/y", IID: 99}
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow skip", otherMR)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy skip", otherMR)))
 	if next == StatusDiscovering {
 		t.Errorf("skip on untracked MR should not transition; got %v", next)
 	}
@@ -172,7 +172,7 @@ func TestCmdRetry(t *testing.T) {
 	r.Status = StatusPaused
 	r.Object.PauseReason = "push failed"
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow retry", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy retry", mr)))
 	if next != StatusAwaitingMerge {
 		t.Errorf("want AwaitingMerge after retry, got %v", next)
 	}
@@ -188,7 +188,7 @@ func TestCmdPrompt_StoresInjection(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
-	body := "/everflow prompt focus on tests first, then the lint errors"
+	body := "/syntropy prompt focus on tests first, then the lint errors"
 	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent(body, mr)))
 	if next != StatusAwaitingMerge {
 		t.Errorf("prompt should not change state when in AwaitingMerge; got %v", next)
@@ -205,9 +205,9 @@ func TestCmdPrompt_NoArgs(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
-	d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow prompt", mr)))
+	d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy prompt", mr)))
 	if r.Object.PromptInjection != "" {
-		t.Errorf("bare /everflow prompt should not set injection; got %q", r.Object.PromptInjection)
+		t.Errorf("bare /syntropy prompt should not set injection; got %q", r.Object.PromptInjection)
 	}
 	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "needs text") {
 		t.Errorf("expected error comment; got %+v", fp.comments)
@@ -253,7 +253,7 @@ func TestCmdStatus_PostsSummary(t *testing.T) {
 	r.Object.Completed = []CompletedUnit{{UnitID: "a"}, {UnitID: "b"}}
 	r.Object.SubagentInvocations = 12
 
-	d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow status", mr)))
+	d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy status", mr)))
 	if len(fp.comments) != 1 {
 		t.Fatalf("expected one status comment; got %+v", fp.comments)
 	}
@@ -273,14 +273,14 @@ func TestCmdStop(t *testing.T) {
 	r := awaitingRun(t, "u", mr)
 	r.Object.BaseRepo = "/tmp/fake"
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow stop done with this", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy stop done with this", mr)))
 	if next != StatusCancelled {
 		t.Errorf("want Cancelled, got %v", next)
 	}
 	if len(fp.closes) != 1 || fp.closes[0].IID != 7 {
 		t.Errorf("in-flight MRs should be closed on stop; got %+v", fp.closes)
 	}
-	if !strings.Contains(r.Object.LastError, "/everflow stop") {
+	if !strings.Contains(r.Object.LastError, "/syntropy stop") {
 		t.Errorf("LastError should record cancellation: %q", r.Object.LastError)
 	}
 	// Verify the final comment got posted (before the close to maximise
@@ -304,9 +304,9 @@ func TestCmdHelp_BareEverflow(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
-	d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow", mr)))
+	d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy", mr)))
 	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "control verbs") {
-		t.Errorf("bare /everflow should post help; got %+v", fp.comments)
+		t.Errorf("bare /syntropy should post help; got %+v", fp.comments)
 	}
 }
 
@@ -320,7 +320,7 @@ func TestCmdFreeform_InvokesSubagent(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
-	next, err := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow refactor the auth module first", mr)))
+	next, err := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy refactor the auth module first", mr)))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestCmdFreeform_UntrackedMR_RepliesWithHelp(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 999} // not tracked by any in-flight unit
 	r := awaitingRun(t, "u", provider.MR{ProjectID: "x/y", IID: 1})
 
-	d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow foobar", mr)))
+	d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy foobar", mr)))
 	if len(fr.calls) != 0 {
 		t.Errorf("runner should not be invoked for an untracked MR; got %d calls", len(fr.calls))
 	}
@@ -358,8 +358,8 @@ func TestCmdFreeform_UntrackedMR_RepliesWithHelp(t *testing.T) {
 }
 
 func TestNonAuthor_ControlComment_FallsThrough(t *testing.T) {
-	// A reviewer typing /everflow pause should NOT pause the Run — they
-	// have no control privileges (ADR-0017). The /everflow detection only
+	// A reviewer typing /syntropy pause should NOT pause the Run — they
+	// have no control privileges (ADR-0017). The /syntropy detection only
 	// triggers for the Run author.
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
@@ -370,10 +370,10 @@ func TestNonAuthor_ControlComment_FallsThrough(t *testing.T) {
 	ev := provider.Event{
 		Kind: provider.EventNoteAdded, MR: mr,
 		Author: provider.User{Handle: "imposter"}, // NOT the author
-		Note:   provider.Note{Body: "/everflow pause"},
+		Note:   provider.Note{Body: "/syntropy pause"},
 	}
 	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
 	if next == StatusPaused {
-		t.Errorf("non-author /everflow should not pause; got %v", next)
+		t.Errorf("non-author /syntropy should not pause; got %v", next)
 	}
 }

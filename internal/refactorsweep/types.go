@@ -28,8 +28,8 @@ const (
 	StatusPaused                 AgentStatus = 5 // author intervention required
 	StatusCompleted              AgentStatus = 6 // refactor done; no units left
 	StatusFailed                 AgentStatus = 7 // unrecoverable; worktree kept for forensics
-	StatusCancelled              AgentStatus = 8 // author stopped the Run (/everflow stop or /abandon-confirm)
-	StatusAwaitingAbandonConfirm AgentStatus = 9 // /everflow abandon issued; awaiting second tap within 12h (ADR-0026)
+	StatusCancelled              AgentStatus = 8 // author stopped the Run (/syntropy stop or /abandon-confirm)
+	StatusAwaitingAbandonConfirm AgentStatus = 9 // /syntropy abandon issued; awaiting second tap within 12h (ADR-0026)
 )
 
 func (s AgentStatus) String() string {
@@ -81,7 +81,7 @@ type AgentState struct {
 	History          []Turn               `json:"history"`
 	LastError          string             `json:"last_error"`
 	PauseReason        string             `json:"pause_reason"`         // populated when StatusPaused
-	PromptInjection    string             `json:"prompt_injection"`     // /everflow prompt <text>; consumed by next runner call
+	PromptInjection    string             `json:"prompt_injection"`     // /syntropy prompt <text>; consumed by next runner call
 	AbandonRequestedAt time.Time          `json:"abandon_requested_at"` // populated when StatusAwaitingAbandonConfirm (ADR-0026)
 
 	// Counters for the "is learning working?" signal (DESIGN.md open question 1):

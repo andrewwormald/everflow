@@ -1824,7 +1824,7 @@ func TestResume_NoteAdded_DecisionAsk_PausesWithQuestion(t *testing.T) {
 	if !strings.Contains(r.Object.PauseReason, "deprecated method") {
 		t.Errorf("PauseReason should carry the question: %q", r.Object.PauseReason)
 	}
-	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/everflow resume") {
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/syntropy resume") {
 		t.Errorf("pause comment should mention how to resume: %+v", fp.comments)
 	}
 }
@@ -2082,7 +2082,7 @@ func TestResume_NoteAdded_SyncWithBaseFails_Pauses(t *testing.T) {
 	if len(fr.calls) != 0 {
 		t.Errorf("runner must NOT be invoked when the pre-run sync fails; got %d calls", len(fr.calls))
 	}
-	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/everflow retry") {
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/syntropy retry") {
 		t.Errorf("pause comment should tell the author how to retry; got %+v", fp.comments)
 	}
 }
@@ -2524,7 +2524,7 @@ func TestResume_AuthRestored_NoopOnNonAuthPause(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 	r.Status = StatusPaused
-	r.Object.PauseReason = "paused by /everflow pause from @andreww"
+	r.Object.PauseReason = "paused by /syntropy pause from @andreww"
 
 	ev := provider.Event{Kind: provider.EventProviderAuthRestored}
 	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))

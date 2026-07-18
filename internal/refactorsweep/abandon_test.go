@@ -15,7 +15,7 @@ func TestCmdAbandon_FirstTap_RequestsConfirmation(t *testing.T) {
 	mr := provider.MR{ProjectID: "x/y", IID: 1}
 	r := awaitingRun(t, "u", mr)
 
-	next, err := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow abandon I'm distracted", mr)))
+	next, err := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy abandon I'm distracted", mr)))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestCmdAbandon_SecondTap_Confirms(t *testing.T) {
 	r.Status = StatusAwaitingAbandonConfirm
 	r.Object.AbandonRequestedAt = time.Now().Add(-1 * time.Minute)
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow abandon", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy abandon", mr)))
 	if next != StatusCancelled {
 		t.Errorf("second tap should confirm → StatusCancelled, got %v", next)
 	}
@@ -86,7 +86,7 @@ func TestCmdAbandon_SecondTap_ReactsBeforeConfirming(t *testing.T) {
 		Kind:   provider.EventNoteAdded,
 		MR:     mr,
 		Author: provider.User{Handle: "andreww"},
-		Note:   provider.Note{ID: 9, Stream: "issue_comment", Body: "/everflow abandon"},
+		Note:   provider.Note{ID: 9, Stream: "issue_comment", Body: "/syntropy abandon"},
 	}
 	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
 	if err != nil {
@@ -133,8 +133,8 @@ func TestResume_NonAbandonEventInConfirmWindow_DropsBack(t *testing.T) {
 }
 
 func TestResume_NonAuthorAbandonInConfirmWindow_DoesNotConfirm(t *testing.T) {
-	// If a non-author posts /everflow abandon during the window, it must
-	// NOT confirm — only the original author can. Non-author /everflow
+	// If a non-author posts /syntropy abandon during the window, it must
+	// NOT confirm — only the original author can. Non-author /syntropy
 	// activity falls through to the dropAbandonConfirm path.
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
@@ -147,11 +147,11 @@ func TestResume_NonAuthorAbandonInConfirmWindow_DoesNotConfirm(t *testing.T) {
 	ev := provider.Event{
 		Kind: provider.EventNoteAdded, MR: mr,
 		Author: provider.User{Handle: "imposter"}, // not the author
-		Note:   provider.Note{Body: "/everflow abandon"},
+		Note:   provider.Note{Body: "/syntropy abandon"},
 	}
 	next, _ := d.resume(t.Context(), r, payloadOf(t, ev))
 	if next == StatusCancelled {
-		t.Errorf("non-author /everflow abandon should not confirm; got %v", next)
+		t.Errorf("non-author /syntropy abandon should not confirm; got %v", next)
 	}
 	if next != StatusAwaitingMerge {
 		t.Errorf("non-author event should drop back to AwaitingMerge, got %v", next)
@@ -159,9 +159,9 @@ func TestResume_NonAuthorAbandonInConfirmWindow_DoesNotConfirm(t *testing.T) {
 }
 
 func TestResume_OtherControlVerbInConfirmWindow_DropsBack(t *testing.T) {
-	// Even author /everflow pause during the window cancels the abandon
+	// Even author /syntropy pause during the window cancels the abandon
 	// (rather than honoring the pause). The semantics are restrictive on
-	// purpose: only /everflow abandon confirms. See ADR-0026.
+	// purpose: only /syntropy abandon confirms. See ADR-0026.
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
 	d.withRunner(t, &fakeRunner{})
@@ -170,9 +170,9 @@ func TestResume_OtherControlVerbInConfirmWindow_DropsBack(t *testing.T) {
 	r.Status = StatusAwaitingAbandonConfirm
 	r.Object.AbandonRequestedAt = time.Now().Add(-5 * time.Minute)
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow pause", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy pause", mr)))
 	if next != StatusAwaitingMerge {
-		t.Errorf("/everflow pause during confirm window should drop back to AwaitingMerge, got %v", next)
+		t.Errorf("/syntropy pause during confirm window should drop back to AwaitingMerge, got %v", next)
 	}
 	if r.Status == StatusPaused {
 		t.Errorf("Status should not flip to Paused")
@@ -204,7 +204,7 @@ func TestOnAbandonConfirmTimeout_DropsBackAndPostsAck(t *testing.T) {
 }
 
 func TestCmdAbandon_FromPaused_RequestsConfirmation(t *testing.T) {
-	// /everflow abandon from a Paused Run should also enter the
+	// /syntropy abandon from a Paused Run should also enter the
 	// confirmation window — the question "are you sure?" applies regardless
 	// of current state.
 	fp := &fakeProvider{}
@@ -215,7 +215,7 @@ func TestCmdAbandon_FromPaused_RequestsConfirmation(t *testing.T) {
 	r.Status = StatusPaused
 	r.Object.PauseReason = "review feedback unresolved"
 
-	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/everflow abandon", mr)))
+	next, _ := d.resume(t.Context(), r, payloadOf(t, controlEvent("/syntropy abandon", mr)))
 	if next != StatusAwaitingAbandonConfirm {
 		t.Errorf("abandon from Paused should transition to AwaitingAbandonConfirm, got %v", next)
 	}

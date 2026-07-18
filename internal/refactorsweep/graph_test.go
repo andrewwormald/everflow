@@ -24,7 +24,7 @@ import (
 // b.AddCallback(StatusPaused, d.resume, ...) doesn't include StatusPaused
 // in its allowed next-statuses, every event arriving at a paused Run
 // fails with "current status not defined in graph: current=Paused,
-// next=Paused" — silently dropping /everflow resume and locking the Run
+// next=Paused" — silently dropping /syntropy resume and locking the Run
 // out of recovery.
 //
 // resume() at workflow.go:703 explicitly returns (StatusPaused, nil) for
@@ -106,7 +106,7 @@ func TestStatusGraph_PausedAllowsSelfLoop(t *testing.T) {
 			"Paused → Paused was rejected by the workflow graph: %v\n\n"+
 				"This means b.AddCallback(StatusPaused, d.resume, ...) in workflow.go no longer "+
 				"includes StatusPaused as an allowed next-status. Add it back — see ADR-0034. "+
-				"Without it, events arriving at a paused Run cannot be processed and /everflow resume "+
+				"Without it, events arriving at a paused Run cannot be processed and /syntropy resume "+
 				"is silently dropped.",
 			cbErr,
 		)
@@ -123,7 +123,7 @@ func TestStatusGraph_PausedAllowsSelfLoop(t *testing.T) {
 // TestStatusGraph_AwaitingAbandonConfirmAllowsSelfLoop is the sibling
 // guard: AwaitingAbandonConfirm must permit a self-loop for the same
 // reason — events arriving during the 12h confirm window that aren't
-// the second /everflow abandon shouldn't crash dispatch.
+// the second /syntropy abandon shouldn't crash dispatch.
 func TestStatusGraph_AwaitingAbandonConfirmAllowsSelfLoop(t *testing.T) {
 	d := integrationDeps(t)
 	wf := Build("refactor-sweep-graph-test2", d)

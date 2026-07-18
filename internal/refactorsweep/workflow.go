@@ -78,8 +78,8 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		StatusDiscovering,
 		StatusPaused,
 		StatusFailed,
-		StatusCancelled,              // /everflow stop
-		StatusAwaitingAbandonConfirm, // /everflow abandon (first tap)
+		StatusCancelled,              // /syntropy stop
+		StatusAwaitingAbandonConfirm, // /syntropy abandon (first tap)
 	)
 
 	b.AddCallback(StatusPaused, d.resume,
@@ -87,11 +87,11 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		StatusAwaitingMerge,
 		StatusDiscovering,
 		StatusFailed,
-		StatusCancelled,              // /everflow stop from paused
-		StatusAwaitingAbandonConfirm, // /everflow abandon (first tap) from paused
+		StatusCancelled,              // /syntropy stop from paused
+		StatusAwaitingAbandonConfirm, // /syntropy abandon (first tap) from paused
 	)
 
-	// AwaitingAbandonConfirm: only a second /everflow abandon confirms;
+	// AwaitingAbandonConfirm: only a second /syntropy abandon confirms;
 	// anything else drops back to AwaitingMerge. Same resume() handler;
 	// it dispatches based on r.Status.
 	b.AddCallback(StatusAwaitingAbandonConfirm, d.resume,
@@ -339,7 +339,7 @@ func (d *Deps) discoverSweep(ctx context.Context, r *workflow.Run[AgentState, Ag
 
 // discoverSpec asks the runner to plan the next increment. The runner
 // receives the spec body, the history of merged/blacklisted increments,
-// and any pending /everflow prompt injection. It returns:
+// and any pending /syntropy prompt injection. It returns:
 //
 //   DecisionContinue → there's more work; we generate a unitID
 //                      (increment-N), append to Plan, set CurrentUnit
@@ -765,7 +765,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		// Append the actual diff shortstat as a cheap hallucination guard:
 		// the reviewer sees both the runner's summary and the real extent of
 		// changes pushed. See spec item 4 (Approach A).
-		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/everflow status` for progress, or `/everflow skip` to abandon.",
+		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/syntropy status` for progress, or `/syntropy skip` to abandon.",
 			shortRunID(r.RunID), unitID)
 		if d.Git != nil {
 			if stat, sErr := d.Git.DiffShortstat(ctx, worktree, baseBranch); sErr == nil && stat != "" {
@@ -864,7 +864,7 @@ func isOwnEcho(r *workflow.Run[AgentState, AgentStatus], body string) bool {
 //
 // Flow:
 //  1. Decode the event; bump EventsSeen; tag IsAuthor.
-//  2. Detect /everflow control commands and route them (TODO: real
+//  2. Detect /syntropy control commands and route them (TODO: real
 //     parsing in the next commit). When paused, only control commands
 //     have any effect; everything else stays paused.
 //  3. Look up which in-flight unit this event is for. Events for MRs we
@@ -941,7 +941,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	}
 
 	// AwaitingAbandonConfirm has the most restrictive semantics: only a
-	// second /everflow abandon from the author confirms; ANY other event
+	// second /syntropy abandon from the author confirms; ANY other event
 	// drops the confirmation window. Handle before the generic control-
 	// command path so cmdAbandon sees r.Status == AwaitingAbandonConfirm.
 	if r.Status == StatusAwaitingAbandonConfirm {
@@ -958,7 +958,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	// Control commands from the author always take priority. Real
 	// dispatcher: parseControlVerb + handleControlCommand.
 	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded &&
-		strings.HasPrefix(strings.TrimSpace(ev.Note.Body), "/everflow") {
+		strings.HasPrefix(strings.TrimSpace(ev.Note.Body), "/syntropy") {
 		d.reactToNote(ctx, r, ev)
 		return d.handleControlCommand(ctx, r, ev)
 	}
@@ -1011,7 +1011,7 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 		return StatusAwaitingMerge, nil
 	case filter.OutcomeControlCommand:
 		// Shouldn't reach here — control commands are detected above. If
-		// the filter promotes a non-/everflow comment to a control command,
+		// the filter promotes a non-/syntropy comment to a control command,
 		// drop it for safety until the next commit handles the parser path.
 		return StatusAwaitingMerge, nil
 	case filter.OutcomePause:
@@ -1075,7 +1075,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		mr := r.Object.InFlight[unitID]
 		r.Object.PauseReason = fmt.Sprintf("git SyncWithBase failed before handling %s: %v", ev.Kind, sErr)
 		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-			fmt.Sprintf("⚠️ Paused — couldn't sync this branch with `%s` before handling the event: `%v`. Reply `/everflow retry` after fixing.", baseBranch, sErr))
+			fmt.Sprintf("⚠️ Paused — couldn't sync this branch with `%s` before handling the event: `%v`. Reply `/syntropy retry` after fixing.", baseBranch, sErr))
 		return StatusPaused, nil
 	}
 
@@ -1149,7 +1149,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		// recover with.
 		r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
 		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-			fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/everflow retry` to try again.", phase, runErr))
+			fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/syntropy retry` to try again.", phase, runErr))
 		return StatusPaused, nil
 	}
 
@@ -1167,7 +1167,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if gErr != nil {
 			r.Object.PauseReason = fmt.Sprintf("git HasWorkBeyondBase error after %s: %v", phase, gErr)
 			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-				fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/everflow retry`.", phase, gErr))
+				fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, gErr))
 			return StatusPaused, nil
 		}
 		if !hasWork {
@@ -1201,7 +1201,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if sErr != nil {
 				r.Object.PauseReason = fmt.Sprintf("git DiffShortstat error after %s: %v", phase, sErr)
 				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-					fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/everflow retry`.", phase, sErr))
+					fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, sErr))
 				return StatusPaused, nil
 			}
 			if stat == "" {
@@ -1221,7 +1221,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
 			r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
 			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/everflow retry` after fixing.", phase, gErr))
+				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/syntropy retry` after fixing.", phase, gErr))
 			return StatusPaused, nil
 		}
 
@@ -1255,12 +1255,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	case DecisionAsk:
 		r.Object.PauseReason = resp.Question
 		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-			fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/everflow resume` after answering, or `/everflow skip` to abandon.", resp.Question))
+			fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
 		return StatusPaused, nil
 	case DecisionFail:
 		r.Object.PauseReason = resp.Summary
 		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/everflow retry`, `/everflow skip`, or push a fix yourself.", phase, resp.Summary))
+			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
 		return StatusPaused, nil
 	}
 	return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unhandled decision %v", resp.Decision)
@@ -1355,7 +1355,7 @@ func (d *Deps) dropAbandonConfirm(ctx context.Context, r *workflow.Run[AgentStat
 	return StatusAwaitingMerge
 }
 
-// onAbandonConfirmTimeout fires 12h after the /everflow abandon was
+// onAbandonConfirmTimeout fires 12h after the /syntropy abandon was
 // requested. Posts a comment so the author sees the window closed, then
 // drops back to AwaitingMerge. Comment is best-effort against whatever
 // in-flight MR we can find (there's at most one in v1 with concurrency=1).

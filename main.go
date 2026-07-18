@@ -713,7 +713,7 @@ type controlRequest struct {
 	Args  string `json:"args,omitempty"`
 }
 
-// controlHandler injects a synthetic /everflow control command into a Run by
+// controlHandler injects a synthetic /syntropy control command into a Run by
 // constructing a fake author NoteAdded event and calling wf.Callback. The
 // event's Author is set to the Run's recorded author so the IsAuthor check in
 // resume() passes. Only safe on the localhost-only trigger listener (ADR-0028).
@@ -754,7 +754,7 @@ func controlHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 			break
 		}
 
-		noteBody := "/everflow " + req.Verb
+		noteBody := "/syntropy " + req.Verb
 		if req.Args != "" {
 			noteBody += " " + req.Args
 		}
