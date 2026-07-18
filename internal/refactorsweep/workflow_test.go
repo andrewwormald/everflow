@@ -763,6 +763,70 @@ func TestWork_HappyPath(t *testing.T) {
 	}
 }
 
+// TestWork_MRTitle_UsesRunnerSuggestion covers ADR-0054: when the runner
+// reports a Title (phrased per BaseRepo's .everflow.yml title_convention),
+// CreateMR must use it verbatim instead of the "Goal: unitID" default.
+func TestWork_MRTitle_UsesRunnerSuggestion(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "Migrated logrus calls to slog",
+		Title:    "feat(payments): migrate logging to slog",
+	}})
+	r := newRun(t, &AgentState{
+		ProviderName:    "fake",
+		ProjectID:       "acme/example",
+		RunnerName:      "fake-runner",
+		Goal:            "Migrate to slog",
+		CurrentUnit:     "svc-payments",
+		BaseBranch:      "main",
+		InFlight:        map[string]provider.MR{},
+		TitleConvention: "Conventional Commits",
+	})
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fp.createMRCalls) != 1 {
+		t.Fatalf("want 1 CreateMR call, got %d", len(fp.createMRCalls))
+	}
+	if got := fp.createMRCalls[0].Title; got != "feat(payments): migrate logging to slog" {
+		t.Errorf("MR title: want runner's suggestion, got %q", got)
+	}
+}
+
+// TestWork_MRTitle_FallsBackWhenRunnerOmitsOne covers the no-convention (or
+// runner-didn't-comply) case: CreateMR must still get the pre-ADR-0054
+// default title rather than an empty string.
+func TestWork_MRTitle_FallsBackWhenRunnerOmitsOne(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone,
+		Summary:  "Migrated logrus calls to slog",
+	}})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake",
+		ProjectID:    "acme/example",
+		RunnerName:   "fake-runner",
+		Goal:         "Migrate to slog",
+		CurrentUnit:  "svc-payments",
+		BaseBranch:   "main",
+		InFlight:     map[string]provider.MR{},
+	})
+
+	if _, err := d.work(t.Context(), r); err != nil {
+		t.Fatalf("work: %v", err)
+	}
+	if len(fp.createMRCalls) != 1 {
+		t.Fatalf("want 1 CreateMR call, got %d", len(fp.createMRCalls))
+	}
+	if got, want := fp.createMRCalls[0].Title, "Migrate to slog: svc-payments"; got != want {
+		t.Errorf("MR title: want default %q, got %q", want, got)
+	}
+}
+
 // TestWork_ThreadsRunnerModelIntoRequest is the regression guard for
 // ADR-0041: a spec's `model:` override (AgentState.RunnerModel) must reach
 // the runner via runner.Request.Model on every work() invocation, so

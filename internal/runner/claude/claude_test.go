@@ -16,7 +16,7 @@ func TestParseDecision_Done(t *testing.T) {
 I've updated the file.
 
 <everflow-decision>done</everflow-decision>`
-	d, summary, q, err := ParseDecision(out)
+	d, summary, q, title, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -29,13 +29,35 @@ I've updated the file.
 	if q != "" {
 		t.Errorf("Question should be empty for Done; got %q", q)
 	}
+	if title != "" {
+		t.Errorf("Title should be empty when the model didn't include one; got %q", title)
+	}
+}
+
+func TestParseDecision_DoneWithTitle(t *testing.T) {
+	out := `I've migrated the logrus calls to slog.
+
+<everflow-decision>done: feat(payments): migrate logging to slog</everflow-decision>`
+	d, summary, _, title, err := ParseDecision(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != runner.DecisionDone {
+		t.Errorf("Decision: want Done, got %v", d)
+	}
+	if !strings.Contains(summary, "migrated the logrus calls") {
+		t.Errorf("Summary should carry the body: %q", summary)
+	}
+	if title != "feat(payments): migrate logging to slog" {
+		t.Errorf("Title not extracted: %q", title)
+	}
 }
 
 func TestParseDecision_Continue(t *testing.T) {
 	out := `Planning next: migrate services/payments to slog.
 
 <everflow-decision>continue</everflow-decision>`
-	d, summary, _, err := ParseDecision(out)
+	d, summary, _, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -51,7 +73,7 @@ func TestParseDecision_AskWithQuestion(t *testing.T) {
 	out := `I'm not sure about the deprecated middleware.
 
 <everflow-decision>ask: Should I migrate the deprecated middleware too, or skip it?</everflow-decision>`
-	d, _, q, err := ParseDecision(out)
+	d, _, q, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,7 +89,7 @@ func TestParseDecision_AskWithoutQuestion(t *testing.T) {
 	// Defensive: if the model forgets the question, we default to
 	// "(no question text)" rather than panicking.
 	out := `<everflow-decision>ask:</everflow-decision>`
-	d, _, q, err := ParseDecision(out)
+	d, _, q, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -83,7 +105,7 @@ func TestParseDecision_FailWithReason(t *testing.T) {
 	out := `Tried three times.
 
 <everflow-decision>fail: Could not resolve the API contract drift</everflow-decision>`
-	d, summary, _, err := ParseDecision(out)
+	d, summary, _, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -99,7 +121,7 @@ func TestParseDecision_NoChange(t *testing.T) {
 	out := `Looked at the codebase; this change is already applied.
 
 <everflow-decision>nochange</everflow-decision>`
-	d, _, _, err := ParseDecision(out)
+	d, _, _, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,7 +132,7 @@ func TestParseDecision_NoChange(t *testing.T) {
 
 func TestParseDecision_NoMarker(t *testing.T) {
 	out := `I wrote some text but forgot the marker.`
-	_, _, _, err := ParseDecision(out)
+	_, _, _, _, err := ParseDecision(out)
 	if !errors.Is(err, ErrNoDecisionMarker) {
 		t.Fatalf("want ErrNoDecisionMarker, got %v", err)
 	}
@@ -118,7 +140,7 @@ func TestParseDecision_NoMarker(t *testing.T) {
 
 func TestParseDecision_UnknownVerb(t *testing.T) {
 	out := `<everflow-decision>bonkers</everflow-decision>`
-	_, _, _, err := ParseDecision(out)
+	_, _, _, _, err := ParseDecision(out)
 	if err == nil {
 		t.Fatalf("want error for unknown verb")
 	}
@@ -134,7 +156,7 @@ func TestParseDecision_LastMarkerWins(t *testing.T) {
 but actually I'm done now.
 
 <everflow-decision>done</everflow-decision>`
-	d, _, _, err := ParseDecision(out)
+	d, _, _, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -145,7 +167,7 @@ but actually I'm done now.
 
 func TestParseDecision_CaseInsensitiveVerb(t *testing.T) {
 	out := `<everflow-decision>DONE</everflow-decision>`
-	d, _, _, err := ParseDecision(out)
+	d, _, _, _, err := ParseDecision(out)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -364,7 +386,7 @@ func TestParseDecision_FullRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("parseJSONOutput: want ok=true")
 	}
-	d, summary, _, err := ParseDecision(resultText)
+	d, summary, _, _, err := ParseDecision(resultText)
 	if err != nil {
 		t.Fatalf("ParseDecision: %v", err)
 	}
