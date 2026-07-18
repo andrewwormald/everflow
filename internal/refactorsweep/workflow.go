@@ -233,8 +233,9 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 	// Read BaseRepo's .everflow.yml once, gated on StartedAt so a retry or
 	// daemon restart replaying this step doesn't re-read it: an author
 	// editing the file mid-Run shouldn't retroactively change the
-	// convention already recorded for in-flight work (ADR-0052). Threading
-	// TitleConvention into MR-title generation is a follow-on increment.
+	// convention already recorded for in-flight work (ADR-0052). Threaded
+	// into MR-title generation via the runner's Title suggestion — see
+	// work() below and ADR-0054.
 	if r.Object.StartedAt.IsZero() && r.Object.BaseRepo != "" {
 		cfg, err := setup.ReadRepoConfig(r.Object.BaseRepo)
 		if err != nil {
@@ -738,11 +739,18 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 			return StatusFailed, nil
 		}
 
-		// 5. Open the MR.
+		// 5. Open the MR. Title: prefer the runner's suggestion, phrased per
+		// BaseRepo's .everflow.yml title_convention (ADR-0052/ADR-0054); fall
+		// back to the default shape when no convention is set or the runner
+		// didn't include one.
+		title := resp.Title
+		if title == "" {
+			title = fmt.Sprintf("%s: %s", r.Object.Goal, unitID)
+		}
 		mr, err := p.CreateMR(ctx, r.Object.ProjectID, provider.MRDraft{
 			Branch:       branch,
 			TargetBranch: baseBranch,
-			Title:        fmt.Sprintf("%s: %s", r.Object.Goal, unitID),
+			Title:        title,
 			Description:  resp.Summary,
 			Labels:       []string{"everflow", "everflow:" + shortRunID(r.RunID)},
 			Draft:        r.Object.DraftMRs,

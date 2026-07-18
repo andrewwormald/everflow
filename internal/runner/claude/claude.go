@@ -143,7 +143,7 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 		// Even on non-zero exit we try to parse a decision — the model
 		// might have flagged failure via the marker before exiting. Fall
 		// back to wrapping the OS error.
-		decision, summary, question, parseErr := ParseDecision(resultText)
+		decision, summary, question, title, parseErr := ParseDecision(resultText)
 		if parseErr != nil {
 			return runner.Response{
 					Decision:  runner.DecisionFail,
@@ -157,12 +157,13 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 			Decision:  decision,
 			Summary:   summary,
 			Question:  question,
+			Title:     title,
 			Tokens:    tokens,
 			StartedAt: start, EndedAt: end,
 		}, fmt.Errorf("claude exec: %w (parsed decision: %s)", runErr, decision)
 	}
 
-	decision, summary, question, err := ParseDecision(resultText)
+	decision, summary, question, title, err := ParseDecision(resultText)
 	if err != nil {
 		return runner.Response{Tokens: tokens, StartedAt: start, EndedAt: end},
 			fmt.Errorf("parse claude output: %w; raw output:\n%s", err, rawOut)
@@ -171,6 +172,7 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 		Decision:  decision,
 		Summary:   summary,
 		Question:  question,
+		Title:     title,
 		Tokens:    tokens,
 		StartedAt: start, EndedAt: end,
 	}, nil
@@ -239,7 +241,7 @@ func BuildPrompt(req runner.Request) string {
 	} else {
 		b.WriteString(unitScopeDiscipline)
 		if req.TitleConvention != "" {
-			fmt.Fprintf(&b, "## MR title convention\n\n%s\n\n", req.TitleConvention)
+			fmt.Fprintf(&b, "## MR title convention\n\n%s\n\nWhen you finish with Decision=done, phrase the MR title per this convention and put it after \"done: \" in the decision marker, e.g. `<everflow-decision>done: <title></everflow-decision>`.\n\n", req.TitleConvention)
 		}
 	}
 	b.WriteString(decisionProtocol)
@@ -312,15 +314,17 @@ var decisionRE = regexp.MustCompile(`(?s)<everflow-decision>\s*(.*?)\s*</everflo
 // and pause / fail accordingly).
 var ErrNoDecisionMarker = errors.New("claude: no <everflow-decision> marker in response")
 
-// ParseDecision extracts the Decision + Summary + Question from a claude
-// response. The Summary is everything before the last marker (trimmed);
-// the Question is set only when the decision is "ask".
+// ParseDecision extracts the Decision + Summary + Question + Title from a
+// claude response. The Summary is everything before the last marker
+// (trimmed); the Question is set only when the decision is "ask"; the Title
+// is set only when the decision is "done" and the model included text after
+// "done:" (per the MR title convention instruction — see BuildPrompt).
 //
 // Exported for tests + for future debugging utilities.
-func ParseDecision(out string) (decision runner.Decision, summary, question string, err error) {
+func ParseDecision(out string) (decision runner.Decision, summary, question, title string, err error) {
 	matches := decisionRE.FindAllStringSubmatchIndex(out, -1)
 	if len(matches) == 0 {
-		return runner.DecisionUnknown, strings.TrimSpace(out), "", ErrNoDecisionMarker
+		return runner.DecisionUnknown, strings.TrimSpace(out), "", "", ErrNoDecisionMarker
 	}
 	last := matches[len(matches)-1]
 	inner := strings.TrimSpace(out[last[2]:last[3]])
@@ -330,16 +334,16 @@ func ParseDecision(out string) (decision runner.Decision, summary, question stri
 	verb, rest := splitVerb(inner)
 	switch verb {
 	case "continue":
-		return runner.DecisionContinue, prefix, "", nil
+		return runner.DecisionContinue, prefix, "", "", nil
 	case "done":
-		return runner.DecisionDone, prefix, "", nil
+		return runner.DecisionDone, prefix, "", rest, nil
 	case "ask":
 		summary = prefix
 		question = rest
 		if question == "" {
 			question = "(no question text)"
 		}
-		return runner.DecisionAsk, summary, question, nil
+		return runner.DecisionAsk, summary, question, "", nil
 	case "fail":
 		summary = prefix
 		if rest != "" {
@@ -347,11 +351,11 @@ func ParseDecision(out string) (decision runner.Decision, summary, question stri
 			// MR comment + audit even if Question wasn't set.
 			summary = strings.TrimSpace(summary + "\n\nReason: " + rest)
 		}
-		return runner.DecisionFail, summary, "", nil
+		return runner.DecisionFail, summary, "", "", nil
 	case "nochange":
-		return runner.DecisionNoChange, prefix, "", nil
+		return runner.DecisionNoChange, prefix, "", "", nil
 	default:
-		return runner.DecisionUnknown, prefix, "",
+		return runner.DecisionUnknown, prefix, "", "",
 			fmt.Errorf("claude: unrecognised decision verb %q", verb)
 	}
 }

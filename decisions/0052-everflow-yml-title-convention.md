@@ -101,6 +101,12 @@ from inside the repo it's configuring, the same assumption a spec's
   remains a separate follow-on increment, same split ADR-0051 made for the
   runner/model config.
 
+  **Amendment (2026-07-18)**: closed by [ADR-0054](0054-title-convention-into-mr-generation.md).
+  `setup()` now reads `.everflow.yml` once per Run and threads
+  `TitleConvention` into the runner prompt; `work()` uses the runner's
+  resulting title suggestion for `CreateMR`, falling back to the prior
+  default when unset.
+
 ## Tests
 
 - `internal/setup/titleconvention_test.go` — `ResolveTitleConvention`'s

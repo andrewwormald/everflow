@@ -74,6 +74,13 @@ type Response struct {
 	Tokens    int
 	StartedAt time.Time
 	EndedAt   time.Time
+
+	// Title is the runner's suggested MR title for this unit, phrased per
+	// Request.TitleConvention (ADR-0052/ADR-0054). Populated only when
+	// Decision == Done and a TitleConvention was set on the Request; empty
+	// otherwise, in which case the caller falls back to its own default
+	// title.
+	Title string
 }
 
 // Learnings are the subagent's optional output to feed the cheap-filter loop.
