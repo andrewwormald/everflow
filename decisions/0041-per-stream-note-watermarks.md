@@ -114,3 +114,33 @@ path poll and webhook sources share.
 - Future providers with multiple independent comment-id sequences get
   correct behaviour for free by defining their own stream keys — no changes
   needed to `poller.go` or `resume()`.
+
+## Addendum (2026-07-17) — Legacy is not a safe floor once any stream is tracked
+
+The original decision states: "the legacy scalar is the max `id` ever seen
+across all streams, so it's a safe (if conservative) floor for every stream
+until that stream gets its own entry." This was wrong, and it reintroduced
+the exact bug this ADR fixes (PR #30).
+
+`resume()` (`internal/refactorsweep/workflow.go`) advances `Legacy`
+(`LastSeenNoteIDs`) unconditionally on every `EventNoteAdded`, regardless of
+stream — that's true both before and after an MR gets its first
+`ByStream` entry. So once one stream has posted even a single comment after
+migration, `Legacy` keeps climbing past ids on *other* streams that have
+never posted anything yet. The next time an untracked stream's first
+comment arrives, `ListNotesSince`'s `threshold` fallback compared that
+comment's id against the now-polluted `Legacy` — not against a true
+"nothing on this stream has ever been seen" floor — and silently, permanently
+dropped it if its id happened to be lower. This is the same failure mode the
+ADR set out to fix, just deferred to the first post-migration comment on a
+second stream instead of happening from day one.
+
+The fix (`internal/provider/github/github.go`'s `threshold` closure): `Legacy`
+is only a valid floor while `since.ByStream` is entirely empty — the true
+pre-fix case where this MR has never had any per-stream entry recorded at
+all, so `Legacy` really is the max id ever seen for the MR and no stream can
+have an undelivered comment below it. The moment `ByStream` has even one
+entry, a stream still missing from it floors at `0` instead of `Legacy`:
+worst case that stream's full history is refetched and re-filtered once
+(bounded by the 100-per-endpoint pagination cap), not silently dropped
+forever.

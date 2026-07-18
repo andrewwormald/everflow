@@ -425,6 +425,55 @@ func TestListNotesSince_CrossStreamWatermark(t *testing.T) {
 	}
 }
 
+// TestListNotesSince_PR30_PollutedLegacyDoesNotFloorUntrackedStream is the
+// regression test for PR #30: once ANY stream has its own ByStream entry for
+// an MR, Legacy is no longer a safe floor for a still-untracked stream —
+// resume() (workflow.go) advances Legacy on every stream's notes, so by the
+// time a second stream posts its first comment, Legacy has already been
+// pushed past that comment's id by the first stream. Falling back to Legacy
+// here reintroduces the exact silent, permanent drop ADR-0041 was meant to
+// fix, just one migration step later.
+func TestListNotesSince_PR30_PollutedLegacyDoesNotFloorUntrackedStream(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/owner/repo/issues/42/comments":
+			_, _ = w.Write([]byte(`[]`))
+		case "/repos/owner/repo/pulls/42/comments":
+			// review_comment stream's first-ever comment. Its id is lower
+			// than Legacy, which was pushed up by the issue_comment stream.
+			_, _ = w.Write([]byte(`[{"id": 100, "node_id": "PRRC_1", "body": "first inline comment", "user": {"id":2, "login":"bob", "type":"User"}}]`))
+		case "/repos/owner/repo/pulls/42/reviews":
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+
+	// issue_comment already has its own entry (this MR has been migrated to
+	// per-stream tracking); Legacy was advanced past 100 by that stream's
+	// notes. review_comment has never posted before, so it has no ByStream
+	// entry of its own yet.
+	since := provider.NoteCursor{
+		ByStream: map[string]int64{streamIssueComment: 500},
+		Legacy:   500,
+	}
+
+	got, err := p.ListNotesSince(t.Context(), "owner/repo", 42, since)
+	if err != nil {
+		t.Fatalf("ListNotesSince: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("want 1 note (review comment 100, never seen on its own stream), got %d: %+v", len(got), got)
+	}
+	if got[0].ID != 100 {
+		t.Errorf("want review comment id 100 delivered despite id < polluted Legacy, got id %d", got[0].ID)
+	}
+}
+
 // TestListNotesSince_LegacyFloorAppliesPerStream covers the additive
 // migration path: a Run created before ADR-0041 has only since.Legacy set
 // (no ByStream entries at all). Every stream must fall back to that single
