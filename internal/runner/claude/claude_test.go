@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrewwormald/everflow/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/runner"
 )
 
 func TestParseDecision_Done(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/provider"
-	"github.com/andrewwormald/everflow/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/runner"
 )
 
 // specRunInDiscover returns a Run already set up in spec mode, in

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // header is a small helper to build an http.Header with one entry.

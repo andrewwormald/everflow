@@ -7,7 +7,7 @@
 package filter
 
 import (
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // Outcome is what the filter tells the workflow to do with the event.

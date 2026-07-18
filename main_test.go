@@ -18,11 +18,11 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/config"
-	"github.com/andrewwormald/everflow/internal/eventstream"
-	"github.com/andrewwormald/everflow/internal/refactorsweep"
-	"github.com/andrewwormald/everflow/internal/runner"
-	"github.com/andrewwormald/everflow/internal/store"
+	"github.com/andrewwormald/syntropy/internal/config"
+	"github.com/andrewwormald/syntropy/internal/eventstream"
+	"github.com/andrewwormald/syntropy/internal/refactorsweep"
+	"github.com/andrewwormald/syntropy/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/store"
 )
 
 // captureStdout redirects os.Stdout to a pipe and returns a function that

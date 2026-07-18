@@ -1,4 +1,4 @@
-module github.com/andrewwormald/everflow
+module github.com/andrewwormald/syntropy
 
 go 1.26.0
 

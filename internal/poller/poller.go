@@ -17,7 +17,7 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // authBackoffEntry tracks consecutive auth failures for one Run. The poller

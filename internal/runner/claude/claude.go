@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrewwormald/everflow/internal/runner"
+	"github.com/andrewwormald/syntropy/internal/runner"
 )
 
 // claudeJSONResult is the envelope `claude -p --output-format json` writes to

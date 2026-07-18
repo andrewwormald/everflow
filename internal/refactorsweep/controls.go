@@ -8,7 +8,7 @@ import (
 
 	"github.com/luno/workflow"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // Control-verb dispatcher for /everflow comments from the Run's author.

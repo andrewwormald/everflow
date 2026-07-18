@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 // VerifySignature checks the X-Hub-Signature-256 header against an

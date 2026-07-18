@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/andrewwormald/everflow/internal/provider"
+	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
 func header(name, value string) http.Header {
