@@ -123,7 +123,7 @@ func TestVersionString(t *testing.T) {
 	buildTime = "2026-07-03T12:00:00Z"
 
 	got := versionString()
-	want := "everflow 1.2.3 (commit: abc1234, built: 2026-07-03T12:00:00Z)"
+	want := "syntropy 1.2.3 (commit: abc1234, built: 2026-07-03T12:00:00Z)"
 	if got != want {
 		t.Errorf("versionString() = %q, want %q", got, want)
 	}
@@ -268,7 +268,7 @@ func TestDaemonBannerLine(t *testing.T) {
 	banner := daemonBannerLine()
 
 	wants := []string{
-		"everflow daemon starting",
+		"syntropy daemon starting",
 		"version=2.3.4",
 		"commit=deadbeef",
 		fmt.Sprintf("pid=%d", os.Getpid()),
@@ -606,7 +606,7 @@ func startTriggerCapture(t *testing.T) (url string, got *triggerRequest) {
 
 // TestCmdStart_FallsBackToPersistedDefaultModel asserts that when neither
 // --model nor the spec's `model:` set a runner model, cmdStart falls back
-// to the default persisted by `everflow setup` (ADR-0051).
+// to the default persisted by `syntropy setup` (ADR-0051).
 func TestCmdStart_FallsBackToPersistedDefaultModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
