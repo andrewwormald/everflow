@@ -11,32 +11,32 @@ import (
 	"github.com/andrewwormald/syntropy/internal/provider"
 )
 
-// Control-verb dispatcher for /everflow comments from the Run's author.
+// Control-verb dispatcher for /syntropy comments from the Run's author.
 // See ADR-0017 for the privilege model and the verb set.
 //
-// Detected in resume() via the "/everflow" prefix on author-comments; the
+// Detected in resume() via the "/syntropy" prefix on author-comments; the
 // filter never runs on these. handleControlCommand parses verb + args and
 // fans out to per-verb handlers. Each handler is responsible for posting
 // an acknowledgement comment so the MR thread shows what the workflow did.
 
 // parseControlVerb extracts (verb, args) from a comment body. The verb is
-// the first whitespace-separated token after "/everflow", lowercased. args
+// the first whitespace-separated token after "/syntropy", lowercased. args
 // is everything after the verb, with surrounding whitespace trimmed.
 // Multi-line args are preserved.
 //
 // Examples:
 //
-//	"/everflow pause"               → ("pause", "")
-//	"/everflow skip ran out of time" → ("skip", "ran out of time")
-//	"/everflow prompt\nuse log/slog\nnot logrus" → ("prompt", "use log/slog\nnot logrus")
-//	"/everflow"                     → ("", "")   ← bare invocation; help
+//	"/syntropy pause"               → ("pause", "")
+//	"/syntropy skip ran out of time" → ("skip", "ran out of time")
+//	"/syntropy prompt\nuse log/slog\nnot logrus" → ("prompt", "use log/slog\nnot logrus")
+//	"/syntropy"                     → ("", "")   ← bare invocation; help
 //	"not a command"                 → ("", "")   ← caller is expected to gate
 func parseControlVerb(body string) (verb, args string) {
 	s := strings.TrimSpace(body)
-	if !strings.HasPrefix(s, "/everflow") {
+	if !strings.HasPrefix(s, "/syntropy") {
 		return "", ""
 	}
-	s = strings.TrimSpace(strings.TrimPrefix(s, "/everflow"))
+	s = strings.TrimSpace(strings.TrimPrefix(s, "/syntropy"))
 	if s == "" {
 		return "", ""
 	}
@@ -73,21 +73,21 @@ func (d *Deps) handleControlCommand(ctx context.Context, r *workflow.Run[AgentSt
 	}
 }
 
-// cmdAbandon is the two-tap "are you sure?" stop. First /everflow abandon
+// cmdAbandon is the two-tap "are you sure?" stop. First /syntropy abandon
 // transitions to StatusAwaitingAbandonConfirm with a confirmation prompt;
-// a second /everflow abandon within 12h confirms and transitions to
+// a second /syntropy abandon within 12h confirms and transitions to
 // StatusCancelled (closing in-flight MRs along the way). Anything else
 // during the 12h window cancels the abandon — see resume()'s
 // AwaitingAbandonConfirm branch and dropAbandonConfirm.
 //
-// Difference vs /everflow stop: /stop is one-tap, no confirmation. Use
+// Difference vs /syntropy stop: /stop is one-tap, no confirmation. Use
 // /stop when you're sure; /abandon when you want a moment to reconsider.
 // See ADR-0026.
 func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 
 	if r.Status == StatusAwaitingAbandonConfirm {
-		// Confirmation tap. Mirror /everflow stop's terminal flow.
+		// Confirmation tap. Mirror /syntropy stop's terminal flow.
 		body := fmt.Sprintf("🛑 Confirmed abandonment by @%s. Closing in-flight MRs; run cancelled.", ev.Author.Handle)
 		if args != "" {
 			body = fmt.Sprintf("%s\n\nReason: %s", body, args)
@@ -103,7 +103,7 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 
 	// First tap — request confirmation.
 	r.Object.AbandonRequestedAt = time.Now()
-	body := fmt.Sprintf("⚠️ @%s requested to abandon this Run. **Are you sure?**\n\nReply `/everflow abandon` again within 12h to confirm; any other activity cancels.",
+	body := fmt.Sprintf("⚠️ @%s requested to abandon this Run. **Are you sure?**\n\nReply `/syntropy abandon` again within 12h to confirm; any other activity cancels.",
 		ev.Author.Handle)
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
@@ -116,13 +116,13 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 // produce no transitions except via control verbs.
 func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	reason := fmt.Sprintf("paused by /everflow pause from @%s", ev.Author.Handle)
+	reason := fmt.Sprintf("paused by /syntropy pause from @%s", ev.Author.Handle)
 	if args != "" {
 		reason = fmt.Sprintf("%s: %s", reason, args)
 	}
 	r.Object.PauseReason = reason
 	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
-		fmt.Sprintf("🛑 Paused per @%s. Reply `/everflow resume` to continue.", ev.Author.Handle))
+		fmt.Sprintf("🛑 Paused per @%s. Reply `/syntropy resume` to continue.", ev.Author.Handle))
 	return StatusPaused, nil
 }
 
@@ -143,11 +143,11 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	unitID := unitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
 		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
-			"`/everflow skip`: this MR isn't tracked by any active everflow Run.")
+			"`/syntropy skip`: this MR isn't tracked by any active syntropy Run.")
 		return r.Status, nil
 	}
 
-	reason := fmt.Sprintf("skipped by /everflow skip from @%s", ev.Author.Handle)
+	reason := fmt.Sprintf("skipped by /syntropy skip from @%s", ev.Author.Handle)
 	if args != "" {
 		reason = fmt.Sprintf("%s: %s", reason, args)
 	}
@@ -178,7 +178,7 @@ func (d *Deps) cmdPrompt(ctx context.Context, r *workflow.Run[AgentState, AgentS
 	p := d.Providers[r.Object.ProviderName]
 	if args == "" {
 		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
-			"`/everflow prompt` needs text. Example:\n```\n/everflow prompt focus on the auth module first\n```")
+			"`/syntropy prompt` needs text. Example:\n```\n/syntropy prompt focus on the auth module first\n```")
 		return r.Status, nil
 	}
 	r.Object.PromptInjection = args
@@ -227,7 +227,7 @@ func buildStatusComment(r *workflow.Run[AgentState, AgentStatus]) string {
 func (d *Deps) cmdStop(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 
-	body := fmt.Sprintf("🛑 Stopped by `/everflow stop` from @%s. Closing in-flight MRs; run cancelled.", ev.Author.Handle)
+	body := fmt.Sprintf("🛑 Stopped by `/syntropy stop` from @%s. Closing in-flight MRs; run cancelled.", ev.Author.Handle)
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 	}
@@ -238,11 +238,11 @@ func (d *Deps) cmdStop(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 		d.cleanupWorktree(ctx, r, unitID)
 	}
 
-	r.Object.LastError = fmt.Sprintf("cancelled by /everflow stop from @%s", ev.Author.Handle)
+	r.Object.LastError = fmt.Sprintf("cancelled by /syntropy stop from @%s", ev.Author.Handle)
 	return StatusCancelled, nil
 }
 
-// cmdHelp responds to a bare "/everflow" with the verb menu. Returns the
+// cmdHelp responds to a bare "/syntropy" with the verb menu. Returns the
 // current status — no transition.
 func (d *Deps) cmdHelp(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
@@ -250,22 +250,22 @@ func (d *Deps) cmdHelp(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	return r.Status, nil
 }
 
-const helpMessage = "**everflow control verbs** (author only)\n\n" +
-	"- `/everflow pause` — pause the Run\n" +
-	"- `/everflow resume` — undo pause\n" +
-	"- `/everflow skip [reason]` — blacklist this MR's unit and pick the next\n" +
-	"- `/everflow retry` — clear pause; re-trigger by next webhook event\n" +
-	"- `/everflow prompt <text>` — inject into the next subagent call\n" +
-	"- `/everflow status` — post a progress summary\n" +
-	"- `/everflow stop` — cancel the whole Run, close in-flight MRs (no confirmation)\n" +
-	"- `/everflow abandon` — request abandonment with a 12h confirmation window\n" +
-	"- `/everflow <anything else>` — treated as a freeform instruction for the subagent " +
-	"(e.g. `/everflow refactor the auth module first`); requires this MR to be tracked by an in-flight unit\n"
+const helpMessage = "**syntropy control verbs** (author only)\n\n" +
+	"- `/syntropy pause` — pause the Run\n" +
+	"- `/syntropy resume` — undo pause\n" +
+	"- `/syntropy skip [reason]` — blacklist this MR's unit and pick the next\n" +
+	"- `/syntropy retry` — clear pause; re-trigger by next webhook event\n" +
+	"- `/syntropy prompt <text>` — inject into the next subagent call\n" +
+	"- `/syntropy status` — post a progress summary\n" +
+	"- `/syntropy stop` — cancel the whole Run, close in-flight MRs (no confirmation)\n" +
+	"- `/syntropy abandon` — request abandonment with a 12h confirmation window\n" +
+	"- `/syntropy <anything else>` — treated as a freeform instruction for the subagent " +
+	"(e.g. `/syntropy refactor the auth module first`); requires this MR to be tracked by an in-flight unit\n"
 
 // cmdFreeform handles a verb that isn't one of the recognised control
 // commands. Rather than bouncing "Unknown command", the whole text after
-// "/everflow " is treated as a freeform instruction for the subagent: it's
-// stashed in PromptInjection (the same single-use slot /everflow prompt
+// "/syntropy " is treated as a freeform instruction for the subagent: it's
+// stashed in PromptInjection (the same single-use slot /syntropy prompt
 // uses) and the event is replayed through invokeForEvent immediately, as if
 // it were a NoteAdded event picked up by the filter. See ADR-0042.
 //
@@ -277,13 +277,13 @@ func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, Agen
 	unitID := unitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
 		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
-			fmt.Sprintf("`/everflow %s`: this MR isn't tracked by any active everflow Run, so there's no subagent to direct. Reply `/everflow` for the verb list.", verb))
+			fmt.Sprintf("`/syntropy %s`: this MR isn't tracked by any active syntropy Run, so there's no subagent to direct. Reply `/syntropy` for the verb list.", verb))
 		return r.Status, nil
 	}
 
 	// Recompute from the raw body (not verb+args) to preserve original
 	// casing and multi-line formatting — parseControlVerb lowercases verb.
-	instruction := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ev.Note.Body), "/everflow"))
+	instruction := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ev.Note.Body), "/syntropy"))
 	r.Object.PromptInjection = instruction
 	return d.invokeForEvent(ctx, r, unitID, ev)
 }

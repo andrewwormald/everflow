@@ -184,7 +184,7 @@ func TestDiscover_SpecMode_BuildsPromptFromHistory(t *testing.T) {
 }
 
 func TestDiscover_SpecMode_PromptInjectionConsumedOnPlanning(t *testing.T) {
-	// /everflow prompt should be applied to the next planning call too,
+	// /syntropy prompt should be applied to the next planning call too,
 	// not just to work() / invokeForEvent.
 	d := newDeps(t, &fakeProvider{})
 	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
