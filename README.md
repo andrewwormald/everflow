@@ -1,7 +1,7 @@
 <div align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="logo/wordmark-dark.svg">
-    <img src="logo/wordmark.svg" alt="everflow" width="360" />
+    <img src="logo/wordmark.svg" alt="syntropy" width="360" />
   </picture>
 
   <p><strong>Turn one large change into a chain of small, individually-reviewable MRs — and shepherd each one to merge before opening the next.</strong></p>
@@ -11,7 +11,7 @@
 
 ## What it is
 
-You hand everflow a spec — "migrate `internal/legacy` to `internal/v2` across services", "rename `Foo` to `Bar` everywhere", "add a metric to every HTTP handler". A small Go daemon decomposes it into one increment at a time, opens a single Draft MR, waits for a human to actually merge it, and only then opens the next. Concurrency is configurable; default is one MR in flight.
+You hand syntropy a spec — "migrate `internal/legacy` to `internal/v2` across services", "rename `Foo` to `Bar` everywhere", "add a metric to every HTTP handler". A small Go daemon decomposes it into one increment at a time, opens a single Draft MR, waits for a human to actually merge it, and only then opens the next. Concurrency is configurable; default is one MR in flight.
 
 ```
      spec.md
@@ -37,9 +37,9 @@ The two existing options for sweeping refactors are bad:
 
 **You crank one at a time.** Open MR, wait for review, merge, manually do the next, repeat 47 times. You're the bottleneck between every link. You can't go to a meeting; you can't go on holiday; your day is spent waiting and ticking. The discipline is real but the cost is your week.
 
-Everflow puts a daemon in the loop instead of you. The chain self-propels: you act only at the natural human checkpoint — *is this MR good?* — and the daemon handles everything else (opening, pushing, status comments, addressing review comments, retrying flaky CI, picking the next unit, opening the next MR).
+Syntropy puts a daemon in the loop instead of you. The chain self-propels: you act only at the natural human checkpoint — *is this MR good?* — and the daemon handles everything else (opening, pushing, status comments, addressing review comments, retrying flaky CI, picking the next unit, opening the next MR).
 
-**You get the benefits of disciplined small-MR practice without the discipline being your problem.** Each MR is small because everflow split the work; each MR ships fast because reviewers can actually engage with it; the sweep completes because there's never a stalled mega-PR clogging the queue.
+**You get the benefits of disciplined small-MR practice without the discipline being your problem.** Each MR is small because syntropy split the work; each MR ships fast because reviewers can actually engage with it; the sweep completes because there's never a stalled mega-PR clogging the queue.
 
 ## Inside each MR
 
@@ -51,7 +51,7 @@ Everflow puts a daemon in the loop instead of you. The chain self-propels: you a
    │     │                                            │
    │     ├── approve + merge ─────► next MR opens     │
    │     │                                            │
-   │     ├── "/everflow skip" ────► unit blacklisted, │
+   │     ├── "/syntropy skip" ────► unit blacklisted, │
    │     │                          next MR opens     │
    │     │                                            │
    │     └── request change ──────► runner pushes     │
@@ -62,13 +62,13 @@ Everflow puts a daemon in the loop instead of you. The chain self-propels: you a
    └──────────────────────────────────────────────────┘
 ```
 
-Comments are everflow's only communication channel. Reply with `/everflow status`, `/everflow pause`, `/everflow skip`, `/everflow retry`, `/everflow prompt …`, or `/everflow stop`. Bot noise (CI status, formatter comments) is skipped deterministically by a Starlark filter, so the LLM only fires when a comment or a CI failure actually needs reasoning.
+Comments are syntropy's only communication channel. Reply with `/syntropy status`, `/syntropy pause`, `/syntropy skip`, `/syntropy retry`, `/syntropy prompt …`, or `/syntropy stop`. Bot noise (CI status, formatter comments) is skipped deterministically by a Starlark filter, so the LLM only fires when a comment or a CI failure actually needs reasoning.
 
 ## How it works (briefly)
 
 - **Durable state machine.** Built on [luno/workflow](https://github.com/luno/workflow); sqlite-backed RecordStore. Survives daemon restart, can sleep idle for days between events at zero LLM cost.
 - **Event-driven.** Polls the provider every 30 seconds by default (zero token cost; ADR-0031). Webhook mode available for sub-second latency on hosts with a stable public URL.
-- **Per-unit git worktree.** Each MR's runner works in `~/.everflow/runs/<runID>/worktrees/<unitID>` — no contamination of your main checkout.
+- **Per-unit git worktree.** Each MR's runner works in `~/.syntropy/runs/<runID>/worktrees/<unitID>` — no contamination of your main checkout.
 - **Auto-resolve on push.** When the runner addresses a reviewer comment and lands the fix, the discussion thread is marked resolved automatically on both GitLab and GitHub (ADR-0034). The reviewer sees their comment close itself.
 - **Pluggable runner.** Claude is the only shipping adapter today; Qwen / OpenHands / a local script all fit the `runner.Runner` interface.
 
@@ -80,7 +80,7 @@ You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo wi
 
 ```bash
 # Write a spec.
-cat > ~/everflow-specs/migrate.spec.md <<'YAML'
+cat > ~/syntropy-specs/migrate.spec.md <<'YAML'
 ---
 goal: Replace internal/legacy with internal/v2 across services
 provider: gitlab
@@ -99,11 +99,11 @@ For each service still importing `internal/legacy`, switch to
 YAML
 
 # Build + start the daemon (poll mode; no public URL needed).
-go build -o everflow .
-./everflow daemon --commit-author "Your Name" --commit-email "you@example.com" &
+go build -o syntropy .
+./syntropy daemon --commit-author "Your Name" --commit-email "you@example.com" &
 
 # Trigger.
-./everflow start --spec ~/everflow-specs/migrate.spec.md
+./syntropy start --spec ~/syntropy-specs/migrate.spec.md
 ```
 
 The first MR appears on the target repo within a minute or two. Review it, merge it, and the next opens automatically.
