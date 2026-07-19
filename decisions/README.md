@@ -102,3 +102,4 @@ forces or unlocks.
 | 0052 | `.everflow.yml` holds a per-repo free-text `title_convention`            | Accepted | 2026-07-17 |
 | 0053 | Reconciliation sweep for Runs stuck on a lost event                      | Accepted | 2026-07-17 |
 | 0054 | Wire `title_convention` into MR title generation via the runner         | Accepted | 2026-07-18 |
+| 0055 | Rename the project from everflow to syntropy                            | Accepted | 2026-07-19 |
