@@ -765,7 +765,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		// Append the actual diff shortstat as a cheap hallucination guard:
 		// the reviewer sees both the runner's summary and the real extent of
 		// changes pushed. See spec item 4 (Approach A).
-		body := fmt.Sprintf("🤖 Opened by everflow run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/syntropy status` for progress, or `/syntropy skip` to abandon.",
+		body := fmt.Sprintf("🤖 Opened by syntropy run `%s` (unit `%s`). I'll babysit this MR through review and CI — reply `/syntropy status` for progress, or `/syntropy skip` to abandon.",
 			shortRunID(r.RunID), unitID)
 		if d.Git != nil {
 			if stat, sErr := d.Git.DiffShortstat(ctx, worktree, baseBranch); sErr == nil && stat != "" {
@@ -1137,7 +1137,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
 				if ps.OverCap() {
 					_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
-						fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `everflow phrases promote` or trim by hand.", filter.MaxPerRunEntries))
+						fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `syntropy phrases promote` or trim by hand.", filter.MaxPerRunEntries))
 				}
 			}
 		}
