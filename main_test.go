@@ -425,7 +425,7 @@ func TestPrefixMatching(t *testing.T) {
 
 // TestDaemonUnreachableHint asserts that when the daemon is unreachable AND
 // no store fallback exists, all three subcommands surface a hint pointing at
-// --store. HOME is redirected to an empty temp dir so ~/.everflow/store.db
+// --store. HOME is redirected to an empty temp dir so ~/.syntropy/store.db
 // doesn't exist.
 func TestDaemonUnreachableHint(t *testing.T) {
 	const unreachable = "http://127.0.0.1:9" // reserved "discard" port
@@ -530,7 +530,7 @@ func TestCmdSetup_UnknownRunnerFlagErrors(t *testing.T) {
 }
 
 // TestCmdSetup_NoTitleConventionFlagWritesNothing asserts a non-interactive
-// setup with no --title-convention leaves .everflow.yml absent rather than
+// setup with no --title-convention leaves .syntropy.yml absent rather than
 // writing an empty convention.
 func TestCmdSetup_NoTitleConventionFlagWritesNothing(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -540,13 +540,13 @@ func TestCmdSetup_NoTitleConventionFlagWritesNothing(t *testing.T) {
 		t.Fatalf("cmdSetup: %v", err)
 	}
 
-	if _, err := os.Stat(".everflow.yml"); !os.IsNotExist(err) {
-		t.Fatalf("expected no .everflow.yml, stat err = %v", err)
+	if _, err := os.Stat(".syntropy.yml"); !os.IsNotExist(err) {
+		t.Fatalf("expected no .syntropy.yml, stat err = %v", err)
 	}
 }
 
 // TestCmdSetup_TitleConventionFlagPersists asserts --title-convention is
-// written verbatim to .everflow.yml in the current directory.
+// written verbatim to .syntropy.yml in the current directory.
 func TestCmdSetup_TitleConventionFlagPersists(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir())
@@ -555,9 +555,9 @@ func TestCmdSetup_TitleConventionFlagPersists(t *testing.T) {
 		t.Fatalf("cmdSetup: %v", err)
 	}
 
-	data, err := os.ReadFile(".everflow.yml")
+	data, err := os.ReadFile(".syntropy.yml")
 	if err != nil {
-		t.Fatalf("read .everflow.yml: %v", err)
+		t.Fatalf("read .syntropy.yml: %v", err)
 	}
 	if !strings.Contains(string(data), "title_convention: Conventional Commits") {
 		t.Fatalf("got %q, want it to contain the given title convention", string(data))
@@ -565,26 +565,26 @@ func TestCmdSetup_TitleConventionFlagPersists(t *testing.T) {
 }
 
 // TestCmdSetup_TitleConventionDoesNotClobberExistingWithoutForce asserts a
-// rerun without --force leaves a pre-existing .everflow.yml untouched, even
+// rerun without --force leaves a pre-existing .syntropy.yml untouched, even
 // when a new --title-convention is passed.
 func TestCmdSetup_TitleConventionDoesNotClobberExistingWithoutForce(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Chdir(t.TempDir())
 
-	if err := os.WriteFile(".everflow.yml", []byte("title_convention: existing\n"), 0o644); err != nil {
-		t.Fatalf("seed existing .everflow.yml: %v", err)
+	if err := os.WriteFile(".syntropy.yml", []byte("title_convention: existing\n"), 0o644); err != nil {
+		t.Fatalf("seed existing .syntropy.yml: %v", err)
 	}
 
 	if err := cmdSetup([]string{"--title-convention", "new convention"}); err != nil {
 		t.Fatalf("cmdSetup: %v", err)
 	}
 
-	data, err := os.ReadFile(".everflow.yml")
+	data, err := os.ReadFile(".syntropy.yml")
 	if err != nil {
-		t.Fatalf("read .everflow.yml: %v", err)
+		t.Fatalf("read .syntropy.yml: %v", err)
 	}
 	if string(data) != "title_convention: existing\n" {
-		t.Fatalf("existing .everflow.yml was clobbered: %q", string(data))
+		t.Fatalf("existing .syntropy.yml was clobbered: %q", string(data))
 	}
 }
 

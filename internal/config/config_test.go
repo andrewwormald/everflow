@@ -30,7 +30,7 @@ func TestSaveThenLoad_RoundTrips(t *testing.T) {
 	if got != want {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
-	if _, err := os.Stat(filepath.Join(home, ".everflow", "config.yaml")); err != nil {
+	if _, err := os.Stat(filepath.Join(home, ".syntropy", "config.yaml")); err != nil {
 		t.Fatalf("config file not written: %v", err)
 	}
 }

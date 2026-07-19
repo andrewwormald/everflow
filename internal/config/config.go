@@ -1,6 +1,6 @@
-// Package config reads and writes everflow's per-user config file,
-// ~/.everflow/config.yaml. It's the persisted counterpart to the
-// interactive choices `everflow setup` walks a user through (ADR-0051):
+// Package config reads and writes syntropy's per-user config file,
+// ~/.syntropy/config.yaml. It's the persisted counterpart to the
+// interactive choices `syntropy setup` walks a user through (ADR-0051):
 // which runner and model to use by default when a spec doesn't pin its
 // own.
 package config
@@ -13,7 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config is the on-disk shape of ~/.everflow/config.yaml.
+// Config is the on-disk shape of ~/.syntropy/config.yaml.
 type Config struct {
 	// Runner is the default coding-agent runner name (see runner.Registry),
 	// e.g. "claude". Empty means no default has been set yet.
@@ -25,11 +25,11 @@ type Config struct {
 
 // Path returns the config file location under the given home directory.
 func Path(home string) string {
-	return filepath.Join(home, ".everflow", "config.yaml")
+	return filepath.Join(home, ".syntropy", "config.yaml")
 }
 
 // Load reads the config file. A missing file is not an error — it
-// returns the zero value, since a user who hasn't run `everflow setup`
+// returns the zero value, since a user who hasn't run `syntropy setup`
 // yet simply has no persisted defaults.
 func Load(home string) (Config, error) {
 	data, err := os.ReadFile(Path(home))
@@ -46,10 +46,10 @@ func Load(home string) (Config, error) {
 	return cfg, nil
 }
 
-// Save writes cfg to the config file, creating ~/.everflow if needed and
+// Save writes cfg to the config file, creating ~/.syntropy if needed and
 // overwriting any existing file.
 func Save(home string, cfg Config) error {
-	dir := filepath.Join(home, ".everflow")
+	dir := filepath.Join(home, ".syntropy")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("config: create %s: %w", dir, err)
 	}

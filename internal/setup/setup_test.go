@@ -34,7 +34,7 @@ func TestEnsureClaudeSkill_Installs(t *testing.T) {
 		t.Fatalf("expected install to report true")
 	}
 
-	skillPath := filepath.Join(home, ".claude", "skills", "everflow", "SKILL.md")
+	skillPath := filepath.Join(home, ".claude", "skills", "syntropy", "SKILL.md")
 	got, err := os.ReadFile(skillPath)
 	if err != nil {
 		t.Fatalf("skill file not written: %v", err)
@@ -46,7 +46,7 @@ func TestEnsureClaudeSkill_Installs(t *testing.T) {
 
 func TestEnsureClaudeSkill_DoesNotOverwrite(t *testing.T) {
 	home := t.TempDir()
-	skillDir := filepath.Join(home, ".claude", "skills", "everflow")
+	skillDir := filepath.Join(home, ".claude", "skills", "syntropy")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestInstallClaudeSkill_NoClaudeDirYet(t *testing.T) {
 
 func TestInstallClaudeSkill_ForceOverwrites(t *testing.T) {
 	home := t.TempDir()
-	skillDir := filepath.Join(home, ".claude", "skills", "everflow")
+	skillDir := filepath.Join(home, ".claude", "skills", "syntropy")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

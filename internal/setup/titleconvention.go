@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ReadRepoConfig reads `.everflow.yml` from repoDir, returning a zero-value
+// ReadRepoConfig reads `.syntropy.yml` from repoDir, returning a zero-value
 // RepoConfig (no error) if the file doesn't exist — absence means "no
 // convention set", not a failure. Mirrors WriteRepoConfig's file-presence
 // convention (ADR-0052).
@@ -28,7 +28,7 @@ func ReadRepoConfig(repoDir string) (RepoConfig, error) {
 	return cfg, nil
 }
 
-// RepoConfig is the on-disk shape of `.everflow.yml`, a per-repo (not
+// RepoConfig is the on-disk shape of `.syntropy.yml`, a per-repo (not
 // per-user) config file living at the root of a spec's `base_repo`.
 type RepoConfig struct {
 	// TitleConvention is free-text guidance on how this repo likes its
@@ -37,13 +37,13 @@ type RepoConfig struct {
 	TitleConvention string `yaml:"title_convention"`
 }
 
-// RepoConfigPath returns the `.everflow.yml` path for the given repo root.
+// RepoConfigPath returns the `.syntropy.yml` path for the given repo root.
 func RepoConfigPath(repoDir string) string {
-	return filepath.Join(repoDir, ".everflow.yml")
+	return filepath.Join(repoDir, ".syntropy.yml")
 }
 
-// ResolveTitleConvention picks the free-text title convention `everflow
-// setup` should write to `.everflow.yml`. Precedence: --title-convention
+// ResolveTitleConvention picks the free-text title convention `syntropy
+// setup` should write to `.syntropy.yml`. Precedence: --title-convention
 // flag, then (if interactive) the prompt's answer, then empty — a
 // non-interactive run with no flag makes no claim about a convention
 // rather than guessing one.
@@ -64,11 +64,11 @@ func ResolveTitleConvention(flagConvention string, interactive bool, prompt func
 	return answer, nil
 }
 
-// WriteRepoConfig writes `.everflow.yml` into repoDir with the given title
+// WriteRepoConfig writes `.syntropy.yml` into repoDir with the given title
 // convention. It's a no-op (returns false, nil) when convention is empty —
 // there's nothing to persist — or when the file already exists and force
 // is false, so a user's local edits to it are never clobbered by a later
-// `everflow setup` run.
+// `syntropy setup` run.
 func WriteRepoConfig(repoDir, convention string, force bool) (bool, error) {
 	if convention == "" {
 		return false, nil

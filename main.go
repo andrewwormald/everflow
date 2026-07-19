@@ -139,7 +139,7 @@ func buildSweeper(rs workflow.RecordStore, streamer workflow.EventStreamer, thre
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
-		storePath      = fs.String("store", "", "path to sqlite store (default ~/.everflow/store.db; pass ':memory:' for volatile)")
+		storePath      = fs.String("store", "", "path to sqlite store (default ~/.syntropy/store.db; pass ':memory:' for volatile)")
 		listenAddr     = fs.String("listen", ":8080", "address for the webhook HTTP server")
 		publicBaseURL  = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
 		gitlabBaseURL  = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
@@ -157,7 +157,7 @@ func cmdDaemon(args []string) error {
 		if err != nil {
 			return fmt.Errorf("home dir: %w", err)
 		}
-		*storePath = home + "/.everflow/store.db"
+		*storePath = home + "/.syntropy/store.db"
 	}
 	// --public-base-url is only required for webhook-mode Runs. Poll mode
 	// (the default since ADR-0031) doesn't need a public URL. If a webhook
@@ -186,7 +186,7 @@ func cmdDaemon(args []string) error {
 
 	// Per-Run filesystem layout sits next to the store file. If --store is
 	// /tmp/x/store.db, runs root is /tmp/x/runs/. Both happily live under
-	// ~/.everflow/ when --store takes its default.
+	// ~/.syntropy/ when --store takes its default.
 	runsRoot := filepath.Join(filepath.Dir(*storePath), "runs")
 
 	secrets := webhook.NewSecretRegistry()
@@ -915,7 +915,7 @@ func cmdStart(args []string) error {
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
-	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.everflow/store.db if it exists)")
+	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.syntropy/store.db if it exists)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1084,7 +1084,7 @@ func printRunStatus(w io.Writer, s runStatusResponse) {
 
 func cmdList(args []string) error {
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
-	storePath := fs.String("store", "", "path to sqlite store (default: ~/.everflow/store.db)")
+	storePath := fs.String("store", "", "path to sqlite store (default: ~/.syntropy/store.db)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1215,7 +1215,7 @@ func daemonUnreachableError(daemonURL string, err error) error {
 }
 
 // tryStoreFallback picks a store path for the offline-rescue path. --store
-// wins; otherwise ~/.everflow/store.db is used only when it exists — we
+// wins; otherwise ~/.syntropy/store.db is used only when it exists — we
 // don't silently create an empty store and pretend nothing is wrong.
 func tryStoreFallback(userProvided string) (string, bool) {
 	if userProvided != "" {
@@ -1234,7 +1234,7 @@ func tryStoreFallback(userProvided string) (string, bool) {
 func cmdAbandon(args []string) error {
 	fs := flag.NewFlagSet("abandon", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
-	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.everflow/store.db if it exists)")
+	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.syntropy/store.db if it exists)")
 	reasonFlag := fs.String("reason", "", "optional reason for abandonment")
 	gitlabBaseURL := fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
 	githubBaseURL := fs.String("github-base-url", "", "GitHub API base URL")
@@ -1271,7 +1271,7 @@ func cmdAbandon(args []string) error {
 func cmdResume(args []string) error {
 	fs := flag.NewFlagSet("resume", flag.ExitOnError)
 	daemonURL := fs.String("daemon", "http://127.0.0.1:8081", "daemon address")
-	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.everflow/store.db if it exists)")
+	storePath := fs.String("store", "", "path to sqlite store; when the daemon is unreachable the CLI falls back to the store (default: ~/.syntropy/store.db if it exists)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1303,7 +1303,7 @@ func cmdResume(args []string) error {
 	return directResume(context.Background(), fallback, runID)
 }
 
-// defaultStorePath returns ~/.everflow/store.db when path is blank.
+// defaultStorePath returns ~/.syntropy/store.db when path is blank.
 func defaultStorePath(path string) (string, error) {
 	if path != "" {
 		return path, nil
@@ -1312,7 +1312,7 @@ func defaultStorePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("home dir: %w", err)
 	}
-	return home + "/.everflow/store.db", nil
+	return home + "/.syntropy/store.db", nil
 }
 
 // directAbandon force-cancels a Run by writing directly to the sqlite store.
@@ -1475,7 +1475,7 @@ func cmdPhrases(args []string) error {
 }
 
 // cmdSetup installs the Claude Code Skill bundle (ADR-0002) and persists the
-// user's default runner + model choice to ~/.everflow/config.yaml (ADR-0051).
+// user's default runner + model choice to ~/.syntropy/config.yaml (ADR-0051).
 // Unlike the automatic first-run hook in main(), this doesn't require
 // ~/.claude to already exist, and --force lets a user pull down the current
 // SKILL.md over a locally-edited copy.
@@ -1485,10 +1485,10 @@ func cmdPhrases(args []string) error {
 // alongside this one rather than be bolted onto it.
 func cmdSetup(args []string) error {
 	fs := flag.NewFlagSet("setup", flag.ExitOnError)
-	force := fs.Bool("force", false, "overwrite an existing Skill file or .everflow.yml with the current/given value")
+	force := fs.Bool("force", false, "overwrite an existing Skill file or .syntropy.yml with the current/given value")
 	runnerFlag := fs.String("runner", "", "default runner to persist (default: the only registered runner, \"claude\")")
 	modelFlag := fs.String("model", "", "default model override to persist for the chosen runner (default: prompt if interactive, else leave unset)")
-	titleConventionFlag := fs.String("title-convention", "", "this repo's PR/MR title convention, written to .everflow.yml (default: prompt if interactive, else leave unset)")
+	titleConventionFlag := fs.String("title-convention", "", "this repo's PR/MR title convention, written to .syntropy.yml (default: prompt if interactive, else leave unset)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -1549,13 +1549,13 @@ func cmdSetup(args []string) error {
 	}
 	wroteRepoConfig, err := setup.WriteRepoConfig(repoDir, titleConvention, *force)
 	if err != nil {
-		return fmt.Errorf("write .everflow.yml: %w", err)
+		return fmt.Errorf("write .syntropy.yml: %w", err)
 	}
 	switch {
 	case wroteRepoConfig:
 		fmt.Printf("Wrote title convention to %s\n", setup.RepoConfigPath(repoDir))
 	case titleConvention != "":
-		fmt.Printf(".everflow.yml already exists at %s (pass --force to overwrite)\n", setup.RepoConfigPath(repoDir))
+		fmt.Printf(".syntropy.yml already exists at %s (pass --force to overwrite)\n", setup.RepoConfigPath(repoDir))
 	}
 	return nil
 }

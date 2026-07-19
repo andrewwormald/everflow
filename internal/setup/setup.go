@@ -1,8 +1,8 @@
 // Package setup installs the Claude Code Skill bundle that ADR-0002 decided
-// on, so that Claude Code knows when and how to invoke the everflow binary.
+// on, so that Claude Code knows when and how to invoke the syntropy binary.
 //
 // This is deliberately Claude-only for now: ADR-0002 picked the Skill bundle
-// as the first integration, not the only one. everflow's Runner interface
+// as the first integration, not the only one. syntropy's Runner interface
 // (ADR-0007) already anticipates other coding agents (Codex, Qwen,
 // OpenHands, ...); adding one there needs a companion integration bundle in
 // that agent's own distribution format, added alongside this package rather
@@ -29,10 +29,10 @@ var KnownRunners = []string{"claude"}
 // SkillPath returns the path where the Claude Code Skill bundle lives under
 // the given home directory.
 func SkillPath(home string) string {
-	return filepath.Join(home, ".claude", "skills", "everflow", "SKILL.md")
+	return filepath.Join(home, ".claude", "skills", "syntropy", "SKILL.md")
 }
 
-// EnsureClaudeSkill installs ~/.claude/skills/everflow/SKILL.md the first
+// EnsureClaudeSkill installs ~/.claude/skills/syntropy/SKILL.md the first
 // time it's called on a host that has Claude Code set up (~/.claude/
 // present). It's a no-op if Claude Code isn't installed, or if the skill
 // file already exists — the file's own presence is the marker, so a user's
@@ -45,7 +45,7 @@ func EnsureClaudeSkill(home string) (bool, error) {
 	return installSkill(home, false)
 }
 
-// InstallClaudeSkill installs the Skill bundle for the explicit `everflow
+// InstallClaudeSkill installs the Skill bundle for the explicit `syntropy
 // setup` command. Unlike EnsureClaudeSkill it doesn't require ~/.claude to
 // already exist — an explicit setup request creates it. When force is true,
 // an existing Skill file is overwritten; otherwise install is skipped and
@@ -55,7 +55,7 @@ func InstallClaudeSkill(home string, force bool) (bool, error) {
 }
 
 func installSkill(home string, force bool) (bool, error) {
-	skillDir := filepath.Join(home, ".claude", "skills", "everflow")
+	skillDir := filepath.Join(home, ".claude", "skills", "syntropy")
 	skillPath := filepath.Join(skillDir, "SKILL.md")
 	if !force {
 		if _, err := os.Stat(skillPath); err == nil {

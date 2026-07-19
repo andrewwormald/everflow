@@ -47,7 +47,7 @@ type Deps struct {
 	Git           git.Git                      // git CLI wrapper; required for work() + invokeForEvent
 	Secrets       *webhook.SecretRegistry      // per-(provider, runID) HMAC/token secrets
 	PublicBaseURL string                       // e.g. https://everflow.example.com
-	RunsRoot      string                       // e.g. ~/.everflow/runs
+	RunsRoot      string                       // e.g. ~/.syntropy/runs
 }
 
 // Build wires the state machine described in DESIGN.md. Step bodies are
@@ -129,7 +129,7 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 //     restart can resume + so teardown can deregister later.
 //  6. Populates the in-memory SecretRegistry so the running daemon can
 //     verify inbound webhooks.
-//  7. Creates the per-Run filesystem layout (~/.everflow/runs/<runID>/).
+//  7. Creates the per-Run filesystem layout (~/.syntropy/runs/<runID>/).
 //  8. Defaults Concurrency and InFlight if not set.
 //
 // Idempotency: if WebhookID is already set, we assume a prior partial
@@ -230,7 +230,7 @@ func (d *Deps) setup(ctx context.Context, r *workflow.Run[AgentState, AgentStatu
 		r.Object.InFlight = map[string]provider.MR{}
 	}
 
-	// Read BaseRepo's .everflow.yml once, gated on StartedAt so a retry or
+	// Read BaseRepo's .syntropy.yml once, gated on StartedAt so a retry or
 	// daemon restart replaying this step doesn't re-read it: an author
 	// editing the file mid-Run shouldn't retroactively change the
 	// convention already recorded for in-flight work (ADR-0052). Threaded
@@ -740,7 +740,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		}
 
 		// 5. Open the MR. Title: prefer the runner's suggestion, phrased per
-		// BaseRepo's .everflow.yml title_convention (ADR-0052/ADR-0054); fall
+		// BaseRepo's .syntropy.yml title_convention (ADR-0052/ADR-0054); fall
 		// back to the default shape when no convention is set or the runner
 		// didn't include one.
 		title := resp.Title
