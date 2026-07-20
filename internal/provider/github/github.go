@@ -175,6 +175,14 @@ func (p *Provider) PostComment(ctx context.Context, projectID string, mrIID int,
 	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
 }
 
+// ReplyToDiscussion is not yet implemented for GitHub: unlike GitLab's
+// discussion_id, replying within a review thread requires the numeric
+// review-comment ID (distinct from the GraphQL node ID surfaced as
+// DiscussionID here — see ResolveDiscussion below). Left as a follow-up.
+func (p *Provider) ReplyToDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string, body string) error {
+	return errors.New("github: ReplyToDiscussion not implemented")
+}
+
 // UpdateMRTitle → PATCH /repos/{owner}/{repo}/pulls/{number}.
 func (p *Provider) UpdateMRTitle(ctx context.Context, projectID string, mrIID int, title string) error {
 	owner, repo, err := splitProjectID(projectID)

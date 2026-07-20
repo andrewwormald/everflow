@@ -148,6 +148,9 @@ func (f *fakeProvider) ResolveDiscussion(_ context.Context, projectID string, mr
 	f.resolves = append(f.resolves, resolvedDiscussion{ProjectID: projectID, MRIID: mrIID, DiscussionID: discussionID})
 	return f.resolveErr
 }
+func (f *fakeProvider) ReplyToDiscussion(_ context.Context, _ string, _ int, _ string, _ string) error {
+	return nil
+}
 func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
