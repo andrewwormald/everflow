@@ -106,4 +106,3 @@ forces or unlocks.
 | 0056 | Decision marker must be alone on its line                                | Accepted | 2026-07-19 |
 | 0057 | Decision marker tag renamed to `<syntropy-decision>`, both names accepted | Accepted | 2026-07-20 |
 | 0058 | Adopt the "Syntropy" brand mark — chaos converging into order (supersedes ADR-0040) | Accepted | 2026-07-20 |
-| 0059 | Finish the rename in git branch/commit/label runtime literals            | Accepted | 2026-07-20 |
