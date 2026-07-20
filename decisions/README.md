@@ -103,3 +103,5 @@ forces or unlocks.
 | 0053 | Reconciliation sweep for Runs stuck on a lost event                      | Accepted | 2026-07-17 |
 | 0054 | Wire `title_convention` into MR title generation via the runner         | Accepted | 2026-07-18 |
 | 0055 | Rename the project from everflow to syntropy                            | Accepted | 2026-07-19 |
+| 0056 | Decision marker must be alone on its line                                | Accepted | 2026-07-19 |
+| 0057 | Decision marker tag renamed to `<syntropy-decision>`, both names accepted | Accepted | 2026-07-20 |

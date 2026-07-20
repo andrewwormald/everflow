@@ -27,13 +27,13 @@ import (
 )
 
 // claudeJSONResult is the envelope `claude -p --output-format json` writes to
-// stdout. Only the fields everflow needs are unmarshalled; unknown fields are
+// stdout. Only the fields syntropy needs are unmarshalled; unknown fields are
 // silently ignored.
 type claudeJSONResult struct {
 	Type    string `json:"type"`
 	IsError bool   `json:"is_error"`
 	// Result is the full text the model produced, including the
-	// <everflow-decision> marker that ParseDecision reads.
+	// <syntropy-decision> marker that ParseDecision reads.
 	Result string `json:"result"`
 	// Usage is populated by claude ≥ 1.x; older builds omit it.
 	Usage *claudeUsage `json:"usage,omitempty"`
@@ -241,7 +241,7 @@ func BuildPrompt(req runner.Request) string {
 	} else {
 		b.WriteString(unitScopeDiscipline)
 		if req.TitleConvention != "" {
-			fmt.Fprintf(&b, "## MR title convention\n\n%s\n\nWhen you finish with Decision=done, phrase the MR title per this convention and put it after \"done: \" in the decision marker, e.g. `<everflow-decision>done: <title></everflow-decision>`.\n\n", req.TitleConvention)
+			fmt.Fprintf(&b, "## MR title convention\n\n%s\n\nWhen you finish with Decision=done, phrase the MR title per this convention and put it after \"done: \" in the decision marker, e.g. `<syntropy-decision>done: <title></syntropy-decision>`.\n\n", req.TitleConvention)
 		}
 	}
 	b.WriteString(decisionProtocol)
@@ -290,29 +290,41 @@ const decisionProtocol = `## How to finish
 After completing your work (or deciding you can't), end your response
 with EXACTLY ONE of these tags on its own line:
 
-- ` + "`<everflow-decision>continue</everflow-decision>`" + ` — during planning, there's more to do (signals the next increment). During a work turn on a unit, this also means: this unit turned out to be bigger than one turn, you shipped a real partial slice of it, and there's a well-defined remainder left. State the remainder clearly in your summary — what's done and what's left — so the planner can schedule it as a follow-on increment instead of assuming the unit is finished. Don't use it to avoid finishing small units; use it only when the unit genuinely doesn't fit in one turn.
-- ` + "`<everflow-decision>done</everflow-decision>`" + ` — task is complete
-- ` + "`<everflow-decision>ask: <one-line question></everflow-decision>`" + ` — you need the human's input before proceeding
-- ` + "`<everflow-decision>fail: <one-line reason></everflow-decision>`" + ` — you cannot proceed
-- ` + "`<everflow-decision>nochange</everflow-decision>`" + ` — nothing to do (e.g. the change was already applied)
+- ` + "`<syntropy-decision>continue</syntropy-decision>`" + ` — during planning, there's more to do (signals the next increment). During a work turn on a unit, this also means: this unit turned out to be bigger than one turn, you shipped a real partial slice of it, and there's a well-defined remainder left. State the remainder clearly in your summary — what's done and what's left — so the planner can schedule it as a follow-on increment instead of assuming the unit is finished. Don't use it to avoid finishing small units; use it only when the unit genuinely doesn't fit in one turn.
+- ` + "`<syntropy-decision>done</syntropy-decision>`" + ` — task is complete
+- ` + "`<syntropy-decision>ask: <one-line question></syntropy-decision>`" + ` — you need the human's input before proceeding
+- ` + "`<syntropy-decision>fail: <one-line reason></syntropy-decision>`" + ` — you cannot proceed
+- ` + "`<syntropy-decision>nochange</syntropy-decision>`" + ` — nothing to do (e.g. the change was already applied)
 
-The text before the tag becomes the recorded Summary; everflow strips
+The text before the tag becomes the recorded Summary; syntropy strips
 the tag itself from the output. Only the LAST occurrence of the tag in
 your response is read, so feel free to write naturally up to that point.
 `
 
 // --- decision parsing ---
 
-// decisionRE matches the closing-paren-style decision marker. We extract
-// the LAST one (sometimes the model echoes the protocol back in its
-// reasoning before producing the real one).
-var decisionRE = regexp.MustCompile(`(?s)<everflow-decision>\s*(.*?)\s*</everflow-decision>`)
+// decisionRE matches the decision marker. Per the protocol (ADR-0027), the
+// real marker must sit on its own line, so the pattern requires only
+// leading/trailing horizontal whitespace around the tag on that line. This
+// stops an incidental mention of the tag inside prose (e.g. the model
+// quoting the protocol instructions back, or discussing the tag in a
+// sentence) from being mistaken for a genuine marker: such mentions share a
+// line with other text and so never match. Among genuine own-line markers,
+// we still extract the LAST one (sometimes the model echoes the protocol as
+// its own standalone line while reasoning before producing the real one).
+//
+// Accepts both <syntropy-decision> (current) and <everflow-decision>
+// (pre-rename) tag names — see ADR-0057. Go's RE2 engine has no
+// backreferences, so this can't enforce the open/close tag names match
+// each other; in practice a model never produces a mismatched pair, so
+// this is a pragmatic tradeoff, not a real gap.
+var decisionRE = regexp.MustCompile(`(?m)^[ \t]*<(?:syntropy|everflow)-decision>\s*(.*?)\s*</(?:syntropy|everflow)-decision>[ \t]*$`)
 
 // ErrNoDecisionMarker is returned by ParseDecision when claude's response
-// contains no <everflow-decision>...</everflow-decision> tag. Treated as a
-// runner-level failure by the workflow's step bodies (they see the error
-// and pause / fail accordingly).
-var ErrNoDecisionMarker = errors.New("claude: no <everflow-decision> marker in response")
+// contains no <syntropy-decision>...</syntropy-decision> (or legacy
+// <everflow-decision>) tag. Treated as a runner-level failure by the
+// workflow's step bodies (they see the error and pause / fail accordingly).
+var ErrNoDecisionMarker = errors.New("claude: no <syntropy-decision> marker in response")
 
 // ParseDecision extracts the Decision + Summary + Question + Title from a
 // claude response. The Summary is everything before the last marker
