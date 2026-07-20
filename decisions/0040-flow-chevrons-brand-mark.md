@@ -1,6 +1,6 @@
 # ADR-0040: Adopt the "Flow Chevrons" brand mark — three-step green-tipped chevrons
 
-**Status**: Accepted (supersedes [ADR-0013](0013-orbit-brand-mark.md))
+**Status**: Superseded by [ADR-0058](0058-syntropy-brand-mark.md) (supersedes [ADR-0013](0013-orbit-brand-mark.md))
 **Date**: 2026-07-03
 
 ## Context
