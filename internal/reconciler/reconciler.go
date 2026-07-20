@@ -136,6 +136,30 @@ type Sweeper struct {
 	Interval     time.Duration
 	Threshold    time.Duration
 	Logger       *slog.Logger
+
+	// RetriggerCooldown is how long a RunID is left alone after being
+	// re-triggered, even if it's still flagged stuck by the next sweep: a
+	// re-trigger can only wake up a lost event, it can't make a genuinely
+	// wedged step finish any sooner, so re-sending every tick just spams
+	// the topic. The zero value disables the cooldown (every stuck Run is
+	// re-triggered on every sweep), preserving the pre-cooldown behaviour
+	// for callers that don't set it.
+	RetriggerCooldown time.Duration
+
+	// cooldowns tracks, per RunID, the state observed at the last
+	// retrigger. It's only ever read and written from sweepOnce, which
+	// Run calls serially from a single goroutine.
+	cooldowns map[string]cooldownEntry
+}
+
+// cooldownEntry records the state of a RunID at the time it was last
+// re-triggered, so a later sweep can tell whether the cooldown still
+// applies (lastProgress unchanged) or whether the Run has since made
+// progress and gotten stuck again (lastProgress advanced), which resets
+// eligibility immediately regardless of how long ago retriggeredAt was.
+type cooldownEntry struct {
+	retriggeredAt time.Time
+	lastProgress  time.Time
 }
 
 // Run ticks every s.Interval, sweeping stuck Runs each tick. It returns when
@@ -161,12 +185,21 @@ func (s *Sweeper) Run(ctx context.Context) {
 	}
 }
 
-// sweepOnce runs a single Scan + Retrigger pass over s.WorkflowName.
+// sweepOnce runs a single Scan + Retrigger pass over s.WorkflowName,
+// skipping any stuck RunID still within its RetriggerCooldown unless it has
+// made fresh progress (a new turn) since the retrigger that started that
+// cooldown.
 func (s *Sweeper) sweepOnce(ctx context.Context) {
-	stuck, err := Scan(ctx, s.Store, s.WorkflowName, time.Now(), s.Threshold)
+	now := time.Now()
+
+	stuck, err := Scan(ctx, s.Store, s.WorkflowName, now, s.Threshold)
 	if err != nil {
 		s.Logger.Warn("reconciler: scan", "err", err)
 		return
+	}
+
+	if s.cooldowns == nil {
+		s.cooldowns = make(map[string]cooldownEntry)
 	}
 
 	for _, runID := range stuck {
@@ -175,10 +208,25 @@ func (s *Sweeper) sweepOnce(ctx context.Context) {
 			s.Logger.Warn("reconciler: lookup stuck run", "run_id", runID, "err", err)
 			continue
 		}
+
+		var state refactorsweep.AgentState
+		if err := workflow.Unmarshal(record.Object, &state); err != nil {
+			s.Logger.Warn("reconciler: unmarshal stuck run state", "run_id", runID, "err", err)
+			continue
+		}
+		lastProgress := LastProgress(state, record.CreatedAt)
+
+		if entry, ok := s.cooldowns[runID]; ok && !lastProgress.After(entry.lastProgress) &&
+			now.Sub(entry.retriggeredAt) < s.RetriggerCooldown {
+			s.Logger.Info("reconciler: skipping stuck run in cooldown", "run_id", runID)
+			continue
+		}
+
 		if err := Retrigger(ctx, s.Streamer, *record); err != nil {
 			s.Logger.Warn("reconciler: retrigger stuck run", "run_id", runID, "err", err)
 			continue
 		}
+		s.cooldowns[runID] = cooldownEntry{retriggeredAt: now, lastProgress: lastProgress}
 		s.Logger.Info("reconciler: re-triggered stuck run", "run_id", runID)
 	}
 }
