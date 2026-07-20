@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" fill="none" role="img" aria-label="syntropy">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 276 40" fill="none" role="img" aria-label="syntropy">
   <title>syntropy — primary lockup (dark)</title>
-  <desc>Reduced Syntropy mark (three blocks converging from grey to cyan) followed by the wordmark "syntropy" in JetBrains Mono. Dark-mode variant.</desc>
+  <desc>Syntropy mark (nine blocks converging from chaos on the left to order in cyan on the right) followed by the wordmark "syntropy" in JetBrains Mono. Dark-mode variant.</desc>
 
   <defs>
     <filter id="wordmark-dark-glow" x="-200%" y="-200%" width="500%" height="500%">
@@ -8,14 +8,22 @@
     </filter>
   </defs>
 
-  <!-- Mark: three blocks, dark to light, converging into cyan -->
-  <rect x="27.5" y="15" width="10" height="10" rx="1.8" fill="#2eeded" opacity="0.3" filter="url(#wordmark-dark-glow)"/>
-  <rect x="2.5" y="15" width="10" height="10" rx="1.8" fill="#7987a0"/>
-  <rect x="15" y="15" width="10" height="10" rx="1.8" fill="#73a5c9"/>
-  <rect x="27.5" y="15" width="10" height="10" rx="1.8" fill="#2eeded"/>
+  <!-- Mark: nine blocks, scattered/rotated/desaturated on the left, converging into cyan on the right -->
+  <g transform="translate(0,5) scale(0.357143)">
+    <rect x="176" y="32" width="23" height="23" rx="4.14" fill="#2eeded" opacity="0.18" filter="url(#wordmark-dark-glow)"/>
+    <rect x="8" y="8" width="15" height="15" rx="2.7" fill="#6e6e74" transform="rotate(-42 15.5 15.5)"/>
+    <rect x="34" y="58" width="24" height="24" rx="4.32" fill="#757a8a" transform="rotate(33 46 70)"/>
+    <rect x="50" y="14" width="17" height="17" rx="3.06" fill="#7987a0" transform="rotate(-27 58.5 22.5)"/>
+    <rect x="74" y="48" width="22" height="22" rx="3.96" fill="#7895b6" transform="rotate(19 85 59)"/>
+    <rect x="92" y="21" width="19" height="19" rx="3.42" fill="#73a5c9" transform="rotate(-12 101.5 30.5)"/>
+    <rect x="114.5" y="39" width="21" height="21" rx="3.78" fill="#69b6d9" transform="rotate(7 125 49.5)"/>
+    <rect x="134" y="28" width="20" height="20" rx="3.6" fill="#5ac8e5" transform="rotate(-4 144 38)"/>
+    <rect x="155.5" y="32" width="23" height="23" rx="4.14" fill="#46dbec"/>
+    <rect x="176" y="32" width="23" height="23" rx="4.14" fill="#2eeded"/>
+  </g>
 
   <!-- Wordmark -->
-  <text x="50" y="29"
+  <text x="86" y="29"
         font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
         font-size="26" font-weight="600" letter-spacing="-0.02em"
         fill="#ffffff">syntropy</text>
