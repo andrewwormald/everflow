@@ -1,10 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 28" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="4" role="img" aria-label="Everflow">
-  <title>everflow — flow chevrons</title>
-  <desc>Three chevrons stepping forward. Trailing two grey (merged / in-review), leading one green (in flight). Reads as a shell prompt.</desc>
-  <!-- Trailing chevron: merged -->
-  <polyline points="4,4 14,14 4,24" stroke="#17191e" stroke-opacity="0.32"/>
-  <!-- Middle chevron: in-review -->
-  <polyline points="22,4 32,14 22,24" stroke="#17191e" stroke-opacity="0.62"/>
-  <!-- Leading chevron: in-flight, merge-green -->
-  <polyline points="40,4 50,14 40,24" stroke="#159a5c"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 205 84" role="img" aria-label="Syntropy">
+  <title>syntropy — chaos converging into order</title>
+  <desc>Nine blocks, scattered/rotated/desaturated on the left, converging into a precise aligned row in cyan on the right — order emerging from disorder.</desc>
+  <defs>
+    <filter id="glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="4.5"/>
+    </filter>
+  </defs>
+  <rect x="176" y="32" width="23" height="23" rx="4.14" fill="#00d2d3" opacity="0.18" filter="url(#glow)"/>
+  <rect x="8" y="8" width="15" height="15" rx="2.7" fill="#57575e" transform="rotate(-42 15.5 15.5)"/>
+  <rect x="34" y="58" width="24" height="24" rx="4.32" fill="#5e6273" transform="rotate(33 46 70)"/>
+  <rect x="50" y="14" width="17" height="17" rx="3.06" fill="#616f88" transform="rotate(-27 58.5 22.5)"/>
+  <rect x="74" y="48" width="22" height="22" rx="3.96" fill="#617d9c" transform="rotate(19 85 59)"/>
+  <rect x="92" y="21" width="19" height="19" rx="3.42" fill="#5b8caf" transform="rotate(-12 101.5 30.5)"/>
+  <rect x="114.5" y="39" width="21" height="21" rx="3.78" fill="#4f9dbf" transform="rotate(7 125 49.5)"/>
+  <rect x="134" y="28" width="20" height="20" rx="3.6" fill="#3caeca" transform="rotate(-4 144 38)"/>
+  <rect x="155.5" y="32" width="23" height="23" rx="4.14" fill="#17c0d1"/>
+  <rect x="176" y="32" width="23" height="23" rx="4.14" fill="#00d2d3"/>
 </svg>
