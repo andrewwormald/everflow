@@ -1,5 +1,13 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" role="img" aria-label="Everflow favicon">
-  <title>everflow</title>
-  <!-- Simplified single chevron at favicon scale — the 3-chevron rhythm doesn't survive 16×16. -->
-  <polyline points="5,3 11,8 5,13" stroke="#159a5c"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" role="img" aria-label="Syntropy favicon">
+  <title>syntropy — chaos converging into order</title>
+  <!-- Square-cropped reduction of mark.svg: three blocks, dark to light, show the transition even at 16x16. -->
+  <defs>
+    <filter id="favicon-glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="0.6"/>
+    </filter>
+  </defs>
+  <rect x="11" y="6" width="4" height="4" rx="0.72" fill="#00d2d3" opacity="0.3" filter="url(#favicon-glow)"/>
+  <rect x="1" y="6" width="4" height="4" rx="0.72" fill="#57575e"/>
+  <rect x="6" y="6" width="4" height="4" rx="0.72" fill="#5b8caf"/>
+  <rect x="11" y="6" width="4" height="4" rx="0.72" fill="#00d2d3"/>
 </svg>
