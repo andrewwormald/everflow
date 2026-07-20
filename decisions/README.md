@@ -87,7 +87,7 @@ forces or unlocks.
 | 0037 | Resume CLI writes directly to the RecordStore                   | Accepted | 2026-07-02 |
 | 0038 | Poller auth-backoff via Paused-with-marker                      | Accepted | 2026-07-02 |
 | 0039 | Thread planner's per-increment rationale into the runner's Goal | Accepted | 2026-07-03 |
-| 0040 | Adopt the "Flow Chevrons" brand mark (supersedes ADR-0013)      | Accepted | 2026-07-03 |
+| 0040 | Adopt the "Flow Chevrons" brand mark (supersedes ADR-0013)      | Superseded by 0058 | 2026-07-03 |
 | 0041 | Per-stream comment watermarks (fix cross-stream drop)           | Accepted | 2026-07-16 |
 | 0042 | Unrecognised `/everflow` verbs become freeform instructions     | Accepted | 2026-07-16 |
 | 0043 | Standing scope-discipline instruction on every runner prompt    | Accepted | 2026-07-16 |
@@ -105,3 +105,4 @@ forces or unlocks.
 | 0055 | Rename the project from everflow to syntropy                            | Accepted | 2026-07-19 |
 | 0056 | Decision marker must be alone on its line                                | Accepted | 2026-07-19 |
 | 0057 | Decision marker tag renamed to `<syntropy-decision>`, both names accepted | Accepted | 2026-07-20 |
+| 0058 | Adopt the "Syntropy" brand mark — chaos converging into order (supersedes ADR-0040) | Accepted | 2026-07-20 |
