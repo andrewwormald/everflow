@@ -123,31 +123,42 @@ func printUsage(w io.Writer) {
 // before the reconciler re-triggers it.
 const reconcilerStuckThresholdDefault = 10 * time.Minute
 
+// reconcilerRetriggerCooldownDefault is the --reconciler-retrigger-cooldown
+// flag's default: how long a re-triggered RunID is left alone before the
+// sweeper will consider it stuck again. Deliberately short relative to
+// reconcilerStuckThresholdDefault — long enough to kill the 30s-tick
+// re-trigger spam observed in production, but short enough that a run which
+// is genuinely stuck (not just slow to react to the re-trigger) gets another
+// attempt quickly rather than waiting out a near-stuck-threshold-length gap.
+const reconcilerRetriggerCooldownDefault = 3 * time.Minute
+
 // buildSweeper constructs the reconciler.Sweeper the daemon runs alongside
 // pollerLoop. Split out from cmdDaemon so tests can assert it's wired to the
 // same store/streamer/workflow name as the rest of the daemon.
-func buildSweeper(rs workflow.RecordStore, streamer workflow.EventStreamer, threshold time.Duration, logger *slog.Logger) *reconciler.Sweeper {
+func buildSweeper(rs workflow.RecordStore, streamer workflow.EventStreamer, threshold, cooldown time.Duration, logger *slog.Logger) *reconciler.Sweeper {
 	return &reconciler.Sweeper{
-		Store:        rs,
-		Streamer:     streamer,
-		WorkflowName: workflowName,
-		Threshold:    threshold,
-		Logger:       logger,
+		Store:             rs,
+		Streamer:          streamer,
+		WorkflowName:      workflowName,
+		Threshold:         threshold,
+		RetriggerCooldown: cooldown,
+		Logger:            logger,
 	}
 }
 
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
-		storePath      = fs.String("store", "", "path to sqlite store (default ~/.syntropy/store.db; pass ':memory:' for volatile)")
-		listenAddr     = fs.String("listen", ":8080", "address for the webhook HTTP server")
-		publicBaseURL  = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
-		gitlabBaseURL  = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
-		githubBaseURL  = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
-		triggerAddr    = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `syntropy start`)")
-		commitAuthor   = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
-		commitEmail    = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
-		stuckThreshold = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
+		storePath         = fs.String("store", "", "path to sqlite store (default ~/.syntropy/store.db; pass ':memory:' for volatile)")
+		listenAddr        = fs.String("listen", ":8080", "address for the webhook HTTP server")
+		publicBaseURL     = fs.String("public-base-url", "", "publicly reachable URL where webhooks land (e.g. https://everflow.example.com)")
+		gitlabBaseURL     = fs.String("gitlab-base-url", "", "GitLab base URL (defaults to https://gitlab.com)")
+		githubBaseURL     = fs.String("github-base-url", "", "GitHub API base URL (defaults to https://api.github.com; GHE users set this to https://<your-ghe>/api/v3)")
+		triggerAddr       = fs.String("trigger-listen", "127.0.0.1:8081", "address for the localhost-only trigger HTTP server (used by `syntropy start`)")
+		commitAuthor      = fs.String("commit-author", "", "git commit author name (default: host .gitconfig)")
+		commitEmail       = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
+		stuckThreshold    = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
+		retriggerCooldown = fs.Duration("reconciler-retrigger-cooldown", reconcilerRetriggerCooldownDefault, "how long a Run is left alone after the reconciler re-triggers it before it can be re-triggered again")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -306,7 +317,7 @@ func cmdDaemon(args []string) error {
 	// Start the reconciliation sweep — detects Runs stuck on a lost
 	// in-memory event (ADR-0033's EventStreamer has no durable queue) and
 	// re-triggers them. See internal/reconciler's package doc.
-	sweeper := buildSweeper(recordStore, eventStreamer, *stuckThreshold, logger)
+	sweeper := buildSweeper(recordStore, eventStreamer, *stuckThreshold, *retriggerCooldown, logger)
 	go sweeper.Run(ctx)
 
 	fmt.Fprintf(os.Stderr, "%s\n", daemonBannerLine())
