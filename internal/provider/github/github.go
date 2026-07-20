@@ -379,44 +379,77 @@ func (p *Provider) ListNotesSince(ctx context.Context, projectID string, mrIID i
 // via the GraphQL `resolveReviewThread` mutation.
 //
 // The discussionID we receive from the inbound webhook decoder is the
-// pull_request_review_comment's GraphQL node_id (see events.go). The
-// mutation operates on the parent PullRequestReviewThread node, so we
-// first query for the comment's thread node ID, then call the mutation.
-//
-// Empty discussionID is a no-op — issue_comment and pull_request_review
-// events don't live on a thread, so DiscussionID stays empty for those
-// kinds (the only way the caller hits this method with a non-empty
-// discussionID is via a pull_request_review_comment).
-func (p *Provider) ResolveDiscussion(ctx context.Context, _ string, _ int, discussionID string) error {
+// pull_request_review_comment's GraphQL node_id (see events.go).
+// PullRequestReviewComment has no field linking back to its parent
+// PullRequestReviewThread, so we can't look the thread up directly from
+// the comment node. Instead we list the PR's review threads (each with
+// its comments) and find the thread whose comments contain our node ID.
+func (p *Provider) ResolveDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string) error {
 	if discussionID == "" {
 		return nil
 	}
 
-	// 1. Map comment node_id → parent review thread node_id.
-	type threadLookup struct {
-		Node struct {
-			PullRequestReviewThread struct {
-				ID string `json:"id"`
-			} `json:"pullRequestReviewThread"`
-		} `json:"node"`
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return fmt.Errorf("ResolveDiscussion: %w", err)
 	}
-	const lookupQuery = `query($commentId: ID!) {
-  node(id: $commentId) {
-    ... on PullRequestReviewComment {
-      pullRequestReviewThread { id }
+
+	// 1. Find the review thread containing our comment node ID.
+	type threadLookup struct {
+		Repository struct {
+			PullRequest struct {
+				ReviewThreads struct {
+					Nodes []struct {
+						ID       string `json:"id"`
+						Comments struct {
+							Nodes []struct {
+								ID string `json:"id"`
+							} `json:"nodes"`
+						} `json:"comments"`
+					} `json:"nodes"`
+				} `json:"reviewThreads"`
+			} `json:"pullRequest"`
+		} `json:"repository"`
+	}
+	const lookupQuery = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          comments(first: 100) {
+            nodes { id }
+          }
+        }
+      }
     }
   }
 }`
 	var lookup threadLookup
-	if err := p.doGraphQL(ctx, lookupQuery, map[string]any{"commentId": discussionID}, &lookup); err != nil {
+	if err := p.doGraphQL(ctx, lookupQuery, map[string]any{
+		"owner":  owner,
+		"repo":   repo,
+		"number": mrIID,
+	}, &lookup); err != nil {
 		return fmt.Errorf("ResolveDiscussion: lookup thread for comment %s: %w", discussionID, err)
 	}
-	threadID := lookup.Node.PullRequestReviewThread.ID
+	var threadID string
+	for _, thread := range lookup.Repository.PullRequest.ReviewThreads.Nodes {
+		for _, c := range thread.Comments.Nodes {
+			if c.ID == discussionID {
+				threadID = thread.ID
+				break
+			}
+		}
+		if threadID != "" {
+			break
+		}
+	}
 	if threadID == "" {
-		// Comment doesn't belong to a thread (e.g. it's a review-level
-		// comment, not an inline comment). Nothing to resolve. Treat as
-		// a no-op rather than an error so the caller's best-effort
-		// resolve doesn't surface noise.
+		// Comment doesn't belong to any review thread (e.g. it's a
+		// review-level comment, not an inline one). Nothing to resolve.
+		// Treat as a no-op rather than an error so the caller's
+		// best-effort resolve doesn't surface noise.
 		return nil
 	}
 

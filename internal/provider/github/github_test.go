@@ -150,15 +150,18 @@ func TestMapEventKinds_MRKindsCollapseToPullRequest(t *testing.T) {
 }
 
 // TestResolveDiscussion_TwoStepGraphQL exercises the full happy path:
-// commentNodeID → thread lookup → resolveReviewThread mutation. The
-// fake GitHub responds with the expected GraphQL envelopes for each
-// call.
+// list the PR's reviewThreads (with their comments), match discussionID
+// against a comment's node id, then call resolveReviewThread on the
+// owning thread. The fake GitHub responds with the expected GraphQL
+// envelopes for each call.
 func TestResolveDiscussion_TwoStepGraphQL(t *testing.T) {
 	var (
-		gotLookup   bool
-		gotResolve  bool
-		seenComment string
-		seenThread  string
+		gotLookup  bool
+		gotResolve bool
+		seenOwner  string
+		seenRepo   string
+		seenNumber float64
+		seenThread string
 	)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/graphql" {
@@ -171,10 +174,15 @@ func TestResolveDiscussion_TwoStepGraphQL(t *testing.T) {
 		}
 		_ = json.Unmarshal(body, &req)
 		switch {
-		case strings.Contains(req.Query, "pullRequestReviewThread"):
+		case strings.Contains(req.Query, "reviewThreads"):
 			gotLookup = true
-			seenComment, _ = req.Variables["commentId"].(string)
-			_, _ = w.Write([]byte(`{"data":{"node":{"pullRequestReviewThread":{"id":"PRRT_thread_xyz"}}}}`))
+			seenOwner, _ = req.Variables["owner"].(string)
+			seenRepo, _ = req.Variables["repo"].(string)
+			seenNumber, _ = req.Variables["number"].(float64)
+			_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[
+				{"id":"PRRT_other","comments":{"nodes":[{"id":"PRRC_other"}]}},
+				{"id":"PRRT_thread_xyz","comments":{"nodes":[{"id":"PRRC_comment_abc"}]}}
+			]}}}}}`))
 		case strings.Contains(req.Query, "resolveReviewThread"):
 			gotResolve = true
 			seenThread, _ = req.Variables["threadId"].(string)
@@ -194,16 +202,45 @@ func TestResolveDiscussion_TwoStepGraphQL(t *testing.T) {
 		t.Errorf("ResolveDiscussion: want nil err, got %v", err)
 	}
 	if !gotLookup {
-		t.Errorf("expected the thread-lookup query to fire")
+		t.Errorf("expected the reviewThreads lookup query to fire")
 	}
 	if !gotResolve {
 		t.Errorf("expected the resolveReviewThread mutation to fire")
 	}
-	if seenComment != "PRRC_comment_abc" {
-		t.Errorf("lookup commentId: want PRRC_comment_abc, got %q", seenComment)
+	if seenOwner != "owner" || seenRepo != "repo" || seenNumber != 42 {
+		t.Errorf("lookup vars: want owner=owner repo=repo number=42, got owner=%q repo=%q number=%v", seenOwner, seenRepo, seenNumber)
 	}
 	if seenThread != "PRRT_thread_xyz" {
 		t.Errorf("mutation threadId: want PRRT_thread_xyz, got %q", seenThread)
+	}
+}
+
+// TestResolveDiscussion_RejectsBrokenNodeShape is a regression test for
+// the original, broken query shape: `node(id: $commentId) { ... on
+// PullRequestReviewComment { pullRequestReviewThread { id } } }`.
+// PullRequestReviewComment has no pullRequestReviewThread field on
+// GitHub's live schema, so that query would fail server-side with a
+// GraphQL validation error. The fixed implementation must never send a
+// query shaped like that.
+func TestResolveDiscussion_RejectsBrokenNodeShape(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			Query string `json:"query"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if strings.Contains(req.Query, "pullRequestReviewThread") && strings.Contains(req.Query, "node(id:") {
+			t.Errorf("ResolveDiscussion sent the broken node(id:)/pullRequestReviewThread query shape: %s", req.Query)
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"errors":[{"message":"Field 'pullRequestReviewThread' doesn't exist on type 'PullRequestReviewComment'"}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`))
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ResolveDiscussion(t.Context(), "owner/repo", 42, "PRRC_comment_abc"); err != nil {
+		t.Errorf("ResolveDiscussion: want nil err, got %v", err)
 	}
 }
 
@@ -225,14 +262,14 @@ func TestResolveDiscussion_EmptyID_NoOp(t *testing.T) {
 }
 
 // TestResolveDiscussion_NotAThread covers the case where the lookup
-// returns no parent thread (e.g. the comment is a review-level comment,
-// not an inline one). Treat as no-op rather than error so the caller's
-// best-effort resolve doesn't surface noise.
+// returns no thread containing the comment (e.g. the comment is a
+// review-level comment, not an inline one). Treat as no-op rather than
+// error so the caller's best-effort resolve doesn't surface noise.
 func TestResolveDiscussion_NotAThread(t *testing.T) {
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
-		_, _ = w.Write([]byte(`{"data":{"node":{"pullRequestReviewThread":null}}}`))
+		_, _ = w.Write([]byte(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[]}}}}}`))
 	}))
 	defer srv.Close()
 	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
