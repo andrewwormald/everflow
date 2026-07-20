@@ -5,7 +5,7 @@
   </picture>
 
   <p><strong>Turn one large change into a chain of small, individually-reviewable MRs — and shepherd each one to merge before opening the next.</strong></p>
-  <p><em>syntropy</em> · /ˈsɪn.trə.pi/ (SIN-truh-pee) — the tendency of a system to organize, grow in complexity, and move toward order; the counterpart to entropy, the Second Law of Thermodynamics' pull toward disorder. The name is the mission: take one large, disordered change and organize it into a chain of small, orderly, reviewable steps.</p>
+  <p><em>syntropy</em> · /ˈsɪn.trə.pi/ (SIN-truh-pee) — the tendency of a system to organize, grow in complexity, and move toward order; the counterpart to entropy, the Second Law of Thermodynamics' pull toward disorder. The name is the mission: agents can generate change faster than any human review process can absorb. Syntropy imposes order on that volume — pacing agent-authored MRs to the rate a human can actually comprehend and gate, not the rate agents can produce them.</p>
 </div>
 
 ---
