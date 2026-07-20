@@ -319,7 +319,7 @@ func newDeps(t *testing.T, p provider.Provider) *Deps {
 		Runners:       reg,
 		Git:           &fakeGit{},
 		Secrets:       webhook.NewSecretRegistry(),
-		PublicBaseURL: "https://everflow.test",
+		PublicBaseURL: "https://syntropy.test",
 		RunsRoot:      t.TempDir(),
 	}
 }
@@ -386,7 +386,7 @@ func TestSetup_HappyPath(t *testing.T) {
 	if fp.registered.ProjectID != "acme/example" {
 		t.Errorf("RegisterWebhook ProjectID: want acme/example, got %q", fp.registered.ProjectID)
 	}
-	if !strings.HasPrefix(fp.registered.CallbackURL, "https://everflow.test/webhook/fake/") {
+	if !strings.HasPrefix(fp.registered.CallbackURL, "https://syntropy.test/webhook/fake/") {
 		t.Errorf("CallbackURL prefix wrong: got %q", fp.registered.CallbackURL)
 	}
 	if !strings.HasSuffix(fp.registered.CallbackURL, r.RunID) {
@@ -715,7 +715,7 @@ func TestWork_HappyPath(t *testing.T) {
 	// Have the fake provider return a real-shaped MR.
 	fp.createMRResult = provider.MR{
 		ProjectID: "acme/example", IID: 42,
-		URL: "https://gitlab/x/merge_requests/42", Branch: "everflow/deadbeef/svc-payments",
+		URL: "https://gitlab/x/merge_requests/42", Branch: "syntropy/deadbeef/svc-payments",
 	}
 
 	next, err := d.work(t.Context(), r)
@@ -2257,7 +2257,7 @@ func TestSelfCommentLoop_EndToEnd(t *testing.T) {
 	}})
 	fp.createMRResult = provider.MR{
 		ProjectID: "acme/example", IID: 42,
-		URL: "https://x/42", Branch: "everflow/deadbeef/svc-a",
+		URL: "https://x/42", Branch: "syntropy/deadbeef/svc-a",
 	}
 
 	r := newRun(t, &AgentState{

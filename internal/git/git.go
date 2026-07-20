@@ -242,7 +242,7 @@ func (g *ExecGit) Commit(ctx context.Context, dir, message string) error {
 		}
 	}
 	if len(skipped) > 0 {
-		fmt.Fprintf(os.Stderr, "everflow git: skipped %d untracked binary file(s): %s\n",
+		fmt.Fprintf(os.Stderr, "syntropy git: skipped %d untracked binary file(s): %s\n",
 			len(skipped), strings.Join(skipped, ", "))
 	}
 
