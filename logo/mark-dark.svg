@@ -1,13 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Syntropy">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 205 84" role="img" aria-label="Syntropy">
   <title>syntropy — chaos converging into order (dark)</title>
-  <desc>Nine particles scattered with varied hue and size settle along a converging path into a single steady green point, reading as disorder resolving into order. Dark-mode variant.</desc>
-  <circle cx="8.83" cy="3.17" r="2.6" fill="#ff735f"/>
-  <circle cx="6.53" cy="11.48" r="2.41" fill="#b17eff"/>
-  <circle cx="14.12" cy="9.88" r="2.23" fill="#00b9cf"/>
-  <circle cx="13.23" cy="16.77" r="2.04" fill="#ff9c3f"/>
-  <circle cx="19.41" cy="16.59" r="1.86" fill="#ef6dc9"/>
-  <circle cx="19.94" cy="22.06" r="1.67" fill="#299cff"/>
-  <circle cx="24.71" cy="23.29" r="1.49" fill="#00bdb6"/>
-  <circle cx="26.65" cy="27.35" r="1.3" fill="#00b991"/>
-  <circle cx="30.0" cy="30.0" r="1.7" fill="#45b164"/>
+  <desc>Nine blocks, scattered/rotated/desaturated on the left, converging into a precise aligned row in cyan on the right — order emerging from disorder. Dark-mode variant.</desc>
+  <defs>
+    <filter id="glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="4.5"/>
+    </filter>
+  </defs>
+  <rect x="176" y="32" width="23" height="23" rx="4.14" fill="#2eeded" opacity="0.18" filter="url(#glow)"/>
+  <rect x="8" y="8" width="15" height="15" rx="2.7" fill="#6e6e74" transform="rotate(-42 15.5 15.5)"/>
+  <rect x="34" y="58" width="24" height="24" rx="4.32" fill="#757a8a" transform="rotate(33 46 70)"/>
+  <rect x="50" y="14" width="17" height="17" rx="3.06" fill="#7987a0" transform="rotate(-27 58.5 22.5)"/>
+  <rect x="74" y="48" width="22" height="22" rx="3.96" fill="#7895b6" transform="rotate(19 85 59)"/>
+  <rect x="92" y="21" width="19" height="19" rx="3.42" fill="#73a5c9" transform="rotate(-12 101.5 30.5)"/>
+  <rect x="114.5" y="39" width="21" height="21" rx="3.78" fill="#69b6d9" transform="rotate(7 125 49.5)"/>
+  <rect x="134" y="28" width="20" height="20" rx="3.6" fill="#5ac8e5" transform="rotate(-4 144 38)"/>
+  <rect x="155.5" y="32" width="23" height="23" rx="4.14" fill="#46dbec"/>
+  <rect x="176" y="32" width="23" height="23" rx="4.14" fill="#2eeded"/>
 </svg>
