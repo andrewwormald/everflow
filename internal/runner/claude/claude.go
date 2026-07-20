@@ -303,10 +303,16 @@ your response is read, so feel free to write naturally up to that point.
 
 // --- decision parsing ---
 
-// decisionRE matches the closing-paren-style decision marker. We extract
-// the LAST one (sometimes the model echoes the protocol back in its
-// reasoning before producing the real one).
-var decisionRE = regexp.MustCompile(`(?s)<everflow-decision>\s*(.*?)\s*</everflow-decision>`)
+// decisionRE matches the decision marker. Per the protocol (ADR-0027), the
+// real marker must sit on its own line, so the pattern requires only
+// leading/trailing horizontal whitespace around the tag on that line. This
+// stops an incidental mention of the tag inside prose (e.g. the model
+// quoting the protocol instructions back, or discussing the tag in a
+// sentence) from being mistaken for a genuine marker: such mentions share a
+// line with other text and so never match. Among genuine own-line markers,
+// we still extract the LAST one (sometimes the model echoes the protocol as
+// its own standalone line while reasoning before producing the real one).
+var decisionRE = regexp.MustCompile(`(?m)^[ \t]*<everflow-decision>\s*(.*?)\s*</everflow-decision>[ \t]*$`)
 
 // ErrNoDecisionMarker is returned by ParseDecision when claude's response
 // contains no <everflow-decision>...</everflow-decision> tag. Treated as a

@@ -165,6 +165,23 @@ but actually I'm done now.
 	}
 }
 
+func TestParseDecision_IncidentalMentionDoesNotHijack(t *testing.T) {
+	// The model discusses the marker format in prose (sharing a line with
+	// other text) before giving the real, standalone marker. The prose
+	// mention must not be picked up as the decision.
+	out := "I fixed the bug. For example, a summary like \"see the <everflow-decision>fail: bad</everflow-decision> tag\" used to hijack parsing.\n\n<everflow-decision>done</everflow-decision>"
+	d, summary, _, _, err := ParseDecision(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != runner.DecisionDone {
+		t.Errorf("Decision: want Done (real marker), got %v", d)
+	}
+	if !strings.Contains(summary, "hijack parsing") {
+		t.Errorf("Summary should carry the prose, incidental mention included: %q", summary)
+	}
+}
+
 func TestParseDecision_CaseInsensitiveVerb(t *testing.T) {
 	out := `<everflow-decision>DONE</everflow-decision>`
 	d, _, _, _, err := ParseDecision(out)
