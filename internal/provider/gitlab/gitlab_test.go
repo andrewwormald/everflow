@@ -121,3 +121,31 @@ func TestReactToNote(t *testing.T) {
 		t.Errorf("name: want eyes, got %s", gotName)
 	}
 }
+
+func TestReplyToDiscussion(t *testing.T) {
+	var gotPath, gotMethod, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotBody, _ = body["body"].(string)
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ReplyToDiscussion(t.Context(), "owner/repo", 42, "disc-abc", "fixed in latest push"); err != nil {
+		t.Fatalf("ReplyToDiscussion: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: want POST, got %s", gotMethod)
+	}
+	// httptest decodes URL paths, so the escaped "/" in the project ID
+	// comes through unescaped here.
+	if gotPath != "/api/v4/projects/owner/repo/merge_requests/42/discussions/disc-abc/notes" {
+		t.Errorf("path: got %s", gotPath)
+	}
+	if gotBody != "fixed in latest push" {
+		t.Errorf("body: want %q, got %q", "fixed in latest push", gotBody)
+	}
+}

@@ -70,6 +70,13 @@ type Provider interface {
 	UpdateMRTitle(ctx context.Context, projectID string, mrIID int, title string) error
 	CloseMR(ctx context.Context, projectID string, mrIID int) error
 
+	// ReplyToDiscussion posts a reply within an existing comment thread,
+	// instead of a new top-level MR comment, so the reviewer sees the
+	// response inline against the comment it addresses. discussionID is the
+	// platform-specific thread identifier surfaced in Note.DiscussionID /
+	// NotePoll.DiscussionID.
+	ReplyToDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string, body string) error
+
 	// ReactToNote adds an emoji reaction to a comment, used to acknowledge
 	// receipt the instant everflow picks a comment up — before the
 	// (potentially long) subagent invocation runs, so the author knows it

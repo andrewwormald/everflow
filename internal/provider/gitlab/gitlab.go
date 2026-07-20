@@ -188,6 +188,15 @@ func (p *Provider) PostComment(ctx context.Context, projectID string, mrIID int,
 	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
 }
 
+// ReplyToDiscussion → POST /api/v4/projects/:id/merge_requests/:iid/discussions/:discussion_id/notes.
+// Posts within the existing thread rather than as a new top-level note, so
+// the reply shows up nested under the comment it addresses.
+func (p *Provider) ReplyToDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string, body string) error {
+	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d/discussions/%s/notes",
+		url.PathEscape(projectID), mrIID, url.PathEscape(discussionID))
+	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
+}
+
 // UpdateMRTitle → PUT /api/v4/projects/:id/merge_requests/:iid.
 func (p *Provider) UpdateMRTitle(ctx context.Context, projectID string, mrIID int, title string) error {
 	path := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",
