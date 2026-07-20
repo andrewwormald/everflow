@@ -292,9 +292,10 @@ func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
 	recordStore := backend.RecordStore()
 	streamer := eventstream.New(backend.DB())
 	threshold := 42 * time.Minute
+	cooldown := 7 * time.Minute
 	logger := discardLogger()
 
-	sweeper := buildSweeper(recordStore, streamer, threshold, logger)
+	sweeper := buildSweeper(recordStore, streamer, threshold, cooldown, logger)
 
 	if sweeper.Store != recordStore {
 		t.Errorf("Store = %v, want the daemon's recordStore", sweeper.Store)
@@ -307,6 +308,9 @@ func TestBuildSweeper_WiredToDaemonDeps(t *testing.T) {
 	}
 	if sweeper.Threshold != threshold {
 		t.Errorf("Threshold = %v, want %v", sweeper.Threshold, threshold)
+	}
+	if sweeper.RetriggerCooldown != cooldown {
+		t.Errorf("RetriggerCooldown = %v, want %v", sweeper.RetriggerCooldown, cooldown)
 	}
 	if sweeper.Logger != logger {
 		t.Errorf("Logger = %v, want the daemon's logger", sweeper.Logger)
