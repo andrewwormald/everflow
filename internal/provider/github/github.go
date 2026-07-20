@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -175,12 +176,25 @@ func (p *Provider) PostComment(ctx context.Context, projectID string, mrIID int,
 	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
 }
 
-// ReplyToDiscussion is not yet implemented for GitHub: unlike GitLab's
-// discussion_id, replying within a review thread requires the numeric
-// review-comment ID (distinct from the GraphQL node ID surfaced as
-// DiscussionID here — see ResolveDiscussion below). Left as a follow-up.
+// ReplyToDiscussion → POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies.
+//
+// Unlike GitLab's opaque discussion_id, GitHub's replies endpoint requires
+// the numeric review-comment ID (the `id` field on a pull_request_review_comment,
+// e.g. as returned in ListNotesSince's streamReviewComment entries) — not the
+// GraphQL node ID used as DiscussionID by ResolveDiscussion below. Callers
+// must pass the numeric ID as a string; a non-numeric discussionID is an
+// error rather than a silent no-op.
 func (p *Provider) ReplyToDiscussion(ctx context.Context, projectID string, mrIID int, discussionID string, body string) error {
-	return errors.New("github: ReplyToDiscussion not implemented")
+	owner, repo, err := splitProjectID(projectID)
+	if err != nil {
+		return err
+	}
+	commentID, err := strconv.ParseInt(discussionID, 10, 64)
+	if err != nil {
+		return fmt.Errorf("github: ReplyToDiscussion: discussionID %q must be the numeric review-comment ID: %w", discussionID, err)
+	}
+	path := fmt.Sprintf("/repos/%s/%s/pulls/%d/comments/%d/replies", owner, repo, mrIID, commentID)
+	return p.doJSON(ctx, http.MethodPost, path, map[string]any{"body": body}, nil)
 }
 
 // UpdateMRTitle → PATCH /repos/{owner}/{repo}/pulls/{number}.

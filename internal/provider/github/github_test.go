@@ -635,6 +635,50 @@ func TestReactToNote_Review(t *testing.T) {
 	}
 }
 
+func TestReplyToDiscussion_PostsToRepliesEndpoint(t *testing.T) {
+	var gotPath, gotMethod, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotMethod = r.Method
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotBody, _ = body["body"].(string)
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if err := p.ReplyToDiscussion(t.Context(), "owner/repo", 42, "123456", "thanks, fixed"); err != nil {
+		t.Fatalf("ReplyToDiscussion: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: want POST, got %s", gotMethod)
+	}
+	if gotPath != "/repos/owner/repo/pulls/42/comments/123456/replies" {
+		t.Errorf("path: got %s", gotPath)
+	}
+	if gotBody != "thanks, fixed" {
+		t.Errorf("body: want %q, got %q", "thanks, fixed", gotBody)
+	}
+}
+
+func TestReplyToDiscussion_NonNumericDiscussionIDErrors(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	// GraphQL node IDs (e.g. as surfaced via NotePoll.DiscussionID from the
+	// inline-comment stream) are not accepted here — this endpoint requires
+	// the numeric review-comment ID.
+	err := p.ReplyToDiscussion(t.Context(), "owner/repo", 42, "PRRC_kwDOABC123", "thanks, fixed")
+	if err == nil {
+		t.Fatal("expected an error for a non-numeric discussionID")
+	}
+	if called {
+		t.Errorf("request should not be made when discussionID fails to parse")
+	}
+}
+
 // TestGraphQLEndpoint_GHE verifies the GHE path-rewrite logic.
 func TestGraphQLEndpoint_GHE(t *testing.T) {
 	p := &Provider{baseURL: "https://ghe.example.com/api/v3"}
