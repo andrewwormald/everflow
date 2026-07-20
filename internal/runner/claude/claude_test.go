@@ -182,6 +182,31 @@ func TestParseDecision_IncidentalMentionDoesNotHijack(t *testing.T) {
 	}
 }
 
+func TestParseDecision_AcceptsBothTagNames(t *testing.T) {
+	// ADR-0057: the marker renamed from <everflow-decision> to
+	// <syntropy-decision>, but ParseDecision must still accept the old
+	// name too — an in-flight invocation prompted before a daemon
+	// rebuild will still produce the old tag, and that must keep
+	// parsing correctly rather than erroring.
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"new tag", "All done.\n\n<syntropy-decision>done</syntropy-decision>"},
+		{"legacy tag", "All done.\n\n<everflow-decision>done</everflow-decision>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, _, _, err := ParseDecision(tc.out)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if d != runner.DecisionDone {
+				t.Errorf("Decision: want Done, got %v", d)
+			}
+		})
+	}
+}
+
 func TestParseDecision_CaseInsensitiveVerb(t *testing.T) {
 	out := `<everflow-decision>DONE</everflow-decision>`
 	d, _, _, _, err := ParseDecision(out)
@@ -212,7 +237,7 @@ func TestBuildPrompt_AllFields(t *testing.T) {
 		"## Reviewer feedback to address", "rename the LogContext",
 		"## CI failure to investigate", "TestSomething",
 		"## Scope discipline", "small and narrowly scoped",
-		"## How to finish", "<everflow-decision>",
+		"## How to finish", "<syntropy-decision>",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q\n--- prompt ---\n%s", want, prompt)
@@ -235,7 +260,7 @@ func TestBuildPrompt_MinimalFields(t *testing.T) {
 	if !strings.Contains(prompt, "just do the thing") {
 		t.Errorf("Goal should be present")
 	}
-	if !strings.Contains(prompt, "<everflow-decision>") {
+	if !strings.Contains(prompt, "<syntropy-decision>") {
 		t.Errorf("decision protocol should always be appended")
 	}
 	if !strings.Contains(prompt, "## Scope discipline") {

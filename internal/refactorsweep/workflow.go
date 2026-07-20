@@ -389,7 +389,7 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 
 	req := runner.Request{
 		Worktree:     planningDir,
-		SkillCommand: "/everflow-plan",
+		SkillCommand: "/syntropy-plan",
 		Goal:         goal,
 		UnitID:       "", // planning is not unit-scoped
 		Model:        r.Object.RunnerModel,
@@ -609,7 +609,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 	// 2. Invoke runner inside the worktree.
 	req := runner.Request{
 		Worktree:        worktree,
-		SkillCommand:    fmt.Sprintf("/everflow-unit %s", unitID), // overridden once SkillPath integration lands
+		SkillCommand:    fmt.Sprintf("/syntropy-unit %s", unitID), // overridden once SkillPath integration lands
 		Goal:            r.Object.Goal,
 		UnitID:          unitID,
 		Model:           r.Object.RunnerModel,
@@ -1091,11 +1091,11 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	switch ev.Kind {
 	case provider.EventNoteAdded:
 		req.CommentBody = ev.Note.Body
-		req.SkillCommand = fmt.Sprintf("/everflow-address-comment %s", unitID)
+		req.SkillCommand = fmt.Sprintf("/syntropy-address-comment %s", unitID)
 		phase = "address_comment"
 	case provider.EventPipelineFailed:
 		req.CIFailure = formatCIFailure(ev.Pipeline)
-		req.SkillCommand = fmt.Sprintf("/everflow-fix-ci %s", unitID)
+		req.SkillCommand = fmt.Sprintf("/syntropy-fix-ci %s", unitID)
 		phase = "fix_ci"
 	default:
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unexpected event kind %s", ev.Kind)
