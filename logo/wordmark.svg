@@ -1,17 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" fill="none" role="img" aria-label="everflow">
-  <title>everflow — primary lockup</title>
-  <desc>Three chevrons stepping forward, followed by the wordmark "everflow". Chevrons and text share the same visual height.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 40" fill="none" role="img" aria-label="syntropy">
+  <title>syntropy — primary lockup</title>
+  <desc>Reduced Syntropy mark (three blocks converging from grey to cyan) followed by the wordmark "syntropy" in JetBrains Mono.</desc>
 
-  <!-- Chevrons: same 3-unit rhythm as the standalone mark, sized to match the wordmark cap-height -->
-  <g stroke-linecap="round" stroke-linejoin="round" stroke-width="4" fill="none">
-    <polyline points="4,8 14,20 4,32" stroke="#17191e" stroke-opacity="0.32"/>
-    <polyline points="22,8 32,20 22,32" stroke="#17191e" stroke-opacity="0.62"/>
-    <polyline points="40,8 50,20 40,32" stroke="#159a5c"/>
-  </g>
+  <defs>
+    <filter id="wordmark-glow" x="-200%" y="-200%" width="500%" height="500%">
+      <feGaussianBlur stdDeviation="1.5"/>
+    </filter>
+  </defs>
 
-  <!-- Wordmark. System sans-serif stack picks up whatever's nearest to the reader's UI font. -->
-  <text x="66" y="29"
-        font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', 'Inter', 'Helvetica Neue', Arial, sans-serif"
+  <!-- Mark: three blocks, dark to light, converging into cyan -->
+  <rect x="27.5" y="15" width="10" height="10" rx="1.8" fill="#00d2d3" opacity="0.3" filter="url(#wordmark-glow)"/>
+  <rect x="2.5" y="15" width="10" height="10" rx="1.8" fill="#57575e"/>
+  <rect x="15" y="15" width="10" height="10" rx="1.8" fill="#5b8caf"/>
+  <rect x="27.5" y="15" width="10" height="10" rx="1.8" fill="#00d2d3"/>
+
+  <!-- Wordmark -->
+  <text x="50" y="29"
+        font-family="'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
         font-size="26" font-weight="600" letter-spacing="-0.02em"
-        fill="#17191e">everflow</text>
+        fill="#17191e">syntropy</text>
 </svg>
