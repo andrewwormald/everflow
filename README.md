@@ -62,7 +62,7 @@ Syntropy puts a daemon in the loop instead of you. The chain self-propels: you a
    └──────────────────────────────────────────────────┘
 ```
 
-Comments are syntropy's only communication channel. Reply with `/syntropy status`, `/syntropy pause`, `/syntropy skip`, `/syntropy retry`, `/syntropy prompt …`, or `/syntropy stop`. Bot noise (CI status, formatter comments) is skipped deterministically by a Starlark filter, so the LLM only fires when a comment or a CI failure actually needs reasoning.
+Comments are syntropy's only communication channel. Reply with `/syntropy pause`, `/syntropy resume`, `/syntropy skip [reason]`, `/syntropy retry`, `/syntropy prompt <text>`, `/syntropy status`, `/syntropy stop`, or `/syntropy abandon` (two-tap, 12h confirmation window). A bare `/syntropy` posts the verb list; anything else after `/syntropy` is treated as a freeform instruction and injected straight into the next subagent call, same as `/syntropy prompt`. Bot noise (CI status, formatter comments) is skipped deterministically by a Starlark filter, so the LLM only fires when a comment or a CI failure actually needs reasoning.
 
 ## How it works (briefly)
 
@@ -77,6 +77,8 @@ Full architecture: [`DESIGN.md`](DESIGN.md). Every meaningful design choice has 
 ## Quick start
 
 You need: Go 1.26+, `git` and `claude` on `$PATH`, a clone of the target repo with an `origin` remote, and provider auth — either an env var (`GITLAB_TOKEN` / `GITHUB_TOKEN`) or an interactive CLI login (`glab auth login` for GitLab, `gh auth login` for GitHub). If both are configured, the env var wins.
+
+The first time you run any command, syntropy best-effort installs the Claude Code Skill bundle into `~/.claude` so Claude Code knows how to invoke it (ADR-0002). Run `./syntropy setup` explicitly to (re)install that bundle and to pick and persist a default runner/model and this repo's PR/MR title convention to `~/.syntropy/config.yaml` (ADR-0051); pass `--force` to overwrite an existing install.
 
 ```bash
 # Write a spec.
@@ -117,7 +119,7 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 | [`AGENTS.md`](AGENTS.md) | Working rules for AI contributors |
 | [`decisions/`](decisions/) | Architecture Decision Records — every meaningful choice |
 | [`logo/`](logo/) | Brand assets |
-| `main.go` | CLI entrypoint: `daemon`, `start`, `status`, `version`, `runners` |
+| `main.go` | CLI entrypoint: `daemon`, `start`, `status`, `list`, `abandon`, `resume`, `phrases`, `setup`, `version` |
 | [`internal/refactorsweep/`](internal/refactorsweep/) | State machine + step bodies + control verbs |
 | [`internal/provider/{gitlab,github}/`](internal/provider/) | Platform adapters |
 | [`internal/runner/claude/`](internal/runner/claude/) | Claude shell-out runner with decision-marker parsing |
@@ -128,6 +130,9 @@ The first MR appears on the target repo within a minute or two. Review it, merge
 | [`internal/eventstream/`](internal/eventstream/) | In-process `workflow.EventStreamer`, cond.Wait signalling over a sqlite-backed durable log |
 | [`internal/poller/`](internal/poller/) | Poll-mode event ingress |
 | [`internal/webhook/`](internal/webhook/) | HTTP webhook ingress (opt-in) |
+| [`internal/reconciler/`](internal/reconciler/) | Detects Runs stuck on a lost in-memory event and wakes them back up |
+| [`internal/config/`](internal/config/) | Reads/writes `~/.syntropy/config.yaml`, the persisted default runner/model from `syntropy setup` |
+| [`internal/setup/`](internal/setup/) | Installs the Claude Code Skill bundle and drives the `syntropy setup` interactive flow |
 | [`_v0/`](_v0/) | Archived scheduled-skill PoC, separate module |
 
 ## Known limitations and troubleshooting
