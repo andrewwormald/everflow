@@ -1754,6 +1754,42 @@ func TestResume_MRClosed_MovesToBlacklisted(t *testing.T) {
 	}
 }
 
+// TestResume_CommentAfterMerge_DroppedWithoutInvokingRunner reproduces the
+// incident scenario: a reviewer comment lands on an MR that was already
+// merged (and thus already removed from InFlight). unitForMR can no longer
+// match it to a unit, so it must be dropped like cross-talk from an unknown
+// MR rather than dispatched to the runner.
+func TestResume_CommentAfterMerge_DroppedWithoutInvokingRunner(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 7}
+	r := awaitingRun(t, "svc-a", mr)
+
+	mergedEv := provider.Event{Kind: provider.EventMRMerged, MR: mr}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, mergedEv)); err != nil {
+		t.Fatalf("resume(merged): %v", err)
+	}
+	if _, still := r.Object.InFlight["svc-a"]; still {
+		t.Fatalf("svc-a should be removed from InFlight after merge")
+	}
+
+	commentEv := provider.Event{
+		Kind: provider.EventNoteAdded,
+		MR:   mr,
+		Note: provider.Note{Body: "one more thing"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, commentEv))
+	if err != nil {
+		t.Fatalf("resume(comment after merge): %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("post-merge comment should be dropped, not change status; got %v", next)
+	}
+	if r.Object.SubagentInvocations != 0 {
+		t.Errorf("post-merge comment must not invoke the runner; got %d invocations", r.Object.SubagentInvocations)
+	}
+}
+
 func TestResume_PipelineSucceeded_NoOp(t *testing.T) {
 	d := newDeps(t, &fakeProvider{})
 	d.withRunner(t, &fakeRunner{})

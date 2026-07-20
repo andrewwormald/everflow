@@ -106,3 +106,5 @@ forces or unlocks.
 | 0056 | Decision marker must be alone on its line                                | Accepted | 2026-07-19 |
 | 0057 | Decision marker tag renamed to `<syntropy-decision>`, both names accepted | Accepted | 2026-07-20 |
 | 0058 | Adopt the "Syntropy" brand mark — chaos converging into order (supersedes ADR-0040) | Accepted | 2026-07-20 |
+| 0059 | Retry-with-backoff on fetch to ride out shared base_repo ref-lock contention | Accepted | 2026-07-20 |
+| 0060 | Detect MR merge/close by polling MR state, not by inferring it from comments | Accepted | 2026-07-20 |
