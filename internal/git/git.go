@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Git is the abstraction step-body code calls into. ExecGit is the
@@ -144,7 +145,12 @@ func (g *ExecGit) EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, b
 	}
 
 	// Fetch latest from origin so we branch off current state of baseBranch.
-	if err := g.run(ctx, baseRepo, "fetch", "origin", baseBranch); err != nil {
+	// baseRepo is shared across every concurrently-running unit, so its refs
+	// can be lock-contended by a sibling Run's fetch; retry rides that out
+	// (see ADR-0059).
+	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
+		return g.run(ctx, baseRepo, "fetch", "origin", baseBranch)
+	}); err != nil {
 		return fmt.Errorf("EnsureBranch: fetch: %w", err)
 	}
 
@@ -158,7 +164,12 @@ func (g *ExecGit) EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, b
 }
 
 func (g *ExecGit) HardReset(ctx context.Context, dir, baseBranch string) error {
-	if err := g.run(ctx, dir, "fetch", "origin", baseBranch); err != nil {
+	// dir is a worktree of the shared base_repo, so its remote-tracking refs
+	// live in the same .git as every sibling Run's worktree; retry rides out
+	// lock contention on them (see ADR-0059).
+	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
+		return g.run(ctx, dir, "fetch", "origin", baseBranch)
+	}); err != nil {
 		return fmt.Errorf("HardReset: fetch: %w", err)
 	}
 	if err := g.run(ctx, dir, "reset", "--hard", "origin/"+baseBranch); err != nil {
@@ -318,7 +329,10 @@ func (g *ExecGit) SyncWithBase(ctx context.Context, dir, baseBranch string) erro
 	if dirty {
 		return fmt.Errorf("SyncWithBase: worktree %s has uncommitted changes; refusing to fetch/merge", dir)
 	}
-	if err := g.run(ctx, dir, "fetch", "origin", baseBranch); err != nil {
+	// Same shared-refs lock contention as EnsureBranch/HardReset (ADR-0059).
+	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
+		return g.run(ctx, dir, "fetch", "origin", baseBranch)
+	}); err != nil {
 		return fmt.Errorf("SyncWithBase: fetch: %w", err)
 	}
 	// A non-fast-forward merge creates a merge commit, which needs a
@@ -344,6 +358,77 @@ func (g *ExecGit) DiffShortstat(ctx context.Context, dir, baseBranch string) (st
 		return "", fmt.Errorf("DiffShortstat: %w", err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+// --- retry-with-backoff (ADR-0059) ---
+
+// retryConfig controls withRetry. sleep is a test seam — production code
+// always uses time.Sleep; tests substitute a no-op or call-recording func
+// so retry tests don't actually wait out the backoff.
+type retryConfig struct {
+	attempts  int
+	baseDelay time.Duration
+	sleep     func(time.Duration)
+}
+
+// defaultFetchRetry backs off 200ms, 400ms, 800ms, 1.6s across 5 attempts —
+// long enough to ride out another Run's fetch holding a ref lock on the
+// shared base_repo, short enough not to noticeably delay a unit that hits
+// contention only once.
+var defaultFetchRetry = retryConfig{
+	attempts:  5,
+	baseDelay: 200 * time.Millisecond,
+	sleep:     time.Sleep,
+}
+
+// withRetry calls fn until it succeeds, cfg.attempts is exhausted, ctx is
+// done, or fn's error isn't one isRetryable recognizes — whichever comes
+// first. Delay doubles after each retryable failure, starting at
+// cfg.baseDelay. The final attempt's error is returned as-is.
+func withRetry(ctx context.Context, cfg retryConfig, isRetryable func(error) bool, fn func() error) error {
+	delay := cfg.baseDelay
+	var err error
+	for attempt := 1; attempt <= cfg.attempts; attempt++ {
+		err = fn()
+		if err == nil {
+			return nil
+		}
+		if attempt == cfg.attempts || !isRetryable(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return err
+		default:
+		}
+		cfg.sleep(delay)
+		delay *= 2
+	}
+	return err
+}
+
+// isLockContention reports whether err looks like a fetch failed because a
+// sibling process (another Run fetching the same shared base_repo) held a
+// ref/packed-refs lock at the same moment, rather than a real failure
+// (bad remote, network down, auth). Matched against the substrings git
+// itself prints for a busy lock file.
+func isLockContention(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	markers := []string{
+		"unable to create",    // "unable to create '.../shallow.lock': File exists"
+		"cannot lock ref",     // "cannot lock ref '...': unable to resolve reference"
+		"could not lock",      // "could not lock config file"
+		"another git process", // "another git process seems to be running in this repository"
+	}
+	for _, m := range markers {
+		if strings.Contains(msg, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- internal helpers ---
