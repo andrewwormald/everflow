@@ -825,19 +825,33 @@ func hashBody(body string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// postBotComment posts a comment on the provider AND records its hash on
-// the Run's RecentOutgoingHashes ring so the next poll tick can silently
-// drop the echo. Hash is stored BEFORE the network call so no race can
-// let the poll see the comment before the state update lands.
+// postBotComment posts a top-level comment on the provider AND records its
+// hash on the Run's RecentOutgoingHashes ring so the next poll tick can
+// silently drop the echo. Hash is stored BEFORE the network call so no race
+// can let the poll see the comment before the state update lands.
 //
-// All daemon-originating comments in refactorsweep must go through this
-// helper rather than calling p.PostComment directly, or the self-comment
-// loop reintroduces itself.
+// All daemon-originating top-level comments in refactorsweep must go
+// through this helper rather than calling p.PostComment directly, or the
+// self-comment loop reintroduces itself. When replying to a specific
+// reviewer comment, use postBotReply instead so the response lands inline
+// in that comment's thread.
 func postBotComment(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, projectID string, mrIID int, body string) error {
+	return postBotReply(ctx, r, p, projectID, mrIID, "", body)
+}
+
+// postBotReply is postBotComment's discussion-aware counterpart: when
+// discussionID is non-empty (i.e. the triggering event was a reply within an
+// existing review thread — see Note.DiscussionID), it replies inline via
+// ReplyToDiscussion instead of posting a new top-level MR comment. An empty
+// discussionID falls back to PostComment's original top-level behaviour.
+func postBotReply(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], p provider.Provider, projectID string, mrIID int, discussionID string, body string) error {
 	h := hashBody(body)
 	r.Object.RecentOutgoingHashes = append(r.Object.RecentOutgoingHashes, h)
 	if n := len(r.Object.RecentOutgoingHashes); n > recentOutgoingHashCap {
 		r.Object.RecentOutgoingHashes = r.Object.RecentOutgoingHashes[n-recentOutgoingHashCap:]
+	}
+	if discussionID != "" {
+		return p.ReplyToDiscussion(ctx, projectID, mrIID, discussionID, body)
 	}
 	return p.PostComment(ctx, projectID, mrIID, body)
 }
@@ -1077,7 +1091,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	if sErr := d.Git.SyncWithBase(ctx, worktree, baseBranch); sErr != nil {
 		mr := r.Object.InFlight[unitID]
 		r.Object.PauseReason = fmt.Sprintf("git SyncWithBase failed before handling %s: %v", ev.Kind, sErr)
-		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("⚠️ Paused — couldn't sync this branch with `%s` before handling the event: `%v`. Reply `/syntropy retry` after fixing.", baseBranch, sErr))
 		return StatusPaused, nil
 	}
@@ -1139,7 +1153,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if ps, ok := d.loadPhrases(r).(*filter.YAMLPhraseSet); ok && ps != nil {
 			if added, perr := ps.Add(resp.Learnings.AddPhrases, "subagent", mr.IID); perr == nil && added > 0 {
 				if ps.OverCap() {
-					_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 						fmt.Sprintf("ℹ️ The per-Run skip-phrase list has grown past %d entries. Review with `syntropy phrases promote` or trim by hand.", filter.MaxPerRunEntries))
 				}
 			}
@@ -1151,7 +1165,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		// Pause so the author can investigate; we still have the MR to
 		// recover with.
 		r.Object.PauseReason = fmt.Sprintf("runner error during %s: %v", phase, runErr)
-		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("⚠️ Paused — runner error during %s: `%v`. Reply `/syntropy retry` to try again.", phase, runErr))
 		return StatusPaused, nil
 	}
@@ -1169,7 +1183,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		hasWork, gErr := d.Git.HasWorkBeyondBase(ctx, req.Worktree, branch)
 		if gErr != nil {
 			r.Object.PauseReason = fmt.Sprintf("git HasWorkBeyondBase error after %s: %v", phase, gErr)
-			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, gErr))
 			return StatusPaused, nil
 		}
@@ -1178,7 +1192,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			// change anything. Note that on the MR and stay AwaitingMerge —
 			// the reviewer can clarify if needed. Resolve the thread anyway
 			// (the comment was answered, even if not via code).
-			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
 			if discID := ev.Note.DiscussionID; discID != "" {
 				_ = p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID)
@@ -1191,7 +1205,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		if gErr := d.Git.Commit(ctx, req.Worktree, commitMsg); gErr != nil {
 			if !errors.Is(gErr, git.ErrNoChanges) {
 				r.Object.PauseReason = fmt.Sprintf("git Commit failed during %s: %v", phase, gErr)
-				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("⚠️ Paused — git commit failed during %s: `%v`.", phase, gErr))
 				return StatusPaused, nil
 			}
@@ -1203,7 +1217,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, branch)
 			if sErr != nil {
 				r.Object.PauseReason = fmt.Sprintf("git DiffShortstat error after %s: %v", phase, sErr)
-				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("⚠️ Paused — couldn't inspect worktree after %s: `%v`. Reply `/syntropy retry`.", phase, sErr))
 				return StatusPaused, nil
 			}
@@ -1211,7 +1225,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				// Same outcome as the !hasWork branch above: post a note,
 				// stay AwaitingMerge. Do NOT pause — the runner addressing
 				// a comment verbally (without code change) is normal.
-				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("ℹ️ %s: %s\n\n(No code changes were needed.)", phase, resp.Summary))
 				// Best-effort resolve so the thread doesn't sit open.
 				if discID := ev.Note.DiscussionID; discID != "" {
@@ -1223,7 +1237,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		}
 		if gErr := d.Git.Push(ctx, req.Worktree, branch); gErr != nil {
 			r.Object.PauseReason = fmt.Sprintf("git Push failed during %s: %v", phase, gErr)
-			_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/syntropy retry` after fixing.", phase, gErr))
 			return StatusPaused, nil
 		}
@@ -1236,7 +1250,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
 				// Surface but don't fail — the change is pushed, that's
 				// what matters.
-				_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 					fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
 			}
 		}
@@ -1249,7 +1263,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 				addressedBody += "\n\nDiff: " + stat
 			}
 		}
-		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID, addressedBody)
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
 		return StatusAwaitingMerge, nil
 	case DecisionContinue, DecisionNoChange:
 		// Runner decided nothing actionable. Don't post a comment — that
@@ -1257,12 +1271,12 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		return StatusAwaitingMerge, nil
 	case DecisionAsk:
 		r.Object.PauseReason = resp.Question
-		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("❓ Paused — I need your input: %s\n\nReply `/syntropy resume` after answering, or `/syntropy skip` to abandon.", resp.Question))
 		return StatusPaused, nil
 	case DecisionFail:
 		r.Object.PauseReason = resp.Summary
-		_ = postBotComment(ctx, r, p, mr.ProjectID, mr.IID,
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
 		return StatusPaused, nil
 	}
@@ -1352,7 +1366,7 @@ func (d *Deps) handleProviderAuthEvent(ctx context.Context, r *workflow.Run[Agen
 func (d *Deps) dropAbandonConfirm(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) AgentStatus {
 	r.Object.AbandonRequestedAt = time.Time{}
 	if p, ok := d.Providers[r.Object.ProviderName]; ok {
-		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			"ℹ️ Activity detected during the abandon confirmation window — abandon cancelled; watching for events again.")
 	}
 	return StatusAwaitingMerge

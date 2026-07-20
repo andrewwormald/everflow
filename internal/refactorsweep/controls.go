@@ -155,7 +155,7 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 		if args != "" {
 			body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 		}
-		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, body)
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, body)
 		for unitID, mr := range r.Object.InFlight {
 			_ = p.CloseMR(ctx, mr.ProjectID, mr.IID)
 			d.cleanupWorktree(ctx, r, unitID)
@@ -171,7 +171,7 @@ func (d *Deps) cmdAbandon(ctx context.Context, r *workflow.Run[AgentState, Agent
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 	}
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, body)
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, body)
 	return StatusAwaitingAbandonConfirm, nil
 }
 
@@ -184,7 +184,7 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 		reason = fmt.Sprintf("%s: %s", reason, args)
 	}
 	r.Object.PauseReason = reason
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("🛑 Paused per @%s. Reply `/syntropy resume` to continue.", ev.Author.Handle))
 	return StatusPaused, nil
 }
@@ -194,7 +194,7 @@ func (d *Deps) cmdPause(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 func (d *Deps) cmdResume(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("▶️ Resumed per @%s. Watching for events.", ev.Author.Handle))
 	return StatusAwaitingMerge, nil
 }
@@ -205,7 +205,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	p := d.Providers[r.Object.ProviderName]
 	unitID := unitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
-		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			"`/syntropy skip`: this MR isn't tracked by any active syntropy Run.")
 		return r.Status, nil
 	}
@@ -217,7 +217,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 
 	_ = p.CloseMR(ctx, ev.MR.ProjectID, ev.MR.IID)
 	next := d.markUnitBlacklisted(ctx, r, unitID, ev.MR, reason)
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("⏭️ Skipped `%s` per @%s. MR closed; picking the next unit.", unitID, ev.Author.Handle))
 	return next, nil
 }
@@ -229,7 +229,7 @@ func (d *Deps) cmdSkip(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	r.Object.PauseReason = ""
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("🔄 Cleared pause per @%s. Re-comment your last review feedback or wait for CI to rerun to retry the underlying operation.", ev.Author.Handle))
 	return StatusAwaitingMerge, nil
 }
@@ -240,12 +240,12 @@ func (d *Deps) cmdRetry(ctx context.Context, r *workflow.Run[AgentState, AgentSt
 func (d *Deps) cmdPrompt(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, args string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
 	if args == "" {
-		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			"`/syntropy prompt` needs text. Example:\n```\n/syntropy prompt focus on the auth module first\n```")
 		return r.Status, nil
 	}
 	r.Object.PromptInjection = args
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 		fmt.Sprintf("📝 Recorded prompt from @%s. Will inject into the next subagent call:\n```\n%s\n```", ev.Author.Handle, args))
 	return r.Status, nil
 }
@@ -253,7 +253,7 @@ func (d *Deps) cmdPrompt(ctx context.Context, r *workflow.Run[AgentState, AgentS
 // cmdStatus posts a one-comment summary of where the Run is.
 func (d *Deps) cmdStatus(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event, _ string) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, buildStatusComment(r))
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, buildStatusComment(r))
 	return r.Status, nil
 }
 
@@ -294,7 +294,7 @@ func (d *Deps) cmdStop(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 	if args != "" {
 		body = fmt.Sprintf("%s\n\nReason: %s", body, args)
 	}
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, body)
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, body)
 
 	for unitID, mr := range r.Object.InFlight {
 		_ = p.CloseMR(ctx, mr.ProjectID, mr.IID)
@@ -309,7 +309,7 @@ func (d *Deps) cmdStop(ctx context.Context, r *workflow.Run[AgentState, AgentSta
 // current status — no transition.
 func (d *Deps) cmdHelp(ctx context.Context, r *workflow.Run[AgentState, AgentStatus], ev provider.Event) (AgentStatus, error) {
 	p := d.Providers[r.Object.ProviderName]
-	_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, helpMessage)
+	_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID, helpMessage)
 	return r.Status, nil
 }
 
@@ -339,7 +339,7 @@ func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, Agen
 	p := d.Providers[r.Object.ProviderName]
 	unitID := unitForMR(r.Object.InFlight, ev.MR)
 	if unitID == "" {
-		_ = postBotComment(ctx, r, p, ev.MR.ProjectID, ev.MR.IID,
+		_ = postBotReply(ctx, r, p, ev.MR.ProjectID, ev.MR.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("`/syntropy %s`: this MR isn't tracked by any active syntropy Run, so there's no subagent to direct. Reply `/syntropy` for the verb list.", verb))
 		return r.Status, nil
 	}

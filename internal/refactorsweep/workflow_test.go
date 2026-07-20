@@ -46,6 +46,9 @@ type fakeProvider struct {
 	commentErr error
 	comments   []postedComment
 
+	replyErr error
+	replies  []repliedComment
+
 	closeErr error
 	closes   []closedMR
 
@@ -60,6 +63,13 @@ type resolvedDiscussion struct {
 	ProjectID    string
 	MRIID        int
 	DiscussionID string
+}
+
+type repliedComment struct {
+	ProjectID    string
+	MRIID        int
+	DiscussionID string
+	Body         string
 }
 
 type reactToNoteCall struct {
@@ -148,8 +158,11 @@ func (f *fakeProvider) ResolveDiscussion(_ context.Context, projectID string, mr
 	f.resolves = append(f.resolves, resolvedDiscussion{ProjectID: projectID, MRIID: mrIID, DiscussionID: discussionID})
 	return f.resolveErr
 }
-func (f *fakeProvider) ReplyToDiscussion(_ context.Context, _ string, _ int, _ string, _ string) error {
-	return nil
+func (f *fakeProvider) ReplyToDiscussion(_ context.Context, projectID string, mrIID int, discussionID string, body string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.replies = append(f.replies, repliedComment{ProjectID: projectID, MRIID: mrIID, DiscussionID: discussionID, Body: body})
+	return f.replyErr
 }
 func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) error {
 	f.mu.Lock()
@@ -1461,8 +1474,8 @@ func TestResume_NoteAdded_DoneButCleanWorktree_PostsInfoComment(t *testing.T) {
 	if next != StatusAwaitingMerge {
 		t.Errorf("clean-worktree Done in comment phase should stay AwaitingMerge, got %v", next)
 	}
-	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "No code changes") {
-		t.Errorf("expected an info-only comment; got %+v", fp.comments)
+	if len(fp.replies) != 1 || !strings.Contains(fp.replies[0].Body, "No code changes") || fp.replies[0].DiscussionID != "disc-abc" {
+		t.Errorf("expected an info-only reply within the originating thread; got %+v", fp.replies)
 	}
 	// Even when no code change was needed, the discussion should be
 	// resolved — the question was answered, even if verbally.
@@ -1500,8 +1513,8 @@ func TestResume_NoteAdded_CommitReturnsNoChanges_StaysAwaitingMerge(t *testing.T
 	if r.Object.PauseReason != "" {
 		t.Errorf("Run should not be paused on ErrNoChanges; PauseReason=%q", r.Object.PauseReason)
 	}
-	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "No code changes") {
-		t.Errorf("expected an info-only comment; got %+v", fp.comments)
+	if len(fp.replies) != 1 || !strings.Contains(fp.replies[0].Body, "No code changes") || fp.replies[0].DiscussionID != "disc-xyz" {
+		t.Errorf("expected an info-only reply within the originating thread; got %+v", fp.replies)
 	}
 	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-xyz" {
 		t.Errorf("expected ResolveDiscussion(disc-xyz); got %+v", fp.resolves)
@@ -1541,8 +1554,8 @@ func TestResume_NoteAdded_SelfCommittingRunner_PushesAndResolves(t *testing.T) {
 	if len(fp.resolves) != 1 || fp.resolves[0].DiscussionID != "disc-42" {
 		t.Errorf("expected ResolveDiscussion(disc-42); got %+v", fp.resolves)
 	}
-	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "Addressed") {
-		t.Errorf("expected an Addressed comment, not a no-changes note; got %+v", fp.comments)
+	if len(fp.replies) != 1 || !strings.Contains(fp.replies[0].Body, "Addressed") || fp.replies[0].DiscussionID != "disc-42" {
+		t.Errorf("expected an Addressed reply within the originating thread, not a no-changes note; got %+v", fp.replies)
 	}
 	// invokeForEvent's per-turn check must compare against the unit's own
 	// pushed tip, not base — the branch always has the original work
@@ -1584,16 +1597,16 @@ func TestResume_NoteAdded_ResolveDiscussionFails_StaysAwaitingMerge(t *testing.T
 	if len(fp.resolves) != 1 {
 		t.Errorf("ResolveDiscussion should be attempted once; got %d", len(fp.resolves))
 	}
-	// And an info comment was posted explaining the failure.
+	// And an info reply was posted within the thread explaining the failure.
 	foundInfo := false
-	for _, c := range fp.comments {
-		if strings.Contains(c.Body, "couldn't resolve") || strings.Contains(c.Body, "403 forbidden") {
+	for _, c := range fp.replies {
+		if (strings.Contains(c.Body, "couldn't resolve") || strings.Contains(c.Body, "403 forbidden")) && c.DiscussionID == "disc-1" {
 			foundInfo = true
 			break
 		}
 	}
 	if !foundInfo {
-		t.Errorf("expected an info comment surfacing the resolve failure; got %+v", fp.comments)
+		t.Errorf("expected an info reply within the originating thread surfacing the resolve failure; got %+v", fp.replies)
 	}
 }
 
