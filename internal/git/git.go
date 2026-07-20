@@ -155,12 +155,72 @@ func (g *ExecGit) EnsureBranch(ctx context.Context, dir, baseRepo, baseBranch, b
 	}
 
 	// `git worktree add -b <branch> <dir> origin/<base>` creates the worktree
-	// AND the branch in one step.
+	// AND the branch in one step. baseRepo's refs are shared with every
+	// concurrently-running unit, so this can hit the same lock contention as
+	// the fetch above; retry rides it out (ADR-0059).
+	//
+	// A failed attempt can leave branchName created but not attached to any
+	// worktree (e.g. the branch ref landed, then registering the worktree
+	// itself lost a lock race) — retrying `worktree add -b` as-is would then
+	// fail immediately with "already exists" instead of riding out the
+	// contention. So before every attempt, including the first, clean up
+	// such an orphan if one is present.
 	args := []string{"worktree", "add", "-b", branchName, dir, "origin/" + baseBranch}
-	if err := g.run(ctx, baseRepo, args...); err != nil {
+	if err := withRetry(ctx, defaultFetchRetry, isLockContention, func() error {
+		if err := g.cleanupOrphanedBranch(ctx, baseRepo, branchName); err != nil {
+			return err
+		}
+		return g.run(ctx, baseRepo, args...)
+	}); err != nil {
 		return fmt.Errorf("EnsureBranch: worktree add: %w", err)
 	}
 	return nil
+}
+
+// cleanupOrphanedBranch deletes branchName in baseRepo if it already exists
+// as a branch but isn't checked out in any worktree. This is the state left
+// by a `worktree add -b` attempt that created the branch ref but then failed
+// before registering the worktree (e.g. lock contention on the worktree
+// metadata) — without this, a retry of `worktree add -b` would fail
+// immediately with "already exists" rather than riding out the contention.
+func (g *ExecGit) cleanupOrphanedBranch(ctx context.Context, baseRepo, branchName string) error {
+	if !g.branchExists(ctx, baseRepo, branchName) {
+		return nil
+	}
+	attached, err := g.branchHasWorktree(ctx, baseRepo, branchName)
+	if err != nil {
+		return fmt.Errorf("cleanupOrphanedBranch: %w", err)
+	}
+	if attached {
+		return nil
+	}
+	if err := g.run(ctx, baseRepo, "branch", "-D", branchName); err != nil {
+		return fmt.Errorf("cleanupOrphanedBranch: delete %s: %w", branchName, err)
+	}
+	return nil
+}
+
+// branchExists reports whether branchName exists as a local branch in
+// baseRepo.
+func (g *ExecGit) branchExists(ctx context.Context, baseRepo, branchName string) bool {
+	_, err := g.runOut(ctx, baseRepo, "show-ref", "--verify", "--quiet", "refs/heads/"+branchName)
+	return err == nil
+}
+
+// branchHasWorktree reports whether branchName is currently checked out in
+// any of baseRepo's worktrees.
+func (g *ExecGit) branchHasWorktree(ctx context.Context, baseRepo, branchName string) (bool, error) {
+	out, err := g.runOut(ctx, baseRepo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	want := "branch refs/heads/" + branchName
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == want {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (g *ExecGit) HardReset(ctx context.Context, dir, baseBranch string) error {

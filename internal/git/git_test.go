@@ -598,6 +598,156 @@ func TestExecGit_HasWorkBeyondBase(t *testing.T) {
 	}
 }
 
+// newBaseRepoWithOrigin sets up a real on-disk repo with one commit on main
+// and an "origin" remote (a bare clone of itself), mirroring the setup used
+// by TestExecGit_FullLifecycle. Returns the repo dir.
+func newBaseRepoWithOrigin(t *testing.T) string {
+	t.Helper()
+	baseRepo := t.TempDir()
+	runMust(t, baseRepo, "init", "-b", "main")
+	writeFile(t, baseRepo, "README.md", "hello\n")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, baseRepo, "-c", "user.name=test", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	originDir := t.TempDir()
+	runMust(t, ".", "clone", "--bare", baseRepo, originDir)
+	runMust(t, baseRepo, "remote", "add", "origin", originDir)
+	runMust(t, baseRepo, "fetch", "origin")
+	return baseRepo
+}
+
+// TestExecGit_EnsureBranch_RetriesWorktreeAddAfterLockContention covers the
+// case-1 scenario from ADR-0059/the resiliency spec: `worktree add -b` hits
+// ref-lock contention from a sibling Run touching the shared base_repo. A
+// pre-existing refs/heads/<branch>.lock file forces the first attempt to
+// fail with a real git "cannot lock ref" error; the retry's sleep hook
+// clears the lock (simulating the sibling releasing it), so the next
+// attempt should succeed without ever having created the branch.
+func TestExecGit_EnsureBranch_RetriesWorktreeAddAfterLockContention(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := newBaseRepoWithOrigin(t)
+	branchName := "syntropy/test/lock-retry"
+	lockPath := filepath.Join(baseRepo, ".git", "refs", "heads", branchName+".lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("mkdir lock parent: %v", err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+		t.Fatalf("write lock file: %v", err)
+	}
+
+	orig := defaultFetchRetry
+	defer func() { defaultFetchRetry = orig }()
+	sleeps := 0
+	defaultFetchRetry = retryConfig{
+		attempts:  5,
+		baseDelay: time.Millisecond,
+		sleep: func(time.Duration) {
+			sleeps++
+			if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
+				t.Fatalf("remove lock file: %v", err)
+			}
+		},
+	}
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", branchName); err != nil {
+		t.Fatalf("EnsureBranch: want success after lock clears, got %v", err)
+	}
+	if sleeps == 0 {
+		t.Errorf("want at least one retry sleep, got 0 — the lock-contention attempt never happened")
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".git")); err != nil {
+		t.Fatalf("expected worktree to be checked out: %v", err)
+	}
+}
+
+// TestExecGit_EnsureBranch_CleansUpOrphanedBranchBeforeRetry covers the
+// other half of case 1: a previous attempt left branchName created in
+// baseRepo but never attached to a worktree (e.g. the branch ref landed,
+// then registering the worktree itself lost a lock race). Without cleanup,
+// `worktree add -b` would fail immediately with "already exists" — not a
+// lock-contention error withRetry would even retry. EnsureBranch must
+// detect and delete the orphan so the attempt can succeed.
+func TestExecGit_EnsureBranch_CleansUpOrphanedBranchBeforeRetry(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := newBaseRepoWithOrigin(t)
+	branchName := "syntropy/test/orphan-cleanup"
+	// Simulate the partial-failure leftover: branch exists, no worktree.
+	runMust(t, baseRepo, "branch", branchName)
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", branchName); err != nil {
+		t.Fatalf("EnsureBranch: want orphaned branch cleaned up and worktree created, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(worktreeDir, ".git")); err != nil {
+		t.Fatalf("expected worktree to be checked out: %v", err)
+	}
+	current, err := g.currentBranch(ctx, worktreeDir)
+	if err != nil {
+		t.Fatalf("currentBranch: %v", err)
+	}
+	if current != branchName {
+		t.Errorf("worktree is on %q, want %q", current, branchName)
+	}
+}
+
+// TestExecGit_EnsureBranch_WorktreeAddBoundedRetry_PersistentFailure covers
+// the case where the lock never clears: EnsureBranch must stop retrying
+// after cfg.attempts and surface the last attempt's lock-contention error,
+// not loop forever.
+func TestExecGit_EnsureBranch_WorktreeAddBoundedRetry_PersistentFailure(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	baseRepo := newBaseRepoWithOrigin(t)
+	branchName := "syntropy/test/lock-persistent"
+	lockPath := filepath.Join(baseRepo, ".git", "refs", "heads", branchName+".lock")
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("mkdir lock parent: %v", err)
+	}
+	if err := os.WriteFile(lockPath, nil, 0o644); err != nil {
+		t.Fatalf("write lock file: %v", err)
+	}
+	// Never removed — the lock persists for every attempt.
+
+	orig := defaultFetchRetry
+	defer func() { defaultFetchRetry = orig }()
+	calls := 0
+	defaultFetchRetry = retryConfig{
+		attempts:  3,
+		baseDelay: time.Millisecond,
+		sleep:     func(time.Duration) { calls++ },
+	}
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+	worktreeDir := filepath.Join(t.TempDir(), "wt")
+	err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", branchName)
+	if err == nil {
+		t.Fatal("EnsureBranch: want error when lock never clears, got nil")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "lock") {
+		t.Errorf("want the lock-contention error surfaced, got %v", err)
+	}
+	if calls != defaultFetchRetry.attempts-1 {
+		t.Errorf("want %d retry sleeps (bounded by attempts), got %d", defaultFetchRetry.attempts-1, calls)
+	}
+	if _, err := os.Stat(worktreeDir); !os.IsNotExist(err) {
+		t.Errorf("worktree dir should not have been created, got err=%v", err)
+	}
+}
+
 // TestWithRetry_SucceedsAfterTransientFailures covers the case that
 // motivates ADR-0059: a fetch fails a couple of times with a retryable
 // lock-contention error, then succeeds once the sibling Run releases the
