@@ -280,8 +280,8 @@ func TestDiscover_SpecMode_SetsUpPlanningWorktree(t *testing.T) {
 	if !strings.Contains(ec.Dir, "planning") {
 		t.Errorf("planning dir should be under 'planning'; got %q", ec.Dir)
 	}
-	if !strings.HasPrefix(ec.Branch, "everflow/plan/") {
-		t.Errorf("plan branch should be everflow/plan/<id>; got %q", ec.Branch)
+	if !strings.HasPrefix(ec.Branch, "syntropy/plan/") {
+		t.Errorf("plan branch should be syntropy/plan/<id>; got %q", ec.Branch)
 	}
 	if ec.BaseBranch != "main" {
 		t.Errorf("BaseBranch: want main, got %q", ec.BaseBranch)

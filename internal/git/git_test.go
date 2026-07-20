@@ -32,11 +32,11 @@ func TestExecGit_FullLifecycle(t *testing.T) {
 	runMust(t, baseRepo, "remote", "add", "origin", originDir)
 	runMust(t, baseRepo, "fetch", "origin")
 
-	g := NewExec("everflow-test", "everflow@test.invalid")
+	g := NewExec("syntropy-test", "syntropy@test.invalid")
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/svc-a"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/svc-a"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 	// Worktree should exist as a real git checkout.
@@ -59,7 +59,7 @@ func TestExecGit_FullLifecycle(t *testing.T) {
 	}
 
 	// Modify a file. HasChanges should flip; Commit should succeed.
-	writeFile(t, worktreeDir, "NEW.md", "hello from everflow\n")
+	writeFile(t, worktreeDir, "NEW.md", "hello from syntropy\n")
 	dirty, err = g.HasChanges(ctx, worktreeDir)
 	if err != nil {
 		t.Fatalf("HasChanges (dirty): %v", err)
@@ -78,7 +78,7 @@ func TestExecGit_FullLifecycle(t *testing.T) {
 	}
 
 	// EnsureBranch on the existing dir should be a no-op.
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/svc-a"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/svc-a"); err != nil {
 		t.Errorf("EnsureBranch should be idempotent: %v", err)
 	}
 
@@ -121,7 +121,7 @@ func TestExecGit_HardReset_DiscardsLocalChanges(t *testing.T) {
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/plan/abc"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/plan/abc"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestExecGit_SyncWithBase_FastForwardsWithoutLosingLocalCommits(t *testing.T
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/sync"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/sync"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestExecGit_SyncWithBase_LeavesConflictForRunner(t *testing.T) {
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/conflict"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/conflict"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 
@@ -305,7 +305,7 @@ func TestExecGit_SyncWithBase_RefusesDirtyWorktree(t *testing.T) {
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/dirty"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/dirty"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 
@@ -360,7 +360,7 @@ func TestExecGit_SyncWithBase_FetchErrorPropagates(t *testing.T) {
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/badbase"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/badbase"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 
@@ -415,7 +415,7 @@ func TestExecGit_Commit_SkipsUntrackedBinaries(t *testing.T) {
 	ctx := t.Context()
 
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/bin"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/bin"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 
@@ -485,7 +485,7 @@ func TestExecGit_Commit_OnlyBinaries_ReturnsNoChanges(t *testing.T) {
 	g := NewExec("t", "t@x")
 	ctx := t.Context()
 	worktreeDir := filepath.Join(t.TempDir(), "wt")
-	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "everflow/test/only-bin"); err != nil {
+	if err := g.EnsureBranch(ctx, worktreeDir, baseRepo, "main", "syntropy/test/only-bin"); err != nil {
 		t.Fatalf("EnsureBranch: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(worktreeDir, "blob"),
@@ -523,7 +523,7 @@ func TestExecGit_HasWorkBeyondBase(t *testing.T) {
 
 	// Case 1: fresh worktree, runner did nothing → false.
 	wt1 := filepath.Join(t.TempDir(), "wt1")
-	if err := g.EnsureBranch(ctx, wt1, baseRepo, "main", "everflow/test/work-a"); err != nil {
+	if err := g.EnsureBranch(ctx, wt1, baseRepo, "main", "syntropy/test/work-a"); err != nil {
 		t.Fatalf("EnsureBranch wt1: %v", err)
 	}
 	got, err := g.HasWorkBeyondBase(ctx, wt1, "main")
@@ -564,7 +564,7 @@ func TestExecGit_HasWorkBeyondBase(t *testing.T) {
 	// Comparing HEAD to origin/main directly could misread this; merge-base
 	// must not count upstream's commits as the unit's work.
 	wt2 := filepath.Join(t.TempDir(), "wt2")
-	if err := g.EnsureBranch(ctx, wt2, baseRepo, "main", "everflow/test/work-b"); err != nil {
+	if err := g.EnsureBranch(ctx, wt2, baseRepo, "main", "syntropy/test/work-b"); err != nil {
 		t.Fatalf("EnsureBranch wt2: %v", err)
 	}
 	writeFile(t, baseRepo, "README.md", "v2 — base moved on\n")
