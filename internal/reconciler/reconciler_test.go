@@ -3,6 +3,8 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"log/slog"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -397,6 +399,184 @@ func TestSweeper_Run(t *testing.T) {
 		if e2.ForeignID == freshRunID {
 			t.Fatalf("fresh run %q was retriggered, want only %q", freshRunID, stuckRunID)
 		}
+	}
+}
+
+// recvOrTimeout waits up to timeout for the next event on rec, returning
+// (event, true) if one arrives or (zero, false) if it doesn't — used to
+// assert the *absence* of a retrigger within a window.
+func recvOrTimeout(t *testing.T, ctx context.Context, rec workflow.EventReceiver, timeout time.Duration) (*workflow.Event, bool) {
+	t.Helper()
+	recvCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	e, ack, err := rec.Recv(recvCtx)
+	if err != nil {
+		return nil, false
+	}
+	ack()
+	return e, true
+}
+
+// TestSweeper_sweepOnce_CooldownSkipsRetrigger drives sweepOnce directly
+// (rather than the ticker in Run) so it can call it back-to-back without
+// waiting on Interval: a stuck Run that was just re-triggered must not be
+// re-triggered again while still within RetriggerCooldown.
+func TestSweeper_sweepOnce_CooldownSkipsRetrigger(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
+	recordStore := memrecordstore.New()
+
+	stale := time.Now().Add(-time.Hour)
+	const threshold = 30 * time.Minute
+	runID := "00000000-0000-0000-0000-000000000020"
+
+	seedRecord(t, recordStore, runID, workflow.RunStateRunning, refactorsweep.StatusWorking,
+		refactorsweep.AgentState{History: []refactorsweep.Turn{{StartedAt: stale, EndedAt: stale}}}, stale)
+
+	topic := workflow.Topic(testWorkflowName, int(refactorsweep.StatusWorking))
+	rec, err := streamer.NewReceiver(ctx, topic, "cooldown-skip-test")
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	sweeper := &Sweeper{
+		Store:             recordStore,
+		Streamer:          streamer,
+		WorkflowName:      testWorkflowName,
+		Threshold:         threshold,
+		RetriggerCooldown: time.Hour,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	sweeper.sweepOnce(ctx)
+	if _, ok := recvOrTimeout(t, ctx, rec, 2*time.Second); !ok {
+		t.Fatalf("expected first sweepOnce to retrigger the stuck run")
+	}
+
+	sweeper.sweepOnce(ctx)
+	if e, ok := recvOrTimeout(t, ctx, rec, 200*time.Millisecond); ok {
+		t.Fatalf("expected second sweepOnce within cooldown to skip retrigger, got event for %q", e.ForeignID)
+	}
+}
+
+// TestSweeper_sweepOnce_EligibleAfterCooldownElapses mirrors the skip case
+// above but with a cooldown short enough to elapse between the two
+// sweepOnce calls, so the second call must retrigger again.
+func TestSweeper_sweepOnce_EligibleAfterCooldownElapses(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
+	recordStore := memrecordstore.New()
+
+	stale := time.Now().Add(-time.Hour)
+	const threshold = 30 * time.Minute
+	runID := "00000000-0000-0000-0000-000000000021"
+
+	seedRecord(t, recordStore, runID, workflow.RunStateRunning, refactorsweep.StatusWorking,
+		refactorsweep.AgentState{History: []refactorsweep.Turn{{StartedAt: stale, EndedAt: stale}}}, stale)
+
+	topic := workflow.Topic(testWorkflowName, int(refactorsweep.StatusWorking))
+	rec, err := streamer.NewReceiver(ctx, topic, "cooldown-elapse-test")
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	const cooldown = 20 * time.Millisecond
+	sweeper := &Sweeper{
+		Store:             recordStore,
+		Streamer:          streamer,
+		WorkflowName:      testWorkflowName,
+		Threshold:         threshold,
+		RetriggerCooldown: cooldown,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	sweeper.sweepOnce(ctx)
+	if _, ok := recvOrTimeout(t, ctx, rec, 2*time.Second); !ok {
+		t.Fatalf("expected first sweepOnce to retrigger the stuck run")
+	}
+
+	time.Sleep(2 * cooldown)
+
+	sweeper.sweepOnce(ctx)
+	if _, ok := recvOrTimeout(t, ctx, rec, 2*time.Second); !ok {
+		t.Fatalf("expected sweepOnce after cooldown elapsed to retrigger again")
+	}
+}
+
+// TestSweeper_sweepOnce_FreshProgressResetsCooldown covers the "reset
+// naturally once a new turn advances lastProgress" case: even while still
+// within a long cooldown window, a RunID whose lastProgress has moved
+// forward since the retrigger that started the cooldown (i.e. it made
+// progress and then got stuck again) must be re-triggered immediately
+// rather than waiting the cooldown out.
+func TestSweeper_sweepOnce_FreshProgressResetsCooldown(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+
+	b, err := store.OpenSqlite(":memory:")
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close() })
+	streamer := eventstream.New(b.DB())
+	recordStore := memrecordstore.New()
+
+	stale := time.Now().Add(-time.Hour)
+	const threshold = 30 * time.Minute
+	runID := "00000000-0000-0000-0000-000000000022"
+
+	seedRecord(t, recordStore, runID, workflow.RunStateRunning, refactorsweep.StatusWorking,
+		refactorsweep.AgentState{History: []refactorsweep.Turn{{StartedAt: stale, EndedAt: stale}}}, stale)
+
+	topic := workflow.Topic(testWorkflowName, int(refactorsweep.StatusWorking))
+	rec, err := streamer.NewReceiver(ctx, topic, "cooldown-fresh-progress-test")
+	if err != nil {
+		t.Fatalf("NewReceiver: %v", err)
+	}
+	t.Cleanup(func() { _ = rec.Close() })
+
+	sweeper := &Sweeper{
+		Store:             recordStore,
+		Streamer:          streamer,
+		WorkflowName:      testWorkflowName,
+		Threshold:         threshold,
+		RetriggerCooldown: time.Hour,
+		Logger:            slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	sweeper.sweepOnce(ctx)
+	if _, ok := recvOrTimeout(t, ctx, rec, 2*time.Second); !ok {
+		t.Fatalf("expected first sweepOnce to retrigger the stuck run")
+	}
+
+	// The Run made progress (a new turn advanced lastProgress) and then
+	// got stuck again, still well within the one-hour cooldown window.
+	newStale := time.Now().Add(-time.Hour)
+	seedRecord(t, recordStore, runID, workflow.RunStateRunning, refactorsweep.StatusWorking,
+		refactorsweep.AgentState{History: []refactorsweep.Turn{
+			{StartedAt: stale, EndedAt: stale},
+			{StartedAt: newStale, EndedAt: newStale},
+		}}, stale)
+
+	sweeper.sweepOnce(ctx)
+	if _, ok := recvOrTimeout(t, ctx, rec, 2*time.Second); !ok {
+		t.Fatalf("expected sweepOnce to retrigger despite active cooldown once lastProgress advanced")
 	}
 }
 
