@@ -19,25 +19,88 @@ import (
 // fans out to per-verb handlers. Each handler is responsible for posting
 // an acknowledgement comment so the MR thread shows what the workflow did.
 
+// controlPrefixWord is the control-verb prefix, without its leading slash.
+const controlPrefixWord = "syntropy"
+
+// maxPrefixTypoDistance is the maximum Levenshtein distance (case-insensitive)
+// a leading "/"-token may have from controlPrefixWord and still count as the
+// control prefix. Chosen to catch realistic fat-finger typos (e.g. "syntopy",
+// "suntropy") while staying far enough from unrelated words like "synergy"
+// (distance 3) and "syntax" (distance 4) that they're never mistaken for it.
+const maxPrefixTypoDistance = 2
+
+// matchControlPrefix reports whether body starts (after trimming whitespace)
+// with a "/"-token that is an exact or typo-tolerant, case-insensitive match
+// for "/syntropy". On success it returns the remainder of body after that
+// token, with surrounding whitespace trimmed (multi-line remainders are
+// preserved as-is). ok is false if body has no leading "/"-token, or the
+// token isn't within maxPrefixTypoDistance of controlPrefixWord.
+func matchControlPrefix(body string) (rest string, ok bool) {
+	s := strings.TrimSpace(body)
+	if !strings.HasPrefix(s, "/") {
+		return "", false
+	}
+	token := s
+	if i := strings.IndexAny(s, " \t\n"); i != -1 {
+		token = s[:i]
+		rest = strings.TrimSpace(s[i:])
+	}
+	word := strings.ToLower(strings.TrimPrefix(token, "/"))
+	if levenshtein(word, controlPrefixWord) > maxPrefixTypoDistance {
+		return "", false
+	}
+	return rest, true
+}
+
+// levenshtein returns the edit distance between a and b (insertions,
+// deletions, substitutions each cost 1).
+func levenshtein(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	prev := make([]int, len(rb)+1)
+	curr := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		curr[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			del := prev[j] + 1
+			ins := curr[j-1] + 1
+			sub := prev[j-1] + cost
+			m := del
+			if ins < m {
+				m = ins
+			}
+			if sub < m {
+				m = sub
+			}
+			curr[j] = m
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(rb)]
+}
+
 // parseControlVerb extracts (verb, args) from a comment body. The verb is
-// the first whitespace-separated token after "/syntropy", lowercased. args
-// is everything after the verb, with surrounding whitespace trimmed.
-// Multi-line args are preserved.
+// the first whitespace-separated token after the (possibly typo'd)
+// "/syntropy" prefix, lowercased. args is everything after the verb, with
+// surrounding whitespace trimmed. Multi-line args are preserved.
 //
 // Examples:
 //
 //	"/syntropy pause"               → ("pause", "")
+//	"/syntopy pause"                 → ("pause", "")   ← typo-tolerant
 //	"/syntropy skip ran out of time" → ("skip", "ran out of time")
 //	"/syntropy prompt\nuse log/slog\nnot logrus" → ("prompt", "use log/slog\nnot logrus")
 //	"/syntropy"                     → ("", "")   ← bare invocation; help
 //	"not a command"                 → ("", "")   ← caller is expected to gate
 func parseControlVerb(body string) (verb, args string) {
-	s := strings.TrimSpace(body)
-	if !strings.HasPrefix(s, "/syntropy") {
-		return "", ""
-	}
-	s = strings.TrimSpace(strings.TrimPrefix(s, "/syntropy"))
-	if s == "" {
+	s, ok := matchControlPrefix(body)
+	if !ok || s == "" {
 		return "", ""
 	}
 	i := strings.IndexAny(s, " \t\n")
@@ -283,7 +346,9 @@ func (d *Deps) cmdFreeform(ctx context.Context, r *workflow.Run[AgentState, Agen
 
 	// Recompute from the raw body (not verb+args) to preserve original
 	// casing and multi-line formatting — parseControlVerb lowercases verb.
-	instruction := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ev.Note.Body), "/syntropy"))
+	// matchControlPrefix (not a literal "/syntropy" trim) so a typo'd
+	// prefix doesn't leak into the instruction text.
+	instruction, _ := matchControlPrefix(ev.Note.Body)
 	r.Object.PromptInjection = instruction
 	return d.invokeForEvent(ctx, r, unitID, ev)
 }

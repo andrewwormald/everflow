@@ -26,6 +26,14 @@ func TestParseControlVerb(t *testing.T) {
 		{"/syntropy   ", "", ""},
 		{"not a command", "", ""},
 		{"hello /syntropy pause", "", ""}, // must be at start
+		// typo-tolerant prefix matching
+		{"/syntopy pause", "pause", ""},         // dropped 'r'
+		{"/suntropy pause", "pause", ""},        // 'y' -> 'u'
+		{"/SYNTOPY pause", "pause", ""},         // typo + case-insensitive
+		{"/syntrpoy skip out of time", "skip", "out of time"}, // transposition
+		// near-words that must NOT be treated as the control prefix
+		{"/synergy pause", "", ""},
+		{"/syntax pause", "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -35,6 +43,63 @@ func TestParseControlVerb(t *testing.T) {
 					tc.in, v, a, tc.wantVerb, tc.wantArgs)
 			}
 		})
+	}
+}
+
+// --- typo-tolerant prefix matching ---
+
+func TestMatchControlPrefix(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantRest string
+		wantOK   bool
+	}{
+		{"/syntropy pause", "pause", true},
+		{"/syntropy", "", true},
+		// realistic typos (Levenshtein distance <= 2, case-insensitive)
+		{"/syntopy pause", "pause", true},   // deletion
+		{"/suntropy pause", "pause", true},  // substitution
+		{"/syntropyy pause", "pause", true}, // insertion
+		{"/SyNtRoPy pause", "pause", true},  // mixed case
+		{"/syntrpoy pause", "pause", true},  // transposition (distance 2)
+		// excluded near-words — distance > 2, must not match
+		{"/synergy pause", "", false},
+		{"/syntax pause", "", false},
+		{"/sync pause", "", false},
+		// no leading slash: passthrough, never matches
+		{"syntropy pause", "", false},
+		{"pause", "", false},
+		{"not a command", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			rest, ok := matchControlPrefix(tc.in)
+			if rest != tc.wantRest || ok != tc.wantOK {
+				t.Errorf("matchControlPrefix(%q) = (%q, %v); want (%q, %v)",
+					tc.in, rest, ok, tc.wantRest, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestLevenshtein(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want int
+	}{
+		{"syntropy", "syntropy", 0},
+		{"syntropy", "syntopy", 1},
+		{"syntropy", "suntropy", 1},
+		{"syntropy", "synergy", 3},
+		{"syntropy", "syntax", 4},
+		{"", "", 0},
+		{"", "abc", 3},
+	}
+	for _, tc := range cases {
+		if got := levenshtein(tc.a, tc.b); got != tc.want {
+			t.Errorf("levenshtein(%q, %q) = %d; want %d", tc.a, tc.b, got, tc.want)
+		}
 	}
 }
 

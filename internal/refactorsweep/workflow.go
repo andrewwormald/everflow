@@ -956,11 +956,14 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	}
 
 	// Control commands from the author always take priority. Real
-	// dispatcher: parseControlVerb + handleControlCommand.
-	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded &&
-		strings.HasPrefix(strings.TrimSpace(ev.Note.Body), "/syntropy") {
-		d.reactToNote(ctx, r, ev)
-		return d.handleControlCommand(ctx, r, ev)
+	// dispatcher: parseControlVerb + handleControlCommand. matchControlPrefix
+	// is typo-tolerant (Levenshtein distance ≤2), so this also catches
+	// misspellings like "/syntopy".
+	if ev.IsAuthor && ev.Kind == provider.EventNoteAdded {
+		if _, ok := matchControlPrefix(ev.Note.Body); ok {
+			d.reactToNote(ctx, r, ev)
+			return d.handleControlCommand(ctx, r, ev)
+		}
 	}
 
 	// Provider auth events are handled here before the Paused early-return so
