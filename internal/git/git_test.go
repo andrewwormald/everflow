@@ -2,11 +2,13 @@ package git
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestExecGit_FullLifecycle exercises EnsureBranch → modify file → HasChanges
@@ -593,6 +595,88 @@ func TestExecGit_HasWorkBeyondBase(t *testing.T) {
 	// A nonexistent base branch is an error, not a silent false.
 	if _, err := g.HasWorkBeyondBase(ctx, wt1, "does-not-exist"); err == nil {
 		t.Errorf("HasWorkBeyondBase against a nonexistent base branch should error")
+	}
+}
+
+// TestWithRetry_SucceedsAfterTransientFailures covers the case that
+// motivates ADR-0059: a fetch fails a couple of times with a retryable
+// lock-contention error, then succeeds once the sibling Run releases the
+// lock. withRetry must retry through the failures and return nil, and
+// must back off (sleep) between attempts but not after the final success.
+func TestWithRetry_SucceedsAfterTransientFailures(t *testing.T) {
+	var sleeps []time.Duration
+	cfg := retryConfig{
+		attempts:  5,
+		baseDelay: 10 * time.Millisecond,
+		sleep:     func(d time.Duration) { sleeps = append(sleeps, d) },
+	}
+
+	calls := 0
+	err := withRetry(t.Context(), cfg, isLockContention, func() error {
+		calls++
+		if calls < 3 {
+			return errors.New("fatal: Unable to create '/repo/.git/refs/remotes/origin/main.lock': File exists.")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("withRetry: want nil after eventual success, got %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("want 3 calls (2 failures + 1 success), got %d", calls)
+	}
+	want := []time.Duration{10 * time.Millisecond, 20 * time.Millisecond}
+	if len(sleeps) != len(want) || sleeps[0] != want[0] || sleeps[1] != want[1] {
+		t.Errorf("want backoff sleeps %v, got %v", want, sleeps)
+	}
+}
+
+// TestWithRetry_BoundedFailure_ReturnsLastError covers the case where the
+// lock never clears: withRetry must stop after cfg.attempts (not loop
+// forever) and surface the final attempt's error.
+func TestWithRetry_BoundedFailure_ReturnsLastError(t *testing.T) {
+	cfg := retryConfig{
+		attempts:  3,
+		baseDelay: time.Millisecond,
+		sleep:     func(time.Duration) {},
+	}
+
+	calls := 0
+	err := withRetry(t.Context(), cfg, isLockContention, func() error {
+		calls++
+		return fmt.Errorf("could not lock config file .git/config: attempt %d", calls)
+	})
+	if err == nil {
+		t.Fatal("withRetry: want error when every attempt fails, got nil")
+	}
+	if calls != cfg.attempts {
+		t.Errorf("want exactly %d calls, got %d", cfg.attempts, calls)
+	}
+	if !strings.Contains(err.Error(), "attempt 3") {
+		t.Errorf("want the last attempt's error surfaced, got %v", err)
+	}
+}
+
+// TestWithRetry_NonRetryableError_ReturnsImmediately covers a genuine
+// failure (bad remote, auth, etc.) that isLockContention doesn't recognize:
+// withRetry must not retry it at all.
+func TestWithRetry_NonRetryableError_ReturnsImmediately(t *testing.T) {
+	cfg := retryConfig{
+		attempts:  5,
+		baseDelay: time.Millisecond,
+		sleep:     func(time.Duration) { t.Fatal("should not sleep for a non-retryable error") },
+	}
+
+	calls := 0
+	err := withRetry(t.Context(), cfg, isLockContention, func() error {
+		calls++
+		return errors.New("fatal: repository 'origin' not found")
+	})
+	if err == nil {
+		t.Fatal("want error surfaced")
+	}
+	if calls != 1 {
+		t.Errorf("want exactly 1 call for a non-retryable error, got %d", calls)
 	}
 }
 
