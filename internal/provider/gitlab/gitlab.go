@@ -21,10 +21,11 @@ import (
 
 // Provider is the GitLab implementation of provider.Provider.
 type Provider struct {
-	baseURL  string // e.g. https://gitlab.com
-	token    string // personal/project/group access token, OR an OAuth bearer
-	authMode AuthMode
-	hc       *http.Client
+	baseURL     string // e.g. https://gitlab.com
+	token       string // personal/project/group access token; ignored if tokenSource is set
+	tokenSource func() (string, error) // re-resolves the token on every request; see Config.TokenSource
+	authMode    AuthMode
+	hc          *http.Client
 }
 
 // AuthMode picks the HTTP header GitLab uses to authenticate. PATs go in
@@ -39,17 +40,30 @@ const (
 
 // Config wires a Provider.
 type Config struct {
-	BaseURL  string        // defaults to https://gitlab.com
-	Token    string        // required
-	AuthMode AuthMode      // defaults to AuthPAT (the v1 behaviour)
-	Timeout  time.Duration // defaults to 30s per request
+	BaseURL string // defaults to https://gitlab.com
+	// Token is a static personal/project/group access token. Required
+	// unless TokenSource is set. PATs don't expire on their own the way an
+	// OAuth access token does, so a static string is fine here.
+	Token string
+	// TokenSource, if set, takes precedence over Token and is called to
+	// resolve the bearer/PAT value fresh on every request instead of
+	// caching one at construction time. Use this for tokens that can go
+	// stale behind the Provider's back — e.g. `glab auth login`'s OAuth
+	// access token, which `glab` itself transparently refreshes in its own
+	// config file (see LoadGlabToken and ADR-0063): a Provider built with a
+	// one-time Token snapshot would keep using an expired access token
+	// forever, since it has no way to notice `glab` refreshed a new one.
+	TokenSource func() (string, error)
+	AuthMode    AuthMode      // defaults to AuthPAT (the v1 behaviour)
+	Timeout     time.Duration // defaults to 30s per request
 }
 
-// New constructs a Provider. Returns an error if Token is empty so callers
-// fail fast at daemon start rather than discovering at first API call.
+// New constructs a Provider. Returns an error if neither Token nor
+// TokenSource is set so callers fail fast at daemon start rather than
+// discovering at first API call.
 func New(cfg Config) (*Provider, error) {
-	if cfg.Token == "" {
-		return nil, errors.New("gitlab: Token is required (set GITLAB_TOKEN)")
+	if cfg.Token == "" && cfg.TokenSource == nil {
+		return nil, errors.New("gitlab: Token or TokenSource is required (set GITLAB_TOKEN)")
 	}
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	if base == "" {
@@ -60,11 +74,25 @@ func New(cfg Config) (*Provider, error) {
 		timeout = 30 * time.Second
 	}
 	return &Provider{
-		baseURL:  base,
-		token:    cfg.Token,
-		authMode: cfg.AuthMode,
-		hc:       &http.Client{Timeout: timeout},
+		baseURL:     base,
+		token:       cfg.Token,
+		tokenSource: cfg.TokenSource,
+		authMode:    cfg.AuthMode,
+		hc:          &http.Client{Timeout: timeout},
 	}, nil
+}
+
+// resolveToken returns the token to send with the next request: freshly
+// resolved via tokenSource if set, otherwise the static token from Config.
+func (p *Provider) resolveToken() (string, error) {
+	if p.tokenSource != nil {
+		tok, err := p.tokenSource()
+		if err != nil {
+			return "", fmt.Errorf("resolve token: %w", err)
+		}
+		return tok, nil
+	}
+	return p.token, nil
 }
 
 func (p *Provider) Name() string { return "gitlab" }
@@ -353,11 +381,15 @@ func (p *Provider) do(ctx context.Context, method, path string, in any) (*http.R
 	if err != nil {
 		return nil, err
 	}
+	tok, err := p.resolveToken()
+	if err != nil {
+		return nil, err
+	}
 	switch p.authMode {
 	case AuthBearer:
-		req.Header.Set("Authorization", "Bearer "+p.token)
+		req.Header.Set("Authorization", "Bearer "+tok)
 	default:
-		req.Header.Set("PRIVATE-TOKEN", p.token)
+		req.Header.Set("PRIVATE-TOKEN", tok)
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
