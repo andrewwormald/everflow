@@ -496,9 +496,17 @@ func buildProviders(logger *slog.Logger, gitlabBase, githubBase string) (map[str
 		// stale for the life of this daemon process (see ADR-0063); the
 		// LoadGlabToken call above is just a fail-fast check that a token
 		// exists at all right now.
+		//
+		// RefreshGlabToken (not a plain LoadGlabToken) pokes glab itself
+		// (`glab api user`) before reading the file — glab only refreshes
+		// its own stored access token lazily, when something invokes it, so
+		// reading fresh from disk isn't sufficient if nothing has triggered
+		// that refresh recently. Found live: the daemon's own GitLab calls
+		// 401'd on a genuinely-expired on-disk token while `glab auth
+		// status`, run moments later, showed a healthy login (ADR-0065).
 		p, err := gitlab.New(gitlab.Config{
 			BaseURL:     gitlabBase,
-			TokenSource: func() (string, error) { return gitlab.LoadGlabToken("") },
+			TokenSource: func() (string, error) { return gitlab.RefreshGlabToken("") },
 			AuthMode:    gitlab.AuthBearer,
 		})
 		if err != nil {

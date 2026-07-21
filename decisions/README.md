@@ -112,3 +112,4 @@ forces or unlocks.
 | 0062 | Configure ErrBackOff and PauseAfterErrCount on every step                | Accepted | 2026-07-21 |
 | 0063 | GitLab provider resolves its token fresh per request, not once at startup | Accepted | 2026-07-21 |
 | 0064 | Strip nested Claude Code session env vars from the daemon and its subprocesses | Accepted | 2026-07-21 |
+| 0065 | Poke `glab` to force its own token refresh before reading its config | Accepted | 2026-07-21 |
