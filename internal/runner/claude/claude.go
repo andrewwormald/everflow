@@ -102,6 +102,46 @@ var _ runner.Runner = (*Runner)(nil)
 
 func (c *Runner) Name() string { return "claude" }
 
+// nestedClaudeCodeEnvPrefixes match environment variables Claude Code sets
+// on every process it spawns to identify that process as a nested child of
+// the invoking interactive session. If this Runner's own process inherited
+// them (e.g. the daemon was launched via `syntropy daemon &` from inside an
+// active Claude Code session's Bash tool — main.go's unsetNestedClaudeCodeEnv
+// is the primary defense for that specific case, called once at daemon
+// startup), every claude -p subprocess spawned here would otherwise inherit
+// them too via os.Environ() and be mistaken for a nested child of that
+// session — a session that may still be active and completely unrelated to
+// this invocation, causing spurious exit-1 failures. Filtered defensively
+// here as well in case something else in the process re-sets them after
+// startup. See ADR-0064.
+var nestedClaudeCodeEnvPrefixes = []string{
+	"CLAUDECODE=",
+	"CLAUDE_CODE_SESSION_ID=",
+	"CLAUDE_CODE_ENTRYPOINT=",
+	"CLAUDE_CODE_CHILD_SESSION=",
+}
+
+// stripNestedClaudeCodeEnv returns env with any nestedClaudeCodeEnvPrefixes
+// entries removed. Exported behavior (not the function itself) is covered
+// by claude_test.go; kept unexported since it's an implementation detail of
+// Run, not part of this package's public API.
+func stripNestedClaudeCodeEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		strip := false
+		for _, prefix := range nestedClaudeCodeEnvPrefixes {
+			if strings.HasPrefix(kv, prefix) {
+				strip = true
+				break
+			}
+		}
+		if !strip {
+			out = append(out, kv)
+		}
+	}
+	return out
+}
+
 func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, error) {
 	start := time.Now()
 	if req.Timeout > 0 {
@@ -121,6 +161,7 @@ func (c *Runner) Run(ctx context.Context, req runner.Request) (runner.Response, 
 	} else {
 		cmd.Env = os.Environ()
 	}
+	cmd.Env = stripNestedClaudeCodeEnv(cmd.Env)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

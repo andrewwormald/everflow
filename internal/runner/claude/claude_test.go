@@ -1,7 +1,10 @@
 package claude
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -441,5 +444,90 @@ func TestParseDecision_FullRoundTrip(t *testing.T) {
 	// 500 + 100 + 0 + 80 = 680
 	if tokens != 680 {
 		t.Errorf("tokens: want 680, got %d", tokens)
+	}
+}
+
+// --- stripNestedClaudeCodeEnv tests (ADR-0064) ---
+
+func TestStripNestedClaudeCodeEnv(t *testing.T) {
+	in := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/andreww",
+		"CLAUDECODE=1",
+		"CLAUDE_CODE_SESSION_ID=abc-123",
+		"CLAUDE_CODE_ENTRYPOINT=cli",
+		"CLAUDE_CODE_CHILD_SESSION=1",
+		"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1", // not a nesting signal — must survive
+		"CLAUDE_EFFORT=medium",                    // not a nesting signal — must survive
+		"ANTHROPIC_API_KEY=sk-test",
+	}
+	got := stripNestedClaudeCodeEnv(in)
+
+	wantKept := []string{
+		"PATH=/usr/bin",
+		"HOME=/home/andreww",
+		"CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1",
+		"CLAUDE_EFFORT=medium",
+		"ANTHROPIC_API_KEY=sk-test",
+	}
+	if len(got) != len(wantKept) {
+		t.Fatalf("want %d entries kept, got %d: %v", len(wantKept), len(got), got)
+	}
+	for i, w := range wantKept {
+		if got[i] != w {
+			t.Errorf("entry %d: want %q, got %q", i, w, got[i])
+		}
+	}
+
+	wantStripped := []string{
+		"CLAUDECODE=1",
+		"CLAUDE_CODE_SESSION_ID=abc-123",
+		"CLAUDE_CODE_ENTRYPOINT=cli",
+		"CLAUDE_CODE_CHILD_SESSION=1",
+	}
+	for _, s := range wantStripped {
+		for _, g := range got {
+			if g == s {
+				t.Errorf("want %q stripped, but it survived in %v", s, got)
+			}
+		}
+	}
+}
+
+func TestStripNestedClaudeCodeEnv_EmptyInput(t *testing.T) {
+	if got := stripNestedClaudeCodeEnv(nil); len(got) != 0 {
+		t.Errorf("want empty slice for nil input, got %v", got)
+	}
+}
+
+// TestRun_StripsNestedClaudeCodeEnvFromSubprocess proves Run() actually
+// applies the filter to the real subprocess environment, not just that the
+// helper function works in isolation. Uses a fake "claude" binary (a shell
+// script) that echoes its own environment as the JSON envelope's result
+// field, so the test can assert on what the subprocess actually saw.
+func TestRun_StripsNestedClaudeCodeEnvFromSubprocess(t *testing.T) {
+	dir := t.TempDir()
+	fakeBinary := filepath.Join(dir, "fake-claude.sh")
+	script := `#!/bin/sh
+result=$(env | grep -c '^CLAUDE_CODE_SESSION_ID=\|^CLAUDECODE=' || true)
+printf '{"type":"result","subtype":"success","is_error":false,"result":"count=%s\\n<syntropy-decision>done</syntropy-decision>"}' "$result"
+`
+	if err := os.WriteFile(fakeBinary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+
+	r := &Runner{
+		Binary: fakeBinary,
+		Env: append(os.Environ(),
+			"CLAUDECODE=1",
+			"CLAUDE_CODE_SESSION_ID=some-other-session",
+		),
+	}
+	resp, err := r.Run(context.Background(), runner.Request{Goal: "test"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(resp.Summary, "count=0") {
+		t.Errorf("want the subprocess to see zero nested-session env vars, got Summary=%q", resp.Summary)
 	}
 }

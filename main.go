@@ -146,6 +146,37 @@ func buildSweeper(rs workflow.RecordStore, streamer workflow.EventStreamer, thre
 	}
 }
 
+// nestedClaudeCodeEnvVars are set by Claude Code on every process it spawns
+// (e.g. the `syntropy daemon &` invocation, if launched via its Bash tool)
+// to identify that process as a nested child of the invoking interactive
+// session. If left in the daemon's own environment, every `claude -p`
+// subprocess the daemon later spawns (see internal/runner/claude) inherits
+// them via os.Environ() and is itself mistaken for a nested child of
+// whatever session originally started the daemon — a session that may
+// still be actively running, unrelated to and completely unaware of this
+// long-lived background process. Found live: a Run's planner step failed
+// `claude exec: exit status 1` consistently (100% of attempts) while the
+// launching session was active, and succeeded every time on manual,
+// isolated reproduction — a session-identity conflict, not a real spec or
+// environment problem. See ADR-0064.
+var nestedClaudeCodeEnvVars = []string{
+	"CLAUDECODE",
+	"CLAUDE_CODE_SESSION_ID",
+	"CLAUDE_CODE_ENTRYPOINT",
+	"CLAUDE_CODE_CHILD_SESSION",
+}
+
+// unsetNestedClaudeCodeEnv clears nestedClaudeCodeEnvVars from the daemon's
+// own environment so every subprocess it spawns for the rest of its
+// lifetime — including every claude -p invocation — starts clean,
+// regardless of whether `syntropy daemon` itself was launched from inside
+// an active Claude Code session.
+func unsetNestedClaudeCodeEnv() {
+	for _, v := range nestedClaudeCodeEnvVars {
+		_ = os.Unsetenv(v)
+	}
+}
+
 func cmdDaemon(args []string) error {
 	fs := flag.NewFlagSet("daemon", flag.ExitOnError)
 	var (
@@ -163,6 +194,7 @@ func cmdDaemon(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	unsetNestedClaudeCodeEnv()
 	if *storePath == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
