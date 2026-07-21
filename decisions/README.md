@@ -109,3 +109,4 @@ forces or unlocks.
 | 0059 | Retry-with-backoff on fetch to ride out shared base_repo ref-lock contention | Accepted | 2026-07-20 |
 | 0060 | Detect MR merge/close by polling MR state, not by inferring it from comments | Accepted | 2026-07-20 |
 | 0061 | Per-Run cooldown after a reconciler re-trigger                          | Accepted | 2026-07-20 |
+| 0062 | Configure ErrBackOff and PauseAfterErrCount on every step                | Accepted | 2026-07-21 |

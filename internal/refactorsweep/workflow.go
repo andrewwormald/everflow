@@ -50,25 +50,49 @@ type Deps struct {
 	RunsRoot      string                       // e.g. ~/.syntropy/runs
 }
 
+// stepErrBackOff is the delay the workflow library waits before retrying a
+// step after it returns an error. This is a flat duration, not exponential —
+// luno/workflow v0.5.0 doesn't offer exponential backoff. The default of 1s
+// (see ADR-0062) is far too tight for steps that call external APIs
+// (provider auth, the claude CLI): a genuinely broken step (expired
+// credentials, a systematically-failing prompt) would otherwise hammer that
+// dependency roughly once a second, indefinitely.
+const stepErrBackOff = 45 * time.Second
+
+// stepPauseAfterErrCount moves a Run to RunStatePaused after this many
+// consecutive errors on a step, instead of retrying forever. This is the
+// real circuit breaker (ADR-0062) — stepErrBackOff alone only slows the
+// hammering down, it doesn't stop it. 6 consecutive failures at
+// stepErrBackOff's cadence is ~4.5 minutes: enough to ride out a single
+// transient blip (a dropped connection, one rate-limited request) without
+// letting a systematically-broken step run unattended for tens of minutes.
+const stepPauseAfterErrCount = 6
+
 // Build wires the state machine described in DESIGN.md. Step bodies are
 // closures over d so they have access to providers, secrets, etc.
 func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 	b := workflow.NewBuilder[AgentState, AgentStatus](name)
 
-	b.AddStep(StatusInitiated, d.setup, StatusDiscovering, StatusFailed)
+	stepOpts := []workflow.Option{
+		workflow.ErrBackOff(stepErrBackOff),
+		workflow.PauseAfterErrCount(stepPauseAfterErrCount),
+	}
+
+	b.AddStep(StatusInitiated, d.setup, StatusDiscovering, StatusFailed).
+		WithOptions(stepOpts...)
 
 	b.AddStep(StatusDiscovering, d.discover,
 		StatusWorking,
 		StatusCompleted,
 		StatusPaused, // discoverSpec returns this on DecisionAsk (planner asks the author a clarifying question)
 		StatusFailed, // discoverSpec returns this on planner errors / unexpected decisions
-	)
+	).WithOptions(stepOpts...)
 
 	b.AddStep(StatusWorking, d.work,
 		StatusAwaitingMerge, // MR opened, await events
 		StatusDiscovering,   // runner returned Done but worktree clean → blacklist + next unit
 		StatusFailed,        // unrecoverable (runner err, MR create err, push err)
-	)
+	).WithOptions(stepOpts...)
 	// Note: StatusPaused not yet a destination from Working. Once an MR
 	// exists in InFlight, the resume callback owns pause/retry/skip; work()
 	// can only fail before that point.
@@ -110,12 +134,55 @@ func Build(name string, d Deps) *workflow.Workflow[AgentState, AgentStatus] {
 		StatusAwaitingMerge,
 	)
 
+	// A step auto-paused by PauseAfterErrCount trips a Dead Letter Queue, but
+	// it isn't necessarily a permanent failure — the library's default
+	// pausedRecordsRetry behaviour (auto-resume after 1h) is left enabled
+	// deliberately (see ADR-0062): onAutoPause fires and posts a fresh bot
+	// comment on every pause, including re-pauses after a failed auto-retry,
+	// so a genuinely broken step (e.g. an expired credential) still surfaces
+	// repeatedly for a human to notice and intervene, while a merely
+	// transient one (a rate-limited API call, a network blip) self-heals
+	// without anyone needing to reply `/syntropy resume` by hand.
+	b.OnPause(d.onAutoPause)
+
 	return b.Build(
 		d.EventStreamer,
 		d.RecordStore,
 		d.RoleScheduler,
 		workflow.WithTimeoutStore(d.TimeoutStore),
 	)
+}
+
+// onAutoPause fires, via the library's OnPause run-state-change hook, every
+// time PauseAfterErrCount trips the circuit breaker on any step (ADR-0062) —
+// including repeat trips after the library's own auto-retry-after-1h resumes
+// a paused Run into the same failure. It posts a visible bot comment on
+// every in-flight MR/PR (if any exist yet — a pause during setup/discover
+// happens before one does) so a human sees why the Run stopped without
+// having to poll `syntropy status`.
+//
+// The underlying step error itself isn't available here — the failing
+// step's own AgentState mutations (e.g. LastError) are never persisted on
+// the erroring attempt that trips the breaker, only record.Meta.RunStateReason
+// (set by the library's own Pause() call) is guaranteed current. Point
+// whoever reads this at the daemon log for the specific error rather than
+// guessing at a message that may be stale.
+func (d *Deps) onAutoPause(ctx context.Context, record *workflow.TypedRecord[AgentState, AgentStatus]) error {
+	state := record.Object
+	p, ok := d.Providers[state.ProviderName]
+	if !ok || len(state.InFlight) == 0 {
+		return nil
+	}
+	body := fmt.Sprintf(
+		"⏸️ Auto-paused (run `%s`): %s\n\nThis will retry automatically in about an hour. If it's a real problem (not a transient blip), check the daemon log for the specific error and fix it before then — otherwise reply `/syntropy resume` any time to retry immediately.",
+		record.RunID, record.Meta.RunStateReason,
+	)
+	for _, mr := range state.InFlight {
+		if err := p.PostComment(ctx, mr.ProjectID, mr.IID, body); err != nil {
+			return fmt.Errorf("onAutoPause: post comment for %s#%d: %w", mr.ProjectID, mr.IID, err)
+		}
+	}
+	return nil
 }
 
 // setup runs once per Run when triggered. It:

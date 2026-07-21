@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/google/uuid v1.6.0
-	github.com/luno/workflow v0.4.0
+	github.com/luno/workflow v0.5.0
 	github.com/mattn/go-isatty v0.0.20
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	gopkg.in/yaml.v3 v3.0.1
