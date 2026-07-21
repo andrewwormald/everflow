@@ -829,3 +829,28 @@ func TestDirectResume_RegularCancelledStillForcesDiscovering(t *testing.T) {
 		t.Errorf("Status: want StatusDiscovering (forced, as before), got %s", got)
 	}
 }
+
+// --- unsetNestedClaudeCodeEnv tests (ADR-0064) ---
+
+func TestUnsetNestedClaudeCodeEnv(t *testing.T) {
+	// Simulate the daemon having been launched from inside an active
+	// Claude Code session (e.g. via its Bash tool), which sets these on
+	// every process it spawns.
+	t.Setenv("CLAUDECODE", "1")
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "some-other-session")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+	t.Setenv("CLAUDE_CODE_CHILD_SESSION", "1")
+	// Not a nesting signal — must survive.
+	t.Setenv("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING", "1")
+
+	unsetNestedClaudeCodeEnv()
+
+	for _, v := range nestedClaudeCodeEnvVars {
+		if val, ok := os.LookupEnv(v); ok {
+			t.Errorf("%s: want unset, got %q", v, val)
+		}
+	}
+	if val := os.Getenv("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING"); val != "1" {
+		t.Errorf("CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: want to survive unrelated, got %q", val)
+	}
+}
