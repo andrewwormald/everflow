@@ -456,8 +456,19 @@ func buildProviders(logger *slog.Logger, gitlabBase, githubBase string) (map[str
 		}
 		out[p.Name()] = p
 		logger.Info("provider registered", "name", "gitlab", "auth", "private-token")
-	} else if tok, err := gitlab.LoadGlabToken(""); err == nil {
-		p, err := gitlab.New(gitlab.Config{BaseURL: gitlabBase, Token: tok, AuthMode: gitlab.AuthBearer})
+	} else if _, err := gitlab.LoadGlabToken(""); err == nil {
+		// Re-resolve via TokenSource on every request rather than caching
+		// the token read above — glab's OAuth access token is short-lived
+		// and glab itself transparently refreshes it in its own config file
+		// on every `glab` invocation. A one-time snapshot would silently go
+		// stale for the life of this daemon process (see ADR-0063); the
+		// LoadGlabToken call above is just a fail-fast check that a token
+		// exists at all right now.
+		p, err := gitlab.New(gitlab.Config{
+			BaseURL:     gitlabBase,
+			TokenSource: func() (string, error) { return gitlab.LoadGlabToken("") },
+			AuthMode:    gitlab.AuthBearer,
+		})
 		if err != nil {
 			return nil, err
 		}

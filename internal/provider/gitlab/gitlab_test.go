@@ -2,6 +2,7 @@ package gitlab
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -147,5 +148,99 @@ func TestReplyToDiscussion(t *testing.T) {
 	}
 	if gotBody != "fixed in latest push" {
 		t.Errorf("body: want %q, got %q", "fixed in latest push", gotBody)
+	}
+}
+
+// --- TokenSource tests (ADR-0063: don't cache a token that can go stale) ---
+
+func TestNew_RequiresTokenOrTokenSource(t *testing.T) {
+	if _, err := New(Config{}); err == nil {
+		t.Fatal("want error when neither Token nor TokenSource is set")
+	}
+	if _, err := New(Config{Token: "t"}); err != nil {
+		t.Errorf("Token alone should be sufficient: %v", err)
+	}
+	if _, err := New(Config{TokenSource: func() (string, error) { return "t", nil }}); err != nil {
+		t.Errorf("TokenSource alone should be sufficient: %v", err)
+	}
+}
+
+func TestDo_TokenSource_ResolvedFreshOnEveryRequest(t *testing.T) {
+	var gotAuthHeaders []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthHeaders = append(gotAuthHeaders, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"id":1,"username":"andreww"}`))
+	}))
+	defer srv.Close()
+
+	calls := 0
+	tokens := []string{"first-token", "refreshed-token"}
+	p, err := New(Config{
+		BaseURL: srv.URL,
+		TokenSource: func() (string, error) {
+			tok := tokens[calls]
+			calls++
+			return tok, nil
+		},
+		AuthMode: AuthBearer,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser (1st): %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser (2nd): %v", err)
+	}
+
+	if len(gotAuthHeaders) != 2 {
+		t.Fatalf("want 2 requests, got %d", len(gotAuthHeaders))
+	}
+	if gotAuthHeaders[0] != "Bearer first-token" {
+		t.Errorf("1st request: want %q, got %q", "Bearer first-token", gotAuthHeaders[0])
+	}
+	if gotAuthHeaders[1] != "Bearer refreshed-token" {
+		t.Errorf("2nd request: want %q, got %q — TokenSource should be re-resolved every request, not cached", "Bearer refreshed-token", gotAuthHeaders[1])
+	}
+}
+
+func TestDo_TokenSource_TakesPrecedenceOverStaticToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"id":1,"username":"andreww"}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{
+		BaseURL:     srv.URL,
+		Token:       "stale-static-token",
+		TokenSource: func() (string, error) { return "fresh-token", nil },
+		AuthMode:    AuthBearer,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser: %v", err)
+	}
+	if gotAuth != "Bearer fresh-token" {
+		t.Errorf("want TokenSource to win over a stale static Token; got %q", gotAuth)
+	}
+}
+
+func TestDo_TokenSource_ErrorPropagates(t *testing.T) {
+	p, err := New(Config{
+		BaseURL:     "http://unused.invalid",
+		TokenSource: func() (string, error) { return "", errors.New("glab config: no such file") },
+		AuthMode:    AuthBearer,
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err == nil {
+		t.Fatal("want error when TokenSource fails, got nil")
 	}
 }

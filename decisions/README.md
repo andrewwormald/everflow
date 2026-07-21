@@ -110,3 +110,4 @@ forces or unlocks.
 | 0060 | Detect MR merge/close by polling MR state, not by inferring it from comments | Accepted | 2026-07-20 |
 | 0061 | Per-Run cooldown after a reconciler re-trigger                          | Accepted | 2026-07-20 |
 | 0062 | Configure ErrBackOff and PauseAfterErrCount on every step                | Accepted | 2026-07-21 |
+| 0063 | GitLab provider resolves its token fresh per request, not once at startup | Accepted | 2026-07-21 |
