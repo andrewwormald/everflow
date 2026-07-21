@@ -503,7 +503,7 @@ func buildProviders(logger *slog.Logger, gitlabBase, githubBase string) (map[str
 // localhost-only trigger listener. The daemon turns it into an AgentState
 // and calls wf.Trigger.
 type triggerRequest struct {
-	Mode         string   `json:"mode"`         // "spec" | "sweep" — see ADR-0024
+	Mode         string   `json:"mode"` // "spec" | "sweep" — see ADR-0024
 	Goal         string   `json:"goal"`
 	ProviderName string   `json:"provider"`
 	ProjectID    string   `json:"project"`
@@ -600,28 +600,36 @@ func triggerHandler(wf *workflow.Workflow[refactorsweep.AgentState, refactorswee
 
 // runStatusResponse is the JSON shape returned by GET /status?run_id=xxx.
 type runStatusResponse struct {
-	RunID                string          `json:"run_id"`
-	ForeignID            string          `json:"foreign_id"`
-	Status               string          `json:"status"`
-	Goal                 string          `json:"goal"`
-	Mode                 string          `json:"mode"`
-	Provider             string          `json:"provider"`
-	Project              string          `json:"project"`
-	Completed            int             `json:"completed"`
-	Blacklisted          int             `json:"blacklisted"`
-	InFlight             int             `json:"in_flight"`
-	Queued               int             `json:"queued"`
-	SubagentInvocations  int             `json:"subagent_invocations"`
-	TotalTokens          int             `json:"total_tokens"`
-	MaxTokens            int             `json:"max_tokens,omitempty"`
-	MaxUnits             int             `json:"max_units,omitempty"`
-	EventsSeen           int             `json:"events_seen"`
-	EventsSkipped        int             `json:"events_skipped"`
-	PauseReason          string          `json:"pause_reason,omitempty"`
-	LastError            string          `json:"last_error,omitempty"`
-	StartedAt            time.Time       `json:"started_at,omitempty"`
-	UpdatedAt            time.Time       `json:"updated_at"`
-	RecentTurns          []turnSummary   `json:"recent_turns,omitempty"`
+	RunID               string `json:"run_id"`
+	ForeignID           string `json:"foreign_id"`
+	Status              string `json:"status"`
+	Goal                string `json:"goal"`
+	Mode                string `json:"mode"`
+	Provider            string `json:"provider"`
+	Project             string `json:"project"`
+	Completed           int    `json:"completed"`
+	Blacklisted         int    `json:"blacklisted"`
+	InFlight            int    `json:"in_flight"`
+	Queued              int    `json:"queued"`
+	SubagentInvocations int    `json:"subagent_invocations"`
+	TotalTokens         int    `json:"total_tokens"`
+	MaxTokens           int    `json:"max_tokens,omitempty"`
+	MaxUnits            int    `json:"max_units,omitempty"`
+	EventsSeen          int    `json:"events_seen"`
+	EventsSkipped       int    `json:"events_skipped"`
+	PauseReason         string `json:"pause_reason,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
+	// AutoPaused is true when RunState == workflow.RunStatePaused because
+	// the PauseAfterErrCount circuit breaker tripped (ADR-0062) — distinct
+	// from our own business-level AgentStatus.StatusPaused. Such a Run
+	// can't be resumed via the normal /control callback dispatch (no
+	// AddCallback is registered for whatever Status it was stuck in), so
+	// callers must route to the direct-store-write revival path instead;
+	// see cmdResume.
+	AutoPaused  bool          `json:"auto_paused,omitempty"`
+	StartedAt   time.Time     `json:"started_at,omitempty"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+	RecentTurns []turnSummary `json:"recent_turns,omitempty"`
 }
 
 // turnSummary is the compact representation of a Turn for the status command.
@@ -681,6 +689,15 @@ func statusHandler(rs workflow.RecordStore, logger *slog.Logger) http.HandlerFun
 	}
 }
 
+// isAutoPaused reports whether rec was paused by the PauseAfterErrCount
+// circuit breaker (ADR-0062) rather than our own business-level
+// AgentStatus.StatusPaused (a human decision point, set by /syntropy
+// pause). A Run in this state cannot be resumed via the normal /control
+// callback dispatch — see cmdResume.
+func isAutoPaused(rec *workflow.Record) bool {
+	return rec.RunState == workflow.RunStatePaused && refactorsweep.AgentStatus(rec.Status) != refactorsweep.StatusPaused
+}
+
 func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 	var state refactorsweep.AgentState
 	if err := workflow.Unmarshal(rec.Object, &state); err != nil {
@@ -703,13 +720,14 @@ func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 	}
 
 	statusStr := refactorsweep.AgentStatus(rec.Status).String()
+	autoPaused := isAutoPaused(rec)
 	// A Run auto-paused by the workflow.PauseAfterErrCount circuit breaker
 	// (ADR-0062) has RunState == RunStatePaused while Status still reports
 	// whatever step it was stuck in (Working, Discovering, ...) — distinct
 	// from our own business-level AgentStatus.StatusPaused (a human decision
 	// point). Surface it explicitly; otherwise it's indistinguishable from a
 	// normal in-progress Run in `status`/`list` output.
-	if rec.RunState == workflow.RunStatePaused && refactorsweep.AgentStatus(rec.Status) != refactorsweep.StatusPaused {
+	if autoPaused {
 		statusStr = fmt.Sprintf("%s (auto-paused: %s)", statusStr, rec.Meta.RunStateReason)
 	}
 
@@ -717,6 +735,7 @@ func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 		RunID:               rec.RunID,
 		ForeignID:           rec.ForeignID,
 		Status:              statusStr,
+		AutoPaused:          autoPaused,
 		Goal:                state.Goal,
 		Mode:                state.Mode,
 		Provider:            state.ProviderName,
@@ -1158,7 +1177,7 @@ func directList(ctx context.Context, storePath string) error {
 			mode = "sweep"
 		}
 		status := refactorsweep.AgentStatus(rec.Status).String()
-		if rec.RunState == workflow.RunStatePaused && refactorsweep.AgentStatus(rec.Status) != refactorsweep.StatusPaused {
+		if isAutoPaused(rec) {
 			status = fmt.Sprintf("%s (auto-paused)", status)
 		}
 		turns := len(state.History)
@@ -1233,6 +1252,41 @@ func resolveRunIDFromDaemon(daemonURL, prefix string) (string, error) {
 		ids = append(ids, r.RunID)
 	}
 	return resolveRunIDPrefix(ids, prefix)
+}
+
+// daemonStatusFor resolves prefix against the daemon's /status and returns
+// the matching run's full response — used by cmdResume to detect the
+// RunStatePaused-while-daemon-reachable case (ADR-0062), which /control
+// can't handle via wf.Callback since no callback is registered for whatever
+// business Status the circuit breaker tripped on.
+func daemonStatusFor(daemonURL, prefix string) (runStatusResponse, error) {
+	resp, err := http.Get(daemonURL + "/status") //nolint:noctx
+	if err != nil {
+		return runStatusResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return runStatusResponse{}, fmt.Errorf("status: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+	}
+	var runs []runStatusResponse
+	if err := json.NewDecoder(resp.Body).Decode(&runs); err != nil {
+		return runStatusResponse{}, fmt.Errorf("decode: %w", err)
+	}
+	ids := make([]string, 0, len(runs))
+	for _, r := range runs {
+		ids = append(ids, r.RunID)
+	}
+	full, err := resolveRunIDPrefix(ids, prefix)
+	if err != nil {
+		return runStatusResponse{}, err
+	}
+	for _, r := range runs {
+		if r.RunID == full {
+			return r, nil
+		}
+	}
+	return runStatusResponse{}, fmt.Errorf("run %s not found", full)
 }
 
 // isDaemonUnreachable reports transport-level HTTP failures (connection
@@ -1314,6 +1368,25 @@ func cmdResume(args []string) error {
 	runID := fs.Arg(0)
 	if runID == "" {
 		return errors.New("usage: syntropy resume <run-id>")
+	}
+
+	// A Run auto-paused by the PauseAfterErrCount circuit breaker (ADR-0062)
+	// can't be resumed via /control's wf.Callback dispatch at all — no
+	// callback is registered for whatever business Status it was stuck in
+	// (Working/Discovering/Initiated), so sendControl below would silently
+	// no-op (HTTP 200, nothing actually happens). Detect it up front via the
+	// daemon's own /status and go straight to the direct-store-write path
+	// regardless of whether the daemon is reachable; unlike the
+	// Cancelled/Failed case, this one doesn't need a daemon restart to take
+	// effect — the step's consumer is still actively subscribed, just
+	// filtered out by RunState, so flipping RunState back to Running is
+	// picked up on its next poll.
+	if st, err := daemonStatusFor(*daemonURL, runID); err == nil && st.AutoPaused {
+		fallback, ok := tryStoreFallback(*storePath)
+		if !ok {
+			return fmt.Errorf("run %s is auto-paused; resuming it requires direct store access (pass --store or ensure ~/.syntropy/store.db exists)", runID)
+		}
+		return directResume(context.Background(), fallback, st.RunID)
 	}
 
 	// Try daemon first (preferred: daemon can resume Paused → AwaitingMerge).

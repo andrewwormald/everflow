@@ -685,3 +685,147 @@ func TestCmdStart_NoConfigLeavesModelEmpty(t *testing.T) {
 		t.Fatalf("got runner model %q, want empty", got.RunnerModel)
 	}
 }
+
+// --- isAutoPaused / directResume RunStatePaused tests (ADR-0062) ---
+
+func TestIsAutoPaused(t *testing.T) {
+	tests := []struct {
+		name string
+		rec  workflow.Record
+		want bool
+	}{
+		{
+			name: "RunStatePaused while Working — the circuit breaker case",
+			rec:  workflow.Record{RunState: workflow.RunStatePaused, Status: int(refactorsweep.StatusWorking)},
+			want: true,
+		},
+		{
+			name: "RunStatePaused while our own business StatusPaused — human pause, not auto",
+			rec:  workflow.Record{RunState: workflow.RunStatePaused, Status: int(refactorsweep.StatusPaused)},
+			want: false,
+		},
+		{
+			name: "RunStateRunning — not paused at all",
+			rec:  workflow.Record{RunState: workflow.RunStateRunning, Status: int(refactorsweep.StatusWorking)},
+			want: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isAutoPaused(&tc.rec); got != tc.want {
+				t.Errorf("isAutoPaused: want %v, got %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// seedAutoPausedStore mirrors seedStore but sets RunState to RunStatePaused
+// with an arbitrary business Status, simulating a Run parked by the
+// PauseAfterErrCount circuit breaker (ADR-0062) mid-step rather than at a
+// callback-registered status.
+func seedAutoPausedStore(t *testing.T, runID string, status refactorsweep.AgentStatus, state refactorsweep.AgentState) string {
+	t.Helper()
+	dir := t.TempDir()
+	sp := filepath.Join(dir, "store.db")
+
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	obj, err := workflow.Marshal(&state)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rec := &workflow.Record{
+		WorkflowName: workflowName,
+		ForeignID:    "test-foreign-id",
+		RunID:        runID,
+		RunState:     workflow.RunStatePaused,
+		Status:       int(status),
+		Object:       obj,
+		UpdatedAt:    time.Now(),
+		Meta:         workflow.Meta{RunStateReason: "max error retry threshold hit - automatically paused"},
+	}
+	if err := rs.Store(context.Background(), rec); err != nil {
+		t.Fatalf("store.Store: %v", err)
+	}
+	return sp
+}
+
+func TestDirectResume_AutoPaused_RestoresOriginalStatus(t *testing.T) {
+	runID := "11111111-1111-1111-1111-111111111111"
+	sp := seedAutoPausedStore(t, runID, refactorsweep.StatusWorking, refactorsweep.AgentState{
+		Goal: "test", LastError: "stale error from a previous failed attempt",
+	})
+
+	if err := directResume(context.Background(), sp, runID); err != nil {
+		t.Fatalf("directResume: %v", err)
+	}
+
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	rec, err := rs.Lookup(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if rec.RunState != workflow.RunStateRunning {
+		t.Errorf("RunState: want RunStateRunning, got %s", rec.RunState)
+	}
+	// The key behavior this test guards: reviving an auto-paused Run must
+	// restore the Status it was actually stuck in (Working), NOT force it
+	// back to StatusDiscovering the way the pre-existing Cancelled/Failed
+	// revival path does.
+	if got := refactorsweep.AgentStatus(rec.Status); got != refactorsweep.StatusWorking {
+		t.Errorf("Status: want StatusWorking (restored, not forced to Discovering), got %s", got)
+	}
+	var state refactorsweep.AgentState
+	if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if state.LastError != "" {
+		t.Errorf("LastError: want cleared, got %q", state.LastError)
+	}
+}
+
+func TestDirectResume_RegularCancelledStillForcesDiscovering(t *testing.T) {
+	// Regression: the pre-existing Cancelled/Failed/StatusPaused revival
+	// path must keep its original "always restart planning" behavior —
+	// only the new RunStatePaused-while-mid-step case (tested above) skips
+	// that and restores the original Status instead.
+	runID := "22222222-2222-2222-2222-222222222222"
+	dir := t.TempDir()
+	sp := filepath.Join(dir, "store.db")
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	obj, err := workflow.Marshal(&refactorsweep.AgentState{Goal: "test"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := rs.Store(context.Background(), &workflow.Record{
+		WorkflowName: workflowName,
+		ForeignID:    "test-foreign-id",
+		RunID:        runID,
+		RunState:     workflow.RunStateCancelled,
+		Status:       int(refactorsweep.StatusCancelled),
+		Object:       obj,
+		UpdatedAt:    time.Now(),
+	}); err != nil {
+		t.Fatalf("store.Store: %v", err)
+	}
+
+	if err := directResume(context.Background(), sp, runID); err != nil {
+		t.Fatalf("directResume: %v", err)
+	}
+
+	rec, err := rs.Lookup(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if got := refactorsweep.AgentStatus(rec.Status); got != refactorsweep.StatusDiscovering {
+		t.Errorf("Status: want StatusDiscovering (forced, as before), got %s", got)
+	}
+}
