@@ -691,10 +691,21 @@ func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 		recent[i] = turnSummary{Phase: t.Phase, UnitID: t.UnitID, Tokens: t.Tokens, Summary: excerpt}
 	}
 
+	statusStr := refactorsweep.AgentStatus(rec.Status).String()
+	// A Run auto-paused by the workflow.PauseAfterErrCount circuit breaker
+	// (ADR-0062) has RunState == RunStatePaused while Status still reports
+	// whatever step it was stuck in (Working, Discovering, ...) — distinct
+	// from our own business-level AgentStatus.StatusPaused (a human decision
+	// point). Surface it explicitly; otherwise it's indistinguishable from a
+	// normal in-progress Run in `status`/`list` output.
+	if rec.RunState == workflow.RunStatePaused && refactorsweep.AgentStatus(rec.Status) != refactorsweep.StatusPaused {
+		statusStr = fmt.Sprintf("%s (auto-paused: %s)", statusStr, rec.Meta.RunStateReason)
+	}
+
 	return runStatusResponse{
 		RunID:               rec.RunID,
 		ForeignID:           rec.ForeignID,
-		Status:              refactorsweep.AgentStatus(rec.Status).String(),
+		Status:              statusStr,
 		Goal:                state.Goal,
 		Mode:                state.Mode,
 		Provider:            state.ProviderName,
@@ -1136,6 +1147,9 @@ func directList(ctx context.Context, storePath string) error {
 			mode = "sweep"
 		}
 		status := refactorsweep.AgentStatus(rec.Status).String()
+		if rec.RunState == workflow.RunStatePaused && refactorsweep.AgentStatus(rec.Status) != refactorsweep.StatusPaused {
+			status = fmt.Sprintf("%s (auto-paused)", status)
+		}
 		turns := len(state.History)
 		goal := state.Goal
 		if len(goal) > 40 {
@@ -1423,6 +1437,35 @@ func directResume(ctx context.Context, storePath, runID string) error {
 	}
 
 	status := refactorsweep.AgentStatus(rec.Status)
+
+	// A Run auto-paused by the workflow.PauseAfterErrCount circuit breaker
+	// (ADR-0062) has RunState == RunStatePaused while Status can be anything
+	// the failing step happened to be in (Working, Discovering, Initiated —
+	// none of which have a registered callback, so it can't be revived via
+	// the normal /control "resume" path at all). Handle it distinctly:
+	// restore the Status the step was actually stuck in, don't force it back
+	// to Discovering the way the Cancelled/Failed/StatusPaused cases below
+	// do.
+	if rec.RunState == workflow.RunStatePaused && status != refactorsweep.StatusPaused {
+		var state refactorsweep.AgentState
+		if err := workflow.Unmarshal(rec.Object, &state); err != nil {
+			return fmt.Errorf("decode run state: %w", err)
+		}
+		state.LastError = ""
+		obj, err := workflow.Marshal(&state)
+		if err != nil {
+			return fmt.Errorf("marshal state: %w", err)
+		}
+		rec.Object = obj
+		rec.RunState = workflow.RunStateRunning
+		rec.Meta.Version++
+		if err := rs.Store(ctx, rec); err != nil {
+			return fmt.Errorf("store: %w", err)
+		}
+		fmt.Printf("✓ Run %s revived to %s (auto-pause circuit breaker cleared; direct store write)\n", runID[:min(10, len(runID))], status)
+		return nil
+	}
+
 	if status != refactorsweep.StatusCancelled && status != refactorsweep.StatusFailed && status != refactorsweep.StatusPaused {
 		return fmt.Errorf("run %s is in status %s; only Cancelled, Failed, or Paused runs can be resumed via direct store write", runID, status)
 	}
