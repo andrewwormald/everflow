@@ -1238,7 +1238,20 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	}
 
 	switch resp.Decision {
-	case DecisionDone:
+	case DecisionDone, DecisionContinue:
+		// DecisionContinue here means the same thing ADR-0045 gave it in
+		// the planned-work loop: a real partial slice was shipped, more
+		// remains. Bundling it with DecisionNoChange (as this switch used
+		// to) silently dropped that work — found live when a "/syntropy I
+		// would like tests to cover this from the beginning" instruction
+		// produced a real, passing test file that a Continue decision then
+		// left permanently uncommitted, eventually tripping SyncWithBase's
+		// uncommitted-changes guard on a later event. Commit/push exactly
+		// like Done; only the final messaging and discussion-resolution
+		// differ (see isDone below), since Continue means the reviewer's
+		// thread isn't actually settled yet.
+		isDone := resp.Decision == DecisionDone
+
 		// Did the runner change anything this turn? Compare against the
 		// unit's own pushed tip (origin/<branch>), NOT origin/<base>: the
 		// branch always has commits beyond base once the MR exists, so a
@@ -1310,21 +1323,31 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		}
 
 		// Push landed. Resolve the originating discussion thread so the
-		// reviewer sees their comment closed automatically. Best-effort —
-		// if it fails (auth, deleted thread, provider stub), the resolve
-		// just doesn't happen and the reviewer closes manually.
-		if discID := ev.Note.DiscussionID; discID != "" {
-			if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
-				// Surface but don't fail — the change is pushed, that's
-				// what matters.
-				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
-					fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
+		// reviewer sees their comment closed automatically — only when the
+		// runner actually finished (Done). A Continue decision means the
+		// reviewer's feedback isn't fully addressed yet, so the thread
+		// stays open for whatever event continues it. Best-effort — if
+		// resolving fails (auth, deleted thread, provider stub), the
+		// resolve just doesn't happen and the reviewer closes manually.
+		if isDone {
+			if discID := ev.Note.DiscussionID; discID != "" {
+				if rErr := p.ResolveDiscussion(ctx, mr.ProjectID, mr.IID, discID); rErr != nil {
+					// Surface but don't fail — the change is pushed, that's
+					// what matters.
+					_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+						fmt.Sprintf("ℹ️ Pushed the change but couldn't resolve the thread automatically: `%v`. Please mark resolved manually.", rErr))
+				}
 			}
 		}
 
 		// Append actual diff shortstat as a hallucination guard so reviewers
 		// can see whether the runner's summary matches what was actually pushed.
-		addressedBody := fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
+		var addressedBody string
+		if isDone {
+			addressedBody = fmt.Sprintf("✓ Addressed (%s): %s", phase, resp.Summary)
+		} else {
+			addressedBody = fmt.Sprintf("🔄 Partial progress (%s): %s\n\nMore work is needed — comment again (or reply `/syntropy prompt <text>`) to continue.", phase, resp.Summary)
+		}
 		if d.Git != nil {
 			if stat, sErr := d.Git.DiffShortstat(ctx, req.Worktree, baseBranch); sErr == nil && stat != "" {
 				addressedBody += "\n\nDiff: " + stat
@@ -1332,7 +1355,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		}
 		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID, addressedBody)
 		return StatusAwaitingMerge, nil
-	case DecisionContinue, DecisionNoChange:
+	case DecisionNoChange:
 		// Runner decided nothing actionable. Don't post a comment — that
 		// would itself trigger a webhook and risk a loop.
 		return StatusAwaitingMerge, nil

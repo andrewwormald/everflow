@@ -1566,6 +1566,70 @@ func TestResume_NoteAdded_SelfCommittingRunner_PushesAndResolves(t *testing.T) {
 	}
 }
 
+// Regression: a DecisionContinue from invokeForEvent (address_comment/
+// fix_ci) used to be bundled with DecisionNoChange and silently dropped
+// any work the runner did that turn — found live when a "add tests"
+// instruction produced a real, passing test file that then sat
+// permanently uncommitted because the turn returned Continue, not Done.
+// Continue must commit + push exactly like Done.
+func TestResume_NoteAdded_DecisionContinue_CommitsAndPushes(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionContinue, Summary: "Added impl_test.go; more coverage still needed."}})
+	g := d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "I would like tests to cover this from the beginning", DiscussionID: "disc-99"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("DecisionContinue should stay AwaitingMerge, got %v", next)
+	}
+	if len(g.commits) != 1 {
+		t.Errorf("DecisionContinue must commit the runner's work; commits=%v", g.commits)
+	}
+	if len(g.pushes) != 1 {
+		t.Errorf("DecisionContinue must push the commit; pushes=%v", g.pushes)
+	}
+}
+
+// A Continue decision means the reviewer's feedback isn't fully addressed
+// yet — unlike Done, the originating discussion thread must NOT be
+// resolved, so it stays visibly open for whatever event continues it.
+func TestResume_NoteAdded_DecisionContinue_DoesNotResolveDiscussion(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionContinue, Summary: "Partial slice shipped."}})
+	d.withGit(&fakeGit{hasChanges: boolPtr(true)})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please add more tests", DiscussionID: "disc-100"},
+	}
+	if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if len(fp.resolves) != 0 {
+		t.Errorf("DecisionContinue must not resolve the discussion thread yet; resolves=%+v", fp.resolves)
+	}
+	if len(fp.replies) != 1 || fp.replies[0].DiscussionID != "disc-100" {
+		t.Fatalf("expected one reply in the originating thread; got %+v", fp.replies)
+	}
+	if !strings.Contains(fp.replies[0].Body, "Partial progress") {
+		t.Errorf("reply should be worded as partial progress, not a finished Addressed; got %q", fp.replies[0].Body)
+	}
+}
+
 // Push succeeded but ResolveDiscussion errored → the Run must still
 // stay AwaitingMerge (the change is pushed; thread resolution is
 // best-effort). A "couldn't resolve" info comment is posted so the
