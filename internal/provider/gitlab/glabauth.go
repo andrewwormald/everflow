@@ -1,11 +1,14 @@
 package gitlab
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -53,6 +56,41 @@ func LoadGlabToken(host string) (token string, err error) {
 		return "", ErrGlabNotConfigured
 	}
 	return h.Token, nil
+}
+
+// glabRefreshPokeTimeout bounds RefreshGlabToken's call to the glab CLI —
+// a real network round trip (to gitlab.com or a self-hosted instance), not
+// a purely local check, so it needs a real timeout rather than blocking
+// indefinitely if the network is unreachable.
+const glabRefreshPokeTimeout = 10 * time.Second
+
+// RefreshGlabToken forces `glab` to run its own internal access-token
+// refresh (via the refresh token it manages, stored alongside the access
+// token in its config file) before reading whatever token ends up on disk
+// via LoadGlabToken.
+//
+// glab's OAuth access token is short-lived and only refreshed lazily, when
+// something actually invokes glab — reading the config file directly
+// (LoadGlabToken alone) can return a genuinely expired access token if
+// nothing has triggered glab's own refresh recently, even though `glab
+// auth status` would report a healthy login the moment it's run (ADR-0065).
+// `glab api user` is used as the poke: a real authenticated API call,
+// confirmed (by direct testing) to trigger glab's refresh-if-needed logic
+// before it succeeds.
+//
+// The poke is best-effort: if it fails (glab not on PATH, a genuine
+// re-login requirement, a transient network blip), this doesn't return
+// early — LoadGlabToken still runs and its result (or lack of one) is
+// what the caller ultimately sees, same as if RefreshGlabToken hadn't
+// poked at all. A failed poke isn't proof the token is unusable; a
+// successful poke doesn't guarantee LoadGlabToken succeeds either
+// (e.g. the host section could still be missing) — this only maximises
+// the chance the token on disk is current when read.
+func RefreshGlabToken(host string) (token string, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), glabRefreshPokeTimeout)
+	defer cancel()
+	_ = exec.CommandContext(ctx, "glab", "api", "user").Run()
+	return LoadGlabToken(host)
 }
 
 // ErrGlabNotConfigured signals that the glab config file is missing the
