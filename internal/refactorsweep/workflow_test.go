@@ -334,6 +334,10 @@ func (g *fakeGit) DiffShortstat(_ context.Context, _, _ string) (string, error) 
 	return "1 file changed, 5 insertions(+)", nil
 }
 
+func (g *fakeGit) IsIsolatedWorktree(_ context.Context, _ string) (bool, error) {
+	return true, nil
+}
+
 func boolPtr(b bool) *bool { return &b }
 
 func strPtr(s string) *string { return &s }

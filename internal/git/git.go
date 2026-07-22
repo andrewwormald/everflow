@@ -101,6 +101,20 @@ type Git interface {
 	// compare the runner's summary against what was really pushed (item 4 of
 	// ADR-TBD hallucination guard).
 	DiffShortstat(ctx context.Context, dir, baseBranch string) (string, error)
+
+	// IsIsolatedWorktree reports whether `dir` is a real linked git worktree
+	// — i.e. it has its own git-dir distinct from the repo's shared
+	// (common) git-dir. This is false for the main checkout of a repo
+	// (where git-dir and common-dir are the same), even though the main
+	// checkout is itself a valid git directory. Intended as a deterministic,
+	// non-LLM guard checked immediately before any invocation that grants
+	// filesystem-write access to a directory, so such access can never
+	// land on the main checkout.
+	//
+	// Returns an error if `dir` doesn't exist or isn't a git directory at
+	// all — callers should treat that as "cannot verify isolation", not
+	// silently proceed.
+	IsIsolatedWorktree(ctx context.Context, dir string) (bool, error)
 }
 
 // ErrNoChanges is returned by Commit when the worktree is clean. Callers
@@ -418,6 +432,59 @@ func (g *ExecGit) DiffShortstat(ctx context.Context, dir, baseBranch string) (st
 		return "", fmt.Errorf("DiffShortstat: %w", err)
 	}
 	return strings.TrimSpace(out), nil
+}
+
+func (g *ExecGit) IsIsolatedWorktree(ctx context.Context, dir string) (bool, error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return false, fmt.Errorf("IsIsolatedWorktree: %w", err)
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("IsIsolatedWorktree: %s is not a directory", dir)
+	}
+
+	gitDir, err := g.runOut(ctx, dir, "rev-parse", "--git-dir")
+	if err != nil {
+		return false, fmt.Errorf("IsIsolatedWorktree: %s is not a git directory: %w", dir, err)
+	}
+	commonDir, err := g.runOut(ctx, dir, "rev-parse", "--git-common-dir")
+	if err != nil {
+		return false, fmt.Errorf("IsIsolatedWorktree: %w", err)
+	}
+
+	// A linked worktree's git-dir (.git/worktrees/<name>) differs from the
+	// repo's common git-dir (the shared .git); the main checkout's git-dir
+	// IS the common dir. Resolve both to absolute, symlink-free paths before
+	// comparing — git reports --git-dir relative to `dir` for the main
+	// checkout but absolute for linked worktrees, so a naive string compare
+	// would misclassify.
+	absGitDir, err := resolveGitPath(dir, strings.TrimSpace(gitDir))
+	if err != nil {
+		return false, fmt.Errorf("IsIsolatedWorktree: resolve git-dir: %w", err)
+	}
+	absCommonDir, err := resolveGitPath(dir, strings.TrimSpace(commonDir))
+	if err != nil {
+		return false, fmt.Errorf("IsIsolatedWorktree: resolve git-common-dir: %w", err)
+	}
+	return absGitDir != absCommonDir, nil
+}
+
+// resolveGitPath resolves a path returned by `git rev-parse --git-dir` /
+// `--git-common-dir` (which may be relative to `dir` or already absolute)
+// to an absolute, symlink-free path suitable for equality comparison.
+func resolveGitPath(dir, p string) (string, error) {
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(dir, p)
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	return resolved, nil
 }
 
 // --- retry-with-backoff (ADR-0059) ---

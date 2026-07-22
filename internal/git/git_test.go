@@ -830,6 +830,68 @@ func TestWithRetry_NonRetryableError_ReturnsImmediately(t *testing.T) {
 	}
 }
 
+// TestExecGit_IsIsolatedWorktree covers the deterministic guard used to
+// verify a directory is a real linked git worktree — distinct from the
+// main checkout — before granting it filesystem-write access.
+func TestExecGit_IsIsolatedWorktree(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	// Main repo, with a linked worktree branched off it.
+	mainRepo := t.TempDir()
+	runMust(t, mainRepo, "init", "-b", "main")
+	writeFile(t, mainRepo, "README.md", "hello\n")
+	runMust(t, mainRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, mainRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	linkedDir := filepath.Join(t.TempDir(), "wt")
+	runMust(t, mainRepo, "worktree", "add", "-b", "feature", linkedDir)
+
+	// A wholly separate, unrelated repo — its own main checkout.
+	unrelatedRepo := t.TempDir()
+	runMust(t, unrelatedRepo, "init", "-b", "main")
+	writeFile(t, unrelatedRepo, "README.md", "unrelated\n")
+	runMust(t, unrelatedRepo, "-c", "user.name=t", "-c", "user.email=t@x", "add", "-A")
+	runMust(t, unrelatedRepo, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-m", "initial")
+
+	nonGitDir := t.TempDir()
+	missingDir := filepath.Join(t.TempDir(), "does-not-exist")
+
+	g := NewExec("t", "t@x")
+	ctx := t.Context()
+
+	tests := []struct {
+		name    string
+		dir     string
+		want    bool
+		wantErr bool
+	}{
+		{name: "linked worktree", dir: linkedDir, want: true},
+		{name: "main checkout", dir: mainRepo, want: false},
+		{name: "unrelated repo", dir: unrelatedRepo, want: false},
+		{name: "non-git dir", dir: nonGitDir, wantErr: true},
+		{name: "missing path", dir: missingDir, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := g.IsIsolatedWorktree(ctx, tt.dir)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("want error, got none (result=%v)", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("IsIsolatedWorktree(%s) = %v, want %v", tt.dir, got, tt.want)
+			}
+		})
+	}
+}
+
 // --- helpers ---
 
 func runMust(t *testing.T, dir string, args ...string) {
