@@ -84,6 +84,13 @@ type AgentState struct {
 	PromptInjection    string             `json:"prompt_injection"`     // /syntropy prompt <text>; consumed by next runner call
 	AbandonRequestedAt time.Time          `json:"abandon_requested_at"` // populated when StatusAwaitingAbandonConfirm (ADR-0026)
 
+	// CIRetryCounts tracks, per in-flight unit ID, how many consecutive
+	// times invokeForEvent has retried a CI failure the runner judged
+	// transient (DecisionRetryCI, ADR-0068). The entry is deleted on the
+	// next EventPipelineSucceeded for that unit, and capped at
+	// maxCIRetries before invokeForEvent gives up and pauses for a human.
+	CIRetryCounts map[string]int `json:"ci_retry_counts,omitempty"`
+
 	// Counters for the "is learning working?" signal (DESIGN.md open question 1):
 	EventsSeen           int `json:"events_seen"`
 	EventsSkippedByFilter int `json:"events_skipped_by_filter"`
@@ -219,4 +226,5 @@ const (
 	DecisionDone     = runner.DecisionDone
 	DecisionFail     = runner.DecisionFail
 	DecisionNoChange = runner.DecisionNoChange
+	DecisionRetryCI  = runner.DecisionRetryCI
 )

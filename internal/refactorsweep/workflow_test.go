@@ -57,6 +57,14 @@ type fakeProvider struct {
 
 	reactErr   error
 	reactions  []reactToNoteCall
+
+	retryJobErr error
+	retriedJobs []retriedJobCall
+}
+
+type retriedJobCall struct {
+	ProjectID string
+	JobID     int64
 }
 
 type resolvedDiscussion struct {
@@ -170,7 +178,12 @@ func (f *fakeProvider) CloseMR(_ context.Context, projectID string, iid int) err
 	f.closes = append(f.closes, closedMR{ProjectID: projectID, IID: iid})
 	return f.closeErr
 }
-func (f *fakeProvider) RetryPipelineJob(_ context.Context, _ string, _ int64) error      { return nil }
+func (f *fakeProvider) RetryPipelineJob(_ context.Context, projectID string, jobID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.retriedJobs = append(f.retriedJobs, retriedJobCall{ProjectID: projectID, JobID: jobID})
+	return f.retryJobErr
+}
 func (f *fakeProvider) ReactToNote(_ context.Context, projectID string, mrIID int, noteID int64, stream, emoji string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1976,6 +1989,105 @@ func TestResume_PipelineFailed_InvokesSubagent(t *testing.T) {
 	}
 	if !strings.Contains(fr.calls[0].CIFailure, "test 3/5") {
 		t.Errorf("CIFailure should mention failed job: %q", fr.calls[0].CIFailure)
+	}
+}
+
+// TestResume_PipelineFailed_DecisionRetryCI_RetriesFailedJobs asserts that a
+// DecisionRetryCI response (ADR-0068) makes no code change — it retries the
+// failed job(s) via RetryPipelineJob, stays AwaitingMerge, and does not
+// touch git at all.
+func TestResume_PipelineFailed_DecisionRetryCI_RetriesFailedJobs(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionRetryCI, Summary: "Looks like a flaky network blip in the test runner.",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventPipelineFailed,
+		MR:   mr,
+		Pipeline: provider.Pipeline{
+			ID: 99, Status: "failed",
+			FailedJobs: []provider.Job{{ID: 42, Name: "test 3/5", Stage: "test", Status: "failed"}},
+		},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if len(fp.retriedJobs) != 1 || fp.retriedJobs[0] != (retriedJobCall{ProjectID: "x/y", JobID: 42}) {
+		t.Errorf("want job 42 retried once; got %+v", fp.retriedJobs)
+	}
+	if r.Object.CIRetryCounts["u"] != 1 {
+		t.Errorf("want CIRetryCounts[u] == 1, got %d", r.Object.CIRetryCounts["u"])
+	}
+	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "transient") {
+		t.Errorf("want a status comment noting the transient retry; got %+v", fp.comments)
+	}
+}
+
+// TestResume_PipelineFailed_DecisionRetryCI_PausesAfterCap asserts that once
+// a unit has hit maxCIRetries consecutive DecisionRetryCI outcomes,
+// invokeForEvent stops retrying and pauses for a human instead of looping
+// forever (ADR-0068).
+func TestResume_PipelineFailed_DecisionRetryCI_PausesAfterCap(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionRetryCI, Summary: "Still looks transient.",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Object.CIRetryCounts = map[string]int{"u": maxCIRetries}
+
+	ev := provider.Event{
+		Kind: provider.EventPipelineFailed,
+		MR:   mr,
+		Pipeline: provider.Pipeline{
+			ID: 99, Status: "failed",
+			FailedJobs: []provider.Job{{ID: 42, Name: "test 3/5", Stage: "test", Status: "failed"}},
+		},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused once maxCIRetries is exceeded, got %v", next)
+	}
+	if len(fp.retriedJobs) != 0 {
+		t.Errorf("must not retry the job once the cap is exceeded; got %+v", fp.retriedJobs)
+	}
+	if !strings.Contains(r.Object.PauseReason, "retried") {
+		t.Errorf("PauseReason should explain the retry cap was hit: %q", r.Object.PauseReason)
+	}
+}
+
+// TestResume_PipelineSucceeded_ResetsCIRetryCount asserts a green pipeline
+// clears the unit's DecisionRetryCI streak so a later unrelated failure
+// doesn't inherit a stale near-cap count.
+func TestResume_PipelineSucceeded_ResetsCIRetryCount(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Object.CIRetryCounts = map[string]int{"u": 2}
+
+	ev := provider.Event{Kind: provider.EventPipelineSucceeded, MR: mr}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if _, ok := r.Object.CIRetryCounts["u"]; ok {
+		t.Errorf("EventPipelineSucceeded should clear the unit's retry count; got %+v", r.Object.CIRetryCounts)
 	}
 }
 
