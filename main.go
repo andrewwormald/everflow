@@ -525,8 +525,18 @@ func buildProviders(logger *slog.Logger, gitlabBase, githubBase string) (map[str
 		}
 		out[p.Name()] = p
 		logger.Info("provider registered", "name", "github", "auth", "env-token")
-	} else if tok, err := github.LoadGhToken(""); err == nil {
-		p, err := github.New(github.Config{BaseURL: githubBase, Token: tok})
+	} else if _, err := github.LoadGhToken(""); err == nil {
+		// Re-resolve via TokenSource on every request rather than caching
+		// the token read above — same staleness bug as the GitLab provider
+		// had (ADR-0063/0065). LoadGhToken already shells out to `gh auth
+		// token` live on every call (unlike glab's plain config-file read),
+		// so no separate "poke" step is needed here; the LoadGhToken call
+		// above is just a fail-fast check that gh is logged in at all
+		// right now.
+		p, err := github.New(github.Config{
+			BaseURL:     githubBase,
+			TokenSource: func() (string, error) { return github.LoadGhToken("") },
+		})
 		if err != nil {
 			return nil, err
 		}
