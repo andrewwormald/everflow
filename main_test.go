@@ -789,6 +789,41 @@ func TestDirectResume_AutoPaused_RestoresOriginalStatus(t *testing.T) {
 	}
 }
 
+// Regression: cmdAbandon had the same gap the resume fix closed — a Run
+// auto-paused by PauseAfterErrCount (RunState=Paused, arbitrary
+// AgentStatus) can't be abandoned via /control's wf.Callback dispatch
+// either (no callback registered for e.g. StatusDiscovering), so
+// sendControl silently no-ops. Unlike directResume, directAbandon needed
+// no special-casing — it only ever gated on RunState.Finished(), which
+// Paused doesn't satisfy — but it had zero test coverage before this fix
+// started routing new traffic through it. This proves it actually works
+// for the auto-paused shape.
+func TestDirectAbandon_AutoPausedRun_Cancels(t *testing.T) {
+	runID := "33333333-3333-3333-3333-333333333333"
+	sp := seedAutoPausedStore(t, runID, refactorsweep.StatusDiscovering, refactorsweep.AgentState{
+		Goal: "test",
+	})
+
+	if err := directAbandon(context.Background(), sp, runID, "test abandon", "", ""); err != nil {
+		t.Fatalf("directAbandon: %v", err)
+	}
+
+	rs, _, err := store.Open(sp)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	rec, err := rs.Lookup(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("lookup: %v", err)
+	}
+	if rec.RunState != workflow.RunStateCancelled {
+		t.Errorf("RunState: want RunStateCancelled, got %s", rec.RunState)
+	}
+	if got := refactorsweep.AgentStatus(rec.Status); got != refactorsweep.StatusCancelled {
+		t.Errorf("Status: want StatusCancelled, got %s", got)
+	}
+}
+
 func TestDirectResume_RegularCancelledStillForcesDiscovering(t *testing.T) {
 	// Regression: the pre-existing Cancelled/Failed/StatusPaused revival
 	// path must keep its original "always restart planning" behavior —

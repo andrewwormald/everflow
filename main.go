@@ -1386,6 +1386,23 @@ func cmdAbandon(args []string) error {
 		return errors.New("usage: syntropy abandon <run-id>")
 	}
 
+	// A Run auto-paused by the PauseAfterErrCount circuit breaker (ADR-0062)
+	// can't be abandoned via /control's wf.Callback dispatch either — the
+	// same gap the resume fix closed (see cmdResume below): no callback is
+	// registered for whatever business Status the breaker tripped on
+	// (Working/Discovering/Initiated), so sendControl below would silently
+	// no-op (HTTP 200, nothing actually happens — confirmed live: an
+	// "abandon" sent this way left the Run's Updated timestamp and status
+	// completely unchanged). Detect it up front and go straight to the
+	// direct-store-write path, regardless of daemon reachability.
+	if st, err := daemonStatusFor(*daemonURL, runID); err == nil && st.AutoPaused {
+		fallback, ok := tryStoreFallback(*storePath)
+		if !ok {
+			return fmt.Errorf("run %s is auto-paused; abandoning it requires direct store access (pass --store or ensure ~/.syntropy/store.db exists)", runID)
+		}
+		return directAbandon(context.Background(), fallback, st.RunID, *reasonFlag, *gitlabBaseURL, *githubBaseURL)
+	}
+
 	// Try daemon first (preferred path: daemon handles two-tap confirmation
 	// and provider-side MR cleanup gracefully). Resolve the prefix against
 	// the daemon's view of the store so short IDs work.
