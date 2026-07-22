@@ -1076,6 +1076,12 @@ func (d *Deps) resume(ctx context.Context, r *workflow.Run[AgentState, AgentStat
 	case provider.EventMRClosed:
 		return d.markUnitBlacklisted(ctx, r, unitID, ev.MR, "MR closed without merge"), nil
 	case provider.EventMRUpdated, provider.EventPipelineSucceeded:
+		if ev.Kind == provider.EventPipelineSucceeded {
+			// A green pipeline clears any DecisionRetryCI streak (ADR-0068)
+			// so the next failure on this unit starts counting from zero
+			// rather than inheriting an unrelated earlier run's near-miss.
+			delete(r.Object.CIRetryCounts, unitID)
+		}
 		return StatusAwaitingMerge, nil // informational; runner doesn't care
 	}
 
@@ -1126,6 +1132,8 @@ func (d *Deps) reactToNote(ctx context.Context, r *workflow.Run[AgentState, Agen
 //   Fail       → pause + relay reason via MR comment
 //   Continue   → stay AwaitingMerge (no-op for this event)
 //   NoChange   → stay AwaitingMerge (e.g. conversational comment)
+//   RetryCI    → re-run the failed job(s) (ADR-0068); pause after
+//                maxCIRetries consecutive retries on the same unit
 //
 // Git push of any code changes the runner made is deferred to the next
 // commit (alongside work()'s push). Until then, status comments are still
@@ -1369,9 +1377,42 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 			fmt.Sprintf("⚠️ Paused — I couldn't address %s: %s\n\nReply `/syntropy retry`, `/syntropy skip`, or push a fix yourself.", phase, resp.Summary))
 		return StatusPaused, nil
+	case DecisionRetryCI:
+		// Runner judged this CI failure transient/infra noise (ADR-0068) —
+		// re-run the failed job(s) without touching code, up to
+		// maxCIRetries times per unit. Exceeding the cap means retrying
+		// alone isn't clearing it, so pause for a human rather than loop
+		// forever.
+		if r.Object.CIRetryCounts == nil {
+			r.Object.CIRetryCounts = map[string]int{}
+		}
+		r.Object.CIRetryCounts[unitID]++
+		count := r.Object.CIRetryCounts[unitID]
+		if count > maxCIRetries {
+			r.Object.PauseReason = fmt.Sprintf("CI failure retried %d times without resolving (%s): %s", maxCIRetries, phase, resp.Summary)
+			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+				fmt.Sprintf("⚠️ Paused — CI has looked transient %d times in a row but retrying hasn't cleared it: %s\n\nReply `/syntropy retry` after investigating, or `/syntropy skip` to abandon.", maxCIRetries, resp.Summary))
+			return StatusPaused, nil
+		}
+		for _, job := range ev.Pipeline.FailedJobs {
+			if rErr := p.RetryPipelineJob(ctx, mr.ProjectID, job.ID); rErr != nil {
+				r.Object.PauseReason = fmt.Sprintf("failed to retry CI job %d during %s: %v", job.ID, phase, rErr)
+				_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+					fmt.Sprintf("⚠️ Paused — CI looked transient but retrying job %d failed: `%v`. Reply `/syntropy retry` after fixing.", job.ID, rErr))
+				return StatusPaused, nil
+			}
+		}
+		_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
+			fmt.Sprintf("🔁 CI failure looked transient (retry %d/%d): %s", count, maxCIRetries, resp.Summary))
+		return StatusAwaitingMerge, nil
 	}
 	return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unhandled decision %v", resp.Decision)
 }
+
+// maxCIRetries caps how many consecutive DecisionRetryCI outcomes
+// invokeForEvent will act on per unit before giving up and pausing for a
+// human (ADR-0068).
+const maxCIRetries = 3
 
 // --- resume helpers ---
 

@@ -116,3 +116,4 @@ forces or unlocks.
 | 0066 | `invokeForEvent`'s DecisionContinue commits and pushes, like Done       | Accepted | 2026-07-21 |
 | 0067 | GitHub provider resolves its token fresh per request, not once at startup | Accepted | 2026-07-22 |
 | 0068 | RetryCI decision for automatic CI-failure triage                        | Accepted | 2026-07-22 |
+| 0069 | Wire `DecisionRetryCI` into `invokeForEvent` with a 3-retry cap          | Accepted | 2026-07-22 |
