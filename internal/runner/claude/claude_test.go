@@ -120,6 +120,22 @@ func TestParseDecision_FailWithReason(t *testing.T) {
 	}
 }
 
+func TestParseDecision_RetryCIWithReason(t *testing.T) {
+	out := `The failed job was a network timeout pulling a dependency, unrelated to the diff.
+
+<syntropy-decision>retryci: transient network timeout in CI runner</syntropy-decision>`
+	d, summary, _, _, err := ParseDecision(out)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d != runner.DecisionRetryCI {
+		t.Errorf("Decision: want RetryCI, got %v", d)
+	}
+	if !strings.Contains(summary, "transient network timeout") {
+		t.Errorf("Summary should include the reason: %q", summary)
+	}
+}
+
 func TestParseDecision_NoChange(t *testing.T) {
 	out := `Looked at the codebase; this change is already applied.
 

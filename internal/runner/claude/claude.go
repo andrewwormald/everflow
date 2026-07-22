@@ -336,6 +336,12 @@ with EXACTLY ONE of these tags on its own line:
 - ` + "`<syntropy-decision>ask: <one-line question></syntropy-decision>`" + ` — you need the human's input before proceeding
 - ` + "`<syntropy-decision>fail: <one-line reason></syntropy-decision>`" + ` — you cannot proceed
 - ` + "`<syntropy-decision>nochange</syntropy-decision>`" + ` — nothing to do (e.g. the change was already applied)
+- ` + "`<syntropy-decision>retryci: <one-line reason></syntropy-decision>`" + ` — only for a CI failure to investigate: the failure looks transient or infra-related (flaky test, runner/network hiccup, timeout unrelated to your change), not a real problem with the code. Do not make any code changes when using this decision.
+
+When investigating a CI failure, choose between these four outcomes:
+- retryci — the failure is transient/infra noise; re-running without changes would likely pass.
+- continue / done — the failure points to a real bug in the code; fix it the same way you would for an explicit human instruction.
+- ask — the fix requires an ambiguous behavior change (more than one reasonable way to make it pass, with different user-visible outcomes); pause and ask before choosing one.
 
 The text before the tag becomes the recorded Summary; syntropy strips
 the tag itself from the output. Only the LAST occurrence of the tag in
@@ -407,6 +413,12 @@ func ParseDecision(out string) (decision runner.Decision, summary, question, tit
 		return runner.DecisionFail, summary, "", "", nil
 	case "nochange":
 		return runner.DecisionNoChange, prefix, "", "", nil
+	case "retryci":
+		summary = prefix
+		if rest != "" {
+			summary = strings.TrimSpace(summary + "\n\nReason: " + rest)
+		}
+		return runner.DecisionRetryCI, summary, "", "", nil
 	default:
 		return runner.DecisionUnknown, prefix, "", "",
 			fmt.Errorf("claude: unrecognised decision verb %q", verb)
