@@ -21,10 +21,11 @@ const (
 	DecisionDone     Decision = 3 // unit complete; ship the MR
 	DecisionFail     Decision = 4 // unit unrecoverable; blacklist + move on
 	DecisionNoChange Decision = 5 // nothing to do this invocation (e.g. conversational comment)
+	DecisionRetryCI  Decision = 6 // CI failure looks transient/infra; re-run without code changes
 )
 
 func (d Decision) String() string {
-	return [...]string{"Unknown", "Continue", "Ask", "Done", "Fail", "NoChange"}[d]
+	return [...]string{"Unknown", "Continue", "Ask", "Done", "Fail", "NoChange", "RetryCI"}[d]
 }
 
 // Budget caps a Run's cumulative cost. Hit any of these and the Run pauses.
