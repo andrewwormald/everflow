@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -688,5 +689,134 @@ func TestGraphQLEndpoint_GHE(t *testing.T) {
 	p2 := &Provider{baseURL: "https://api.github.com"}
 	if got := p2.graphQLEndpoint(); got != "https://api.github.com/graphql" {
 		t.Errorf("github.com: want https://api.github.com/graphql, got %s", got)
+	}
+}
+
+// --- TokenSource tests (ADR-0067: same staleness fix as GitLab's ADR-0063/0065) ---
+
+func TestNew_RequiresTokenOrTokenSource(t *testing.T) {
+	if _, err := New(Config{}); err == nil {
+		t.Fatal("want error when neither Token nor TokenSource is set")
+	}
+	if _, err := New(Config{Token: "t"}); err != nil {
+		t.Errorf("Token alone should be sufficient: %v", err)
+	}
+	if _, err := New(Config{TokenSource: func() (string, error) { return "t", nil }}); err != nil {
+		t.Errorf("TokenSource alone should be sufficient: %v", err)
+	}
+}
+
+func TestDo_TokenSource_ResolvedFreshOnEveryRequest(t *testing.T) {
+	var gotAuthHeaders []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthHeaders = append(gotAuthHeaders, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"id":1,"login":"andreww","type":"User"}`))
+	}))
+	defer srv.Close()
+
+	calls := 0
+	tokens := []string{"first-token", "refreshed-token"}
+	p, err := New(Config{
+		BaseURL: srv.URL,
+		TokenSource: func() (string, error) {
+			tok := tokens[calls]
+			calls++
+			return tok, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser (1st): %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser (2nd): %v", err)
+	}
+
+	if len(gotAuthHeaders) != 2 {
+		t.Fatalf("want 2 requests, got %d", len(gotAuthHeaders))
+	}
+	if gotAuthHeaders[0] != "Bearer first-token" {
+		t.Errorf("1st request: want %q, got %q", "Bearer first-token", gotAuthHeaders[0])
+	}
+	if gotAuthHeaders[1] != "Bearer refreshed-token" {
+		t.Errorf("2nd request: want %q, got %q — TokenSource should be re-resolved every request, not cached", "Bearer refreshed-token", gotAuthHeaders[1])
+	}
+}
+
+func TestDo_TokenSource_TakesPrecedenceOverStaticToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"id":1,"login":"andreww","type":"User"}`))
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{
+		BaseURL:     srv.URL,
+		Token:       "stale-static-token",
+		TokenSource: func() (string, error) { return "fresh-token", nil },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err != nil {
+		t.Fatalf("AuthenticatedUser: %v", err)
+	}
+	if gotAuth != "Bearer fresh-token" {
+		t.Errorf("want TokenSource to win over a stale static Token; got %q", gotAuth)
+	}
+}
+
+func TestDo_TokenSource_ErrorPropagates(t *testing.T) {
+	p, err := New(Config{
+		BaseURL:     "http://unused.invalid",
+		TokenSource: func() (string, error) { return "", errors.New("gh auth token: not logged in") },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := p.AuthenticatedUser(t.Context()); err == nil {
+		t.Fatal("want error when TokenSource fails, got nil")
+	}
+}
+
+func TestDoGraphQL_TokenSource_ResolvedFreshOnEveryRequest(t *testing.T) {
+	var gotAuthHeaders []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthHeaders = append(gotAuthHeaders, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	}))
+	defer srv.Close()
+
+	calls := 0
+	tokens := []string{"first-token", "refreshed-token"}
+	p, err := New(Config{
+		BaseURL: srv.URL,
+		TokenSource: func() (string, error) {
+			tok := tokens[calls]
+			calls++
+			return tok, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var out map[string]any
+	if err := p.doGraphQL(t.Context(), "query { viewer { login } }", nil, &out); err != nil {
+		t.Fatalf("doGraphQL (1st): %v", err)
+	}
+	if err := p.doGraphQL(t.Context(), "query { viewer { login } }", nil, &out); err != nil {
+		t.Fatalf("doGraphQL (2nd): %v", err)
+	}
+
+	if len(gotAuthHeaders) != 2 {
+		t.Fatalf("want 2 requests, got %d", len(gotAuthHeaders))
+	}
+	if gotAuthHeaders[1] != "Bearer refreshed-token" {
+		t.Errorf("2nd request: want %q, got %q — TokenSource should be re-resolved every request, not cached", "Bearer refreshed-token", gotAuthHeaders[1])
 	}
 }

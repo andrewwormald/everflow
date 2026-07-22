@@ -21,22 +21,34 @@ import (
 
 // Provider is the GitHub implementation of provider.Provider.
 type Provider struct {
-	baseURL string // e.g. https://api.github.com (default) or GHE's API base
-	token   string
-	hc      *http.Client
+	baseURL     string                 // e.g. https://api.github.com (default) or GHE's API base
+	token       string                 // static token; ignored if tokenSource is set
+	tokenSource func() (string, error) // re-resolves the token on every request; see Config.TokenSource
+	hc          *http.Client
 }
 
 // Config wires a Provider.
 type Config struct {
-	BaseURL string        // defaults to https://api.github.com
-	Token   string        // required; classic PAT, fine-grained PAT, or App installation token
-	Timeout time.Duration // defaults to 30s per request
+	BaseURL string // defaults to https://api.github.com
+	// Token is a static classic PAT, fine-grained PAT, or App installation
+	// token. Required unless TokenSource is set.
+	Token string
+	// TokenSource, if set, takes precedence over Token and is called to
+	// resolve the token fresh on every request instead of caching one at
+	// construction time. Use this for `gh auth login`'s OAuth token: `gh
+	// auth token` itself always shells out live (see LoadGhToken) and
+	// handles gh's own refresh, but a Provider built from a one-time
+	// Token snapshot would still only ever see whatever was valid at
+	// daemon startup (see ADR-0063/0065, the GitLab-side version of this
+	// same caching bug).
+	TokenSource func() (string, error)
+	Timeout     time.Duration // defaults to 30s per request
 }
 
-// New constructs a Provider. Fails fast on missing token.
+// New constructs a Provider. Fails fast if neither Token nor TokenSource is set.
 func New(cfg Config) (*Provider, error) {
-	if cfg.Token == "" {
-		return nil, errors.New("github: Token is required (set GITHUB_TOKEN)")
+	if cfg.Token == "" && cfg.TokenSource == nil {
+		return nil, errors.New("github: Token or TokenSource is required (set GITHUB_TOKEN)")
 	}
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	if base == "" {
@@ -47,10 +59,24 @@ func New(cfg Config) (*Provider, error) {
 		timeout = 30 * time.Second
 	}
 	return &Provider{
-		baseURL: base,
-		token:   cfg.Token,
-		hc:      &http.Client{Timeout: timeout},
+		baseURL:     base,
+		token:       cfg.Token,
+		tokenSource: cfg.TokenSource,
+		hc:          &http.Client{Timeout: timeout},
 	}, nil
+}
+
+// resolveToken returns the token to send with the next request: freshly
+// resolved via tokenSource if set, otherwise the static token from Config.
+func (p *Provider) resolveToken() (string, error) {
+	if p.tokenSource != nil {
+		tok, err := p.tokenSource()
+		if err != nil {
+			return "", fmt.Errorf("resolve token: %w", err)
+		}
+		return tok, nil
+	}
+	return p.token, nil
 }
 
 func (p *Provider) Name() string { return "github" }
@@ -517,7 +543,11 @@ func (p *Provider) doGraphQL(ctx context.Context, query string, variables map[st
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	tok, err := p.resolveToken()
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	resp, err := p.hc.Do(req)
@@ -642,7 +672,11 @@ func (p *Provider) do(ctx context.Context, method, path string, in any) (*http.R
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+p.token)
+	tok, err := p.resolveToken()
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	if in != nil {

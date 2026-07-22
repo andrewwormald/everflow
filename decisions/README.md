@@ -114,3 +114,4 @@ forces or unlocks.
 | 0064 | Strip nested Claude Code session env vars from the daemon and its subprocesses | Accepted | 2026-07-21 |
 | 0065 | Poke `glab` to force its own token refresh before reading its config | Accepted | 2026-07-21 |
 | 0066 | `invokeForEvent`'s DecisionContinue commits and pushes, like Done       | Accepted | 2026-07-21 |
+| 0067 | GitHub provider resolves its token fresh per request, not once at startup | Accepted | 2026-07-22 |
