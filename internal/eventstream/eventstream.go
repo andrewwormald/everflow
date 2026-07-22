@@ -110,12 +110,13 @@ func (snd *sender) Send(ctx context.Context, foreignID string, statusType int, h
 		return fmt.Errorf("marshal headers: %w", err)
 	}
 	topic := headers[workflow.HeaderTopic]
+	runID := headers[workflow.HeaderRunID]
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, err = s.db.ExecContext(ctx, `
-INSERT INTO event_log (topic, foreign_id, type, headers, created_at) VALUES (?, ?, ?, ?, ?)`,
-		topic, foreignID, statusType, headersBlob, time.Now().UnixNano())
+INSERT INTO event_log (topic, foreign_id, type, headers, run_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		topic, foreignID, statusType, headersBlob, runID, time.Now().UnixNano())
 	if err != nil {
 		return fmt.Errorf("insert event: %w", err)
 	}
