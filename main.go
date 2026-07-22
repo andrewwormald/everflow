@@ -766,7 +766,7 @@ func recordToStatus(rec *workflow.Record) (runStatusResponse, error) {
 		if len(excerpt) > 80 {
 			excerpt = excerpt[:77] + "..."
 		}
-		recent[i] = turnSummary{Phase: t.Phase, UnitID: t.UnitID, Tokens: t.Tokens, Summary: excerpt}
+		recent[i] = turnSummary{Phase: string(t.Phase), UnitID: t.UnitID, Tokens: t.Tokens, Summary: excerpt}
 	}
 
 	statusStr := refactorsweep.AgentStatus(rec.Status).String()
