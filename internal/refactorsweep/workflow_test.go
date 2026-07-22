@@ -2091,6 +2091,41 @@ func TestResume_PipelineSucceeded_ResetsCIRetryCount(t *testing.T) {
 	}
 }
 
+// TestResume_PipelineFailed_DecisionDone_ResetsCIRetryCount asserts that
+// once the runner pushes a genuine fix_ci fix (Done/Continue, ADR-0068),
+// the unit's DecisionRetryCI streak is cleared the same way a green
+// pipeline clears it — a real code fix means the next CI failure starts a
+// fresh streak rather than inheriting an earlier near-cap count.
+func TestResume_PipelineFailed_DecisionDone_ResetsCIRetryCount(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withRunner(t, &fakeRunner{resp: runner.Response{
+		Decision: DecisionDone, Summary: "Fixed the failing test.",
+	}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+	r.Object.CIRetryCounts = map[string]int{"u": 2}
+
+	ev := provider.Event{
+		Kind: provider.EventPipelineFailed,
+		MR:   mr,
+		Pipeline: provider.Pipeline{
+			ID: 99, Status: "failed",
+			FailedJobs: []provider.Job{{ID: 42, Name: "test 3/5", Stage: "test", Status: "failed"}},
+		},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusAwaitingMerge {
+		t.Errorf("want AwaitingMerge, got %v", next)
+	}
+	if _, ok := r.Object.CIRetryCounts["u"]; ok {
+		t.Errorf("a pushed fix_ci fix should clear the unit's retry count; got %+v", r.Object.CIRetryCounts)
+	}
+}
+
 // TestResume_NoteAdded_SyncsWithBaseBeforeRunner asserts invokeForEvent
 // refreshes the unit worktree against origin/<base> BEFORE the runner is
 // invoked (ADR-0045), so conflict resolution never judges against a stale

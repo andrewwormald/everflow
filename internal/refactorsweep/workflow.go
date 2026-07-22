@@ -1330,6 +1330,16 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			return StatusPaused, nil
 		}
 
+		// A pushed fix_ci fix means the runner judged this a real code
+		// problem rather than transient/infra noise (ADR-0068), so it
+		// clears the unit's DecisionRetryCI streak the same way a green
+		// pipeline does (see EventPipelineSucceeded above) — the next CI
+		// failure is a fresh issue, not a continuation of an earlier
+		// near-miss streak.
+		if phase == "fix_ci" {
+			delete(r.Object.CIRetryCounts, unitID)
+		}
+
 		// Push landed. Resolve the originating discussion thread so the
 		// reviewer sees their comment closed automatically — only when the
 		// runner actually finished (Done). A Continue decision means the
