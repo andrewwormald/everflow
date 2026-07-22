@@ -208,13 +208,25 @@ type Turn struct {
 	Index     int       `json:"index"`
 	UnitID    string    `json:"unit_id"`         // empty for non-unit invocations
 	Runner    string    `json:"runner"`           // "claude" | "qwen" | ...
-	Phase     string    `json:"phase"`            // "work" | "address_comment" | "fix_ci"
+	Phase     Phase     `json:"phase"`
 	Summary   string    `json:"summary"`
 	Tokens    int       `json:"tokens"`
 	StartedAt time.Time `json:"started_at"`
 	EndedAt   time.Time `json:"ended_at"`
 	Error     string    `json:"error,omitempty"`
 }
+
+// Phase identifies what kind of runner invocation a Turn records. String-
+// backed (rather than an int like runner.Decision) so existing persisted
+// Run JSON keeps deserializing without a migration.
+type Phase string
+
+const (
+	PhasePlan           Phase = "plan"
+	PhaseWork           Phase = "work"
+	PhaseAddressComment Phase = "address_comment"
+	PhaseFixCI          Phase = "fix_ci"
+)
 
 // Decision is re-exported from internal/runner as an alias so step-body
 // callers within refactorsweep don't have to type-qualify everywhere.

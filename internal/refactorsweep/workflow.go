@@ -468,7 +468,7 @@ func (d *Deps) discoverSpec(ctx context.Context, r *workflow.Run[AgentState, Age
 		Index:     len(r.Object.History),
 		UnitID:    "", // planning turns have no unit
 		Runner:    rn.Name(),
-		Phase:     "plan",
+		Phase:     PhasePlan,
 		Summary:   resp.Summary,
 		Tokens:    resp.Tokens,
 		StartedAt: orNow(resp.StartedAt),
@@ -697,7 +697,7 @@ func (d *Deps) work(ctx context.Context, r *workflow.Run[AgentState, AgentStatus
 		Index:     len(r.Object.History),
 		UnitID:    unitID,
 		Runner:    rn.Name(),
-		Phase:     "work",
+		Phase:     PhaseWork,
 		Summary:   resp.Summary,
 		Tokens:    resp.Tokens,
 		StartedAt: orNow(resp.StartedAt),
@@ -1179,16 +1179,16 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 		Budget:          r.Object.Budget,
 		TitleConvention: r.Object.TitleConvention,
 	}
-	var phase string
+	var phase Phase
 	switch ev.Kind {
 	case provider.EventNoteAdded:
 		req.CommentBody = ev.Note.Body
 		req.SkillCommand = fmt.Sprintf("/syntropy-address-comment %s", unitID)
-		phase = "address_comment"
+		phase = PhaseAddressComment
 	case provider.EventPipelineFailed:
 		req.CIFailure = formatCIFailure(ev.Pipeline)
 		req.SkillCommand = fmt.Sprintf("/syntropy-fix-ci %s", unitID)
-		phase = "fix_ci"
+		phase = PhaseFixCI
 	default:
 		return StatusAwaitingMerge, fmt.Errorf("invokeForEvent: unexpected event kind %s", ev.Kind)
 	}
@@ -1328,6 +1328,16 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 			_ = postBotReply(ctx, r, p, mr.ProjectID, mr.IID, ev.Note.DiscussionID,
 				fmt.Sprintf("⚠️ Paused — git push failed during %s: `%v`. Reply `/syntropy retry` after fixing.", phase, gErr))
 			return StatusPaused, nil
+		}
+
+		// A pushed fix_ci fix means the runner judged this a real code
+		// problem rather than transient/infra noise (ADR-0068), so it
+		// clears the unit's DecisionRetryCI streak the same way a green
+		// pipeline does (see EventPipelineSucceeded above) — the next CI
+		// failure is a fresh issue, not a continuation of an earlier
+		// near-miss streak.
+		if phase == PhaseFixCI {
+			delete(r.Object.CIRetryCounts, unitID)
 		}
 
 		// Push landed. Resolve the originating discussion thread so the
@@ -1661,16 +1671,16 @@ func shortRunID(runID string) string {
 // buildCommitMessage produces a commit message for a follow-up commit
 // (addressing a review comment or fixing CI). Includes the event's source
 // so the audit trail in `git log` matches the MR conversation.
-func buildCommitMessage(phase, unitID string, ev provider.Event, runID string) string {
+func buildCommitMessage(phase Phase, unitID string, ev provider.Event, runID string) string {
 	var subject string
 	switch phase {
-	case "address_comment":
+	case PhaseAddressComment:
 		who := ev.Author.Handle
 		if who == "" {
 			who = "reviewer"
 		}
 		subject = fmt.Sprintf("Address review feedback on %s from @%s", unitID, who)
-	case "fix_ci":
+	case PhaseFixCI:
 		subject = fmt.Sprintf("Fix CI on %s (pipeline %d)", unitID, ev.Pipeline.ID)
 	default:
 		subject = fmt.Sprintf("%s on %s", phase, unitID)
