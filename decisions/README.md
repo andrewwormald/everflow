@@ -118,3 +118,4 @@ forces or unlocks.
 | 0068 | RetryCI decision for automatic CI-failure triage                        | Accepted | 2026-07-22 |
 | 0069 | Wire `DecisionRetryCI` into `invokeForEvent` with a 3-retry cap          | Accepted | 2026-07-22 |
 | 0070 | Direct-SQL deletion for terminal-Run retention cleanup                  | Accepted | 2026-07-22 |
+| 0071 | Retention sweeper loop wired into the daemon                           | Accepted | 2026-07-23 |

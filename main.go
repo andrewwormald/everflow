@@ -39,6 +39,7 @@ import (
 	"github.com/andrewwormald/syntropy/internal/provider/gitlab"
 	"github.com/andrewwormald/syntropy/internal/reconciler"
 	"github.com/andrewwormald/syntropy/internal/refactorsweep"
+	"github.com/andrewwormald/syntropy/internal/retention"
 	"github.com/andrewwormald/syntropy/internal/runner"
 	"github.com/andrewwormald/syntropy/internal/runner/claude"
 	"github.com/andrewwormald/syntropy/internal/setup"
@@ -146,6 +147,25 @@ func buildSweeper(rs workflow.RecordStore, streamer workflow.EventStreamer, thre
 	}
 }
 
+// retentionPeriodDefault is the --retention-period flag's default: how long
+// a terminal Run's records and on-disk run directory are kept before the
+// retention sweep deletes them. See ADR-0071.
+const retentionPeriodDefault = 31 * 24 * time.Hour
+
+// buildRetentionSweeper constructs the retention.Sweeper the daemon runs
+// alongside pollerLoop and the reconciler sweeper. Split out from cmdDaemon
+// so tests can assert it's wired to the same store/git/runsRoot as the rest
+// of the daemon.
+func buildRetentionSweeper(rs *store.RecordStore, g git.Git, runsRoot string, period time.Duration, logger *slog.Logger) *retention.Sweeper {
+	return &retention.Sweeper{
+		Store:           rs,
+		Git:             g,
+		RunsRoot:        runsRoot,
+		RetentionPeriod: period,
+		Logger:          logger,
+	}
+}
+
 // nestedClaudeCodeEnvVars are set by Claude Code on every process it spawns
 // (e.g. the `syntropy daemon &` invocation, if launched via its Bash tool)
 // to identify that process as a nested child of the invoking interactive
@@ -190,6 +210,7 @@ func cmdDaemon(args []string) error {
 		commitEmail       = fs.String("commit-email", "", "git commit author email (default: host .gitconfig)")
 		stuckThreshold    = fs.Duration("reconciler-stuck-threshold", reconcilerStuckThresholdDefault, "how long a Run may sit in Working/Discovering with no progress before the reconciler re-triggers it (see ADR-0033)")
 		retriggerCooldown = fs.Duration("reconciler-retrigger-cooldown", reconcilerRetriggerCooldownDefault, "how long a Run is left alone after the reconciler re-triggers it before it can be re-triggered again")
+		retentionPeriod   = fs.Duration("retention-period", retentionPeriodDefault, "how long a terminal (completed/cancelled) Run's records and on-disk run directory are kept before the retention sweep deletes them; 0 disables the sweep (see ADR-0071)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -352,6 +373,12 @@ func cmdDaemon(args []string) error {
 	sweeper := buildSweeper(recordStore, eventStreamer, *stuckThreshold, *retriggerCooldown, logger)
 	go sweeper.Run(ctx)
 
+	// Start the retention sweep — deletes terminal Runs (and their on-disk
+	// run directory) once they're older than --retention-period. See
+	// internal/retention's package doc and ADR-0071.
+	retentionSweeper := buildRetentionSweeper(recordStore, gitClient, runsRoot, *retentionPeriod, logger)
+	go retentionSweeper.Run(ctx)
+
 	fmt.Fprintf(os.Stderr, "%s\n", daemonBannerLine())
 	logger.Info("syntropy daemon started",
 		"version", version,
@@ -361,6 +388,7 @@ func cmdDaemon(args []string) error {
 		"workflow", workflowName,
 		"store", *storePath,
 		"runs_root", runsRoot,
+		"retention_period", *retentionPeriod,
 	)
 	logger.Warn("v1 scaffold — runners, step bodies, and CLI commands are stubs; see DESIGN.md for the build roadmap")
 
