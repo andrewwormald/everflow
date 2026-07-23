@@ -10,11 +10,13 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -62,7 +64,101 @@ func OpenSqlite(path string) (*Backend, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply schema: %w", err)
 	}
+	if err := addColumnIfMissing(db, "outbox", "run_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate outbox.run_id: %w", err)
+	}
+	if err := addColumnIfMissing(db, "event_log", "run_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate event_log.run_id: %w", err)
+	}
+	if _, err := db.Exec(postColumnIndexSQL); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("apply post-migration indexes: %w", err)
+	}
+	if err := backfillEventLogRunID(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backfill event_log.run_id: %w", err)
+	}
 	return &Backend{db: db, clock: clock.RealClock{}}, nil
+}
+
+// addColumnIfMissing runs `ALTER TABLE ... ADD COLUMN` for schemas that
+// predate the column, matching ADR-0022's "additive changes run at
+// startup" story. Sqlite has no `ADD COLUMN IF NOT EXISTS`, so a
+// duplicate-column error (meaning a prior process already migrated this
+// file) is swallowed; any other error is real and returned.
+func addColumnIfMissing(db *sql.DB, table, column, def string) error {
+	_, err := db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, def))
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	return nil
+}
+
+// postColumnIndexSQL creates indexes on columns added via
+// addColumnIfMissing — separate from schemaSQL because CREATE TABLE and
+// its indexes must run before the ALTER TABLE calls that add the columns
+// they index.
+const postColumnIndexSQL = `
+CREATE INDEX IF NOT EXISTS idx_outbox_run_id ON outbox(run_id);
+CREATE INDEX IF NOT EXISTS idx_event_log_run_id ON event_log(run_id);
+`
+
+// backfillEventLogRunID populates run_id on event_log rows written before
+// that column existed — the ones the ALTER TABLE in OpenSqlite gave a
+// DEFAULT '' — so that a daemon upgraded in place, with existing Runs
+// already terminal, doesn't end up with event_log rows DeleteRun's `WHERE
+// run_id = ?` can never match (and so could never clean up). The run_id
+// is still recoverable: sender.Send (internal/eventstream) has always
+// JSON-marshalled workflow.HeaderRunID into the headers blob every row
+// carries, so it's decoded from there rather than lost. Safe to run on
+// every startup — once a row is backfilled it no longer matches `WHERE
+// run_id = ''`, so this is a no-op after the first run on any given file.
+func backfillEventLogRunID(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, headers FROM event_log WHERE run_id = ''`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id    int64
+		runID string
+	}
+	var toUpdate []pending
+	for rows.Next() {
+		var (
+			id      int64
+			headers []byte
+		)
+		if err := rows.Scan(&id, &headers); err != nil {
+			rows.Close()
+			return err
+		}
+		if len(headers) == 0 {
+			continue
+		}
+		var h map[string]string
+		if err := json.Unmarshal(headers, &h); err != nil {
+			continue // best-effort: malformed headers just stay unbackfilled
+		}
+		runID := h[string(workflow.HeaderRunID)]
+		if runID == "" {
+			continue
+		}
+		toUpdate = append(toUpdate, pending{id: id, runID: runID})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, p := range toUpdate {
+		if _, err := db.Exec(`UPDATE event_log SET run_id = ? WHERE id = ?`, p.runID, p.id); err != nil {
+			return fmt.Errorf("backfill event_log id=%d: %w", p.id, err)
+		}
+	}
+	return nil
 }
 
 // Close releases the database handle.
@@ -101,6 +197,7 @@ CREATE TABLE IF NOT EXISTS outbox (
     id            TEXT    NOT NULL PRIMARY KEY,
     workflow_name TEXT    NOT NULL,
     data          BLOB    NOT NULL,
+    run_id        TEXT    NOT NULL DEFAULT '',
     created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_workflow_created ON outbox(workflow_name, created_at);
@@ -123,6 +220,7 @@ CREATE TABLE IF NOT EXISTS event_log (
     foreign_id TEXT    NOT NULL,
     type       INTEGER NOT NULL,
     headers    BLOB,
+    run_id     TEXT    NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_event_log_topic_id ON event_log(topic, id);
@@ -198,9 +296,9 @@ ON CONFLICT(run_id) DO UPDATE SET
 		return fmt.Errorf("upsert record: %w", err)
 	}
 
-	const insertOutbox = `INSERT OR IGNORE INTO outbox (id, workflow_name, data, created_at) VALUES (?, ?, ?, ?);`
+	const insertOutbox = `INSERT OR IGNORE INTO outbox (id, workflow_name, data, run_id, created_at) VALUES (?, ?, ?, ?, ?);`
 	if _, err := tx.ExecContext(ctx, insertOutbox,
-		eventData.ID, eventData.WorkflowName, eventData.Data, r.b.clock.Now().UnixNano(),
+		eventData.ID, eventData.WorkflowName, eventData.Data, record.RunID, r.b.clock.Now().UnixNano(),
 	); err != nil {
 		return fmt.Errorf("insert outbox: %w", err)
 	}
@@ -348,6 +446,80 @@ ORDER BY created_at ASC LIMIT ?`, workflowName, limit)
 func (r *RecordStore) DeleteOutboxEvent(ctx context.Context, id string) error {
 	_, err := r.b.db.ExecContext(ctx, `DELETE FROM outbox WHERE id = ?`, id)
 	return err
+}
+
+// TerminalRun identifies a Run in a finished RunState, as returned by
+// ListTerminalRuns for a retention sweep to consider for deletion.
+// See ADR-0070.
+type TerminalRun struct {
+	RunID        string
+	WorkflowName string
+	ForeignID    string
+	UpdatedAt    time.Time
+}
+
+// terminalRunStates are the RunState values a retention sweep may clean
+// up. RunStateCancelled and RunStateCompleted are both permanent, no
+// further processing will ever touch these Runs again — see ADR-0070.
+var terminalRunStates = []int{int(workflow.RunStateCancelled), int(workflow.RunStateCompleted)}
+
+// ListTerminalRuns returns Runs in RunStateCancelled or RunStateCompleted
+// whose UpdatedAt is at or before olderThan.
+func (r *RecordStore) ListTerminalRuns(ctx context.Context, olderThan time.Time) ([]TerminalRun, error) {
+	rows, err := r.b.db.QueryContext(ctx, `
+SELECT run_id, workflow_name, foreign_id, updated_at
+FROM records
+WHERE run_state IN (?, ?) AND updated_at <= ?
+ORDER BY updated_at ASC`,
+		terminalRunStates[0], terminalRunStates[1], olderThan.UnixNano())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []TerminalRun
+	for rows.Next() {
+		var (
+			tr      TerminalRun
+			updated int64
+		)
+		if err := rows.Scan(&tr.RunID, &tr.WorkflowName, &tr.ForeignID, &updated); err != nil {
+			return nil, err
+		}
+		tr.UpdatedAt = time.Unix(0, updated)
+		out = append(out, tr)
+	}
+	return out, rows.Err()
+}
+
+// DeleteRun permanently removes a Run's records, outbox, timeouts and
+// event_log rows in one transaction. Idempotent: deleting an unknown or
+// already-deleted run_id matches zero rows in every statement and
+// commits as a no-op rather than erroring. See ADR-0070 for why this
+// goes straight to SQL instead of workflow.DeleteData, and why
+// event_cursors rows are deliberately left untouched.
+func (r *RecordStore) DeleteRun(ctx context.Context, runID string) error {
+	r.b.mu.Lock()
+	defer r.b.mu.Unlock()
+
+	tx, err := r.b.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }() // no-op after Commit
+
+	for _, stmt := range []string{
+		`DELETE FROM records WHERE run_id = ?`,
+		`DELETE FROM timeouts WHERE run_id = ?`,
+		`DELETE FROM outbox WHERE run_id = ?`,
+		`DELETE FROM event_log WHERE run_id = ?`,
+	} {
+		if _, err := tx.ExecContext(ctx, stmt, runID); err != nil {
+			return fmt.Errorf("delete run %s: %w", runID, err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // --- TimeoutStore ---
