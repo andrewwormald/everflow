@@ -1194,6 +1194,7 @@ func (d *Deps) invokeForEvent(ctx context.Context, r *workflow.Run[AgentState, A
 	switch ev.Kind {
 	case provider.EventNoteAdded:
 		req.CommentBody = ev.Note.Body
+		req.CommenterIsAuthor = ev.IsAuthor
 		req.SkillCommand = fmt.Sprintf("/syntropy-address-comment %s", unitID)
 		phase = PhaseAddressComment
 	case provider.EventPipelineFailed:

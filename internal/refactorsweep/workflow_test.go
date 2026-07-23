@@ -1967,6 +1967,73 @@ func TestResume_NoteAdded_InvokesSubagent_DecisionDone(t *testing.T) {
 	}
 }
 
+func TestResume_NoteAdded_CommenterIsAuthorPropagated(t *testing.T) {
+	// ADR-0072: invokeForEvent threads ev.IsAuthor into the runner request
+	// so BuildPrompt can gate the non-author triage guidance on it.
+	for _, tc := range []struct {
+		name   string
+		handle string
+		want   bool
+	}{
+		{"reviewer comment", "reviewer", false},
+		{"author comment", "andreww", true}, // matches awaitingRun's Author
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newDeps(t, &fakeProvider{})
+			fr := d.withRunner(t, &fakeRunner{resp: runner.Response{
+				Decision: DecisionDone, Summary: "handled",
+			}})
+			mr := provider.MR{ProjectID: "x/y", IID: 1}
+			r := awaitingRun(t, "u", mr)
+
+			ev := provider.Event{
+				Kind:   provider.EventNoteAdded,
+				MR:     mr,
+				Author: provider.User{Handle: tc.handle},
+				Note:   provider.Note{ID: 100, Body: "the nil check on line 12 is inverted"},
+			}
+			if _, err := d.resume(t.Context(), r, payloadOf(t, ev)); err != nil {
+				t.Fatalf("resume: %v", err)
+			}
+			if len(fr.calls) != 1 {
+				t.Fatalf("runner should be called once; got %d calls", len(fr.calls))
+			}
+			if fr.calls[0].CommenterIsAuthor != tc.want {
+				t.Errorf("CommenterIsAuthor: want %v, got %v", tc.want, fr.calls[0].CommenterIsAuthor)
+			}
+		})
+	}
+}
+
+func TestResume_AuthorControlComment_GateUnaffected(t *testing.T) {
+	// ADR-0072 reuses ev.IsAuthor for the runner request, but the upstream
+	// control-verb gate (ADR-0017) must be untouched: an author /syntropy
+	// command still dispatches as a control command and never reaches the
+	// runner as an address-comment invocation.
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	fr := d.withRunner(t, &fakeRunner{})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind:   provider.EventNoteAdded,
+		MR:     mr,
+		Author: provider.User{Handle: "andreww"}, // the Run author
+		Note:   provider.Note{ID: 101, Body: "/syntropy pause"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("author /syntropy pause should still pause the Run; got %v", next)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("control command must not invoke the runner; got %d calls", len(fr.calls))
+	}
+}
+
 func TestResume_NoteAdded_DecisionAsk_PausesWithQuestion(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
