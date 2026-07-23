@@ -92,6 +92,26 @@ COLUMN IF NOT EXISTS`), matching ADR-0022's "additive schema changes run
 at startup" story. Both tables get a `run_id` index so the delete is
 indexed, not a table scan.
 
+Adding the column is not enough on its own: a daemon that has been
+running against an existing sqlite file already has rows written before
+the column existed, and the `ALTER TABLE` default leaves those at
+`run_id = ''`. For `outbox` this is harmless — those rows are drained by
+`purgeOutbox` shortly after upgrade regardless of `run_id` (it deletes by
+`id`, not `run_id`), so any pre-migration row is gone within one poll
+cycle. `event_log` has no such drain; a row lives forever once written,
+so a pre-migration row would sit at `run_id = ''` permanently and
+`DeleteRun`'s `WHERE run_id = ?` could never match it — the Run's
+event-log history would never be cleanable, defeating the point of this
+ADR for every Run that existed before the upgrade. `OpenSqlite` therefore
+runs a one-time-per-row backfill after adding the column: `SELECT id,
+headers FROM event_log WHERE run_id = ''`, decode each row's
+already-stored `headers` JSON blob (which `sender.Send` in
+`internal/eventstream` has always populated with
+`workflow.HeaderRunID`), and `UPDATE ... SET run_id = ?` per row. This
+runs on every `OpenSqlite` call but is a no-op once a file's rows are all
+backfilled, since new writes always populate `run_id` directly and the
+`WHERE run_id = ''` scan is indexed.
+
 `event_cursors` is explicitly **excluded** from `DeleteRun`, despite
 being one of the tables this increment's planning research named. A
 cursor row is keyed by `(receiver name, topic)`, not by Run — it's the
@@ -134,7 +154,11 @@ per-Run cleanup, and stays out of scope here.
 
 - `outbox` and `event_log` each gain a `run_id` column and index. Startup
   cost is one `ALTER TABLE` per table per process start (skipped once
-  the column exists); negligible at everflow's table sizes.
+  the column exists); negligible at everflow's table sizes. `event_log`
+  additionally pays one indexed `SELECT ... WHERE run_id = ''` per
+  startup for the backfill, which only does real work (a per-row
+  `UPDATE`) for rows written before this migration first ran on that
+  file; it's a cheap no-op on every later startup.
 - `DeleteRun` is safe to call from an external sweep with only a
   `run_id` string — no generic workflow instance, no live `*workflow.Run`
   needed — which is the property the planned sweeper actually requires.

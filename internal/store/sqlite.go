@@ -10,6 +10,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -75,6 +76,10 @@ func OpenSqlite(path string) (*Backend, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("apply post-migration indexes: %w", err)
 	}
+	if err := backfillEventLogRunID(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("backfill event_log.run_id: %w", err)
+	}
 	return &Backend{db: db, clock: clock.RealClock{}}, nil
 }
 
@@ -99,6 +104,62 @@ const postColumnIndexSQL = `
 CREATE INDEX IF NOT EXISTS idx_outbox_run_id ON outbox(run_id);
 CREATE INDEX IF NOT EXISTS idx_event_log_run_id ON event_log(run_id);
 `
+
+// backfillEventLogRunID populates run_id on event_log rows written before
+// that column existed — the ones the ALTER TABLE in OpenSqlite gave a
+// DEFAULT '' — so that a daemon upgraded in place, with existing Runs
+// already terminal, doesn't end up with event_log rows DeleteRun's `WHERE
+// run_id = ?` can never match (and so could never clean up). The run_id
+// is still recoverable: sender.Send (internal/eventstream) has always
+// JSON-marshalled workflow.HeaderRunID into the headers blob every row
+// carries, so it's decoded from there rather than lost. Safe to run on
+// every startup — once a row is backfilled it no longer matches `WHERE
+// run_id = ''`, so this is a no-op after the first run on any given file.
+func backfillEventLogRunID(db *sql.DB) error {
+	rows, err := db.Query(`SELECT id, headers FROM event_log WHERE run_id = ''`)
+	if err != nil {
+		return err
+	}
+	type pending struct {
+		id    int64
+		runID string
+	}
+	var toUpdate []pending
+	for rows.Next() {
+		var (
+			id      int64
+			headers []byte
+		)
+		if err := rows.Scan(&id, &headers); err != nil {
+			rows.Close()
+			return err
+		}
+		if len(headers) == 0 {
+			continue
+		}
+		var h map[string]string
+		if err := json.Unmarshal(headers, &h); err != nil {
+			continue // best-effort: malformed headers just stay unbackfilled
+		}
+		runID := h[string(workflow.HeaderRunID)]
+		if runID == "" {
+			continue
+		}
+		toUpdate = append(toUpdate, pending{id: id, runID: runID})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, p := range toUpdate {
+		if _, err := db.Exec(`UPDATE event_log SET run_id = ? WHERE id = ?`, p.runID, p.id); err != nil {
+			return fmt.Errorf("backfill event_log id=%d: %w", p.id, err)
+		}
+	}
+	return nil
+}
 
 // Close releases the database handle.
 func (b *Backend) Close() error { return b.db.Close() }

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -153,6 +154,52 @@ func TestDeleteRun_UnknownRunIDIsNoop(t *testing.T) {
 	if err := rs.DeleteRun(t.Context(), "run-x"); err != nil {
 		t.Fatalf("second DeleteRun should also be a no-op: %v", err)
 	}
+}
+
+// TestOpenSqlite_BackfillsEventLogRunID simulates a daemon that has been
+// running since before the run_id column existed: an event_log row with
+// run_id left at its ALTER TABLE default of '', as every pre-migration row
+// would be. Re-opening that same file must backfill run_id from the row's
+// existing headers blob, so DeleteRun can find and clean up that Run's
+// history once it goes terminal — without this, the row would be stuck
+// with run_id = '' forever and DeleteRun would never match it.
+func TestOpenSqlite_BackfillsEventLogRunID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "store.db")
+
+	b, err := OpenSqlite(path)
+	if err != nil {
+		t.Fatalf("OpenSqlite: %v", err)
+	}
+
+	const legacyRun = "run-from-before-migration"
+	headers := []byte(`{"run_id":"` + legacyRun + `"}`)
+	_, err = b.DB().ExecContext(t.Context(), `
+INSERT INTO event_log (topic, foreign_id, type, headers, run_id, created_at) VALUES (?, ?, ?, ?, '', ?)`,
+		"topic", "fid-"+legacyRun, 1, headers, time.Now().UnixNano())
+	if err != nil {
+		t.Fatalf("insert legacy event_log row: %v", err)
+	}
+	if err := b.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// Re-opening the same file is what a restarted/upgraded daemon does;
+	// this must run the backfill against the row inserted above.
+	b2, err := OpenSqlite(path)
+	if err != nil {
+		t.Fatalf("re-open OpenSqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = b2.Close() })
+
+	assertRowCount(t, b2, "event_log", legacyRun, 1)
+
+	rs := b2.RecordStore()
+	storeRecord(t, rs, legacyRun, workflow.RunStateCompleted)
+	if err := rs.DeleteRun(t.Context(), legacyRun); err != nil {
+		t.Fatalf("DeleteRun: %v", err)
+	}
+	assertRowCount(t, b2, "event_log", legacyRun, 0)
 }
 
 func assertRowCount(t *testing.T, b *Backend, table, runID string, want int) {
