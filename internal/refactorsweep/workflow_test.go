@@ -238,6 +238,8 @@ type fakeGit struct {
 	hasWork    *bool   // HasWorkBeyondBase; nil → mirror hasChanges
 	hasWorkErr error
 	diffStat   *string // nil → default "1 file changed, 5 insertions(+)"
+	isolated   *bool   // IsIsolatedWorktree; nil → default true
+	isolateErr error
 
 	ensures      []ensureCall
 	resets       []string
@@ -335,6 +337,12 @@ func (g *fakeGit) DiffShortstat(_ context.Context, _, _ string) (string, error) 
 }
 
 func (g *fakeGit) IsIsolatedWorktree(_ context.Context, _ string) (bool, error) {
+	if g.isolateErr != nil {
+		return false, g.isolateErr
+	}
+	if g.isolated != nil {
+		return *g.isolated, nil
+	}
 	return true, nil
 }
 
@@ -1474,6 +1482,30 @@ func TestWork_EnsureBranchFails(t *testing.T) {
 	}
 }
 
+func TestWork_NotIsolatedWorktree_RefusesToInvokeRunner(t *testing.T) {
+	d := newDeps(t, &fakeProvider{})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	d.withGit(&fakeGit{isolated: boolPtr(false)})
+	r := newRun(t, &AgentState{
+		ProviderName: "fake", ProjectID: "x/y", RunnerName: "fake-runner",
+		CurrentUnit: "svc-x", InFlight: map[string]provider.MR{},
+	})
+
+	next, err := d.work(t.Context(), r)
+	if err != nil {
+		t.Fatalf("work: want nil err (terminal failure committed via state), got %v", err)
+	}
+	if next != StatusFailed {
+		t.Errorf("want Failed, got %v", next)
+	}
+	if !strings.Contains(r.Object.LastError, "not an isolated git worktree") {
+		t.Errorf("LastError should mention isolation guard: %q", r.Object.LastError)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner should NOT be invoked with --dangerously-skip-permissions on a non-isolated dir; got %d calls", len(fr.calls))
+	}
+}
+
 func TestResume_NoteAdded_DoneButCleanWorktree_PostsInfoComment(t *testing.T) {
 	fp := &fakeProvider{}
 	d := newDeps(t, fp)
@@ -2351,6 +2383,38 @@ func TestResume_NoteAdded_SyncWithBaseFails_Pauses(t *testing.T) {
 	}
 	if len(fp.comments) != 1 || !strings.Contains(fp.comments[0].Body, "/syntropy retry") {
 		t.Errorf("pause comment should tell the author how to retry; got %+v", fp.comments)
+	}
+}
+
+// TestResume_NoteAdded_NotIsolatedWorktree_Pauses asserts the deterministic
+// isolation guard runs before invokeForEvent hands the worktree to a runner
+// with --dangerously-skip-permissions: a non-isolated dir must pause the
+// Run and never invoke the runner.
+func TestResume_NoteAdded_NotIsolatedWorktree_Pauses(t *testing.T) {
+	fp := &fakeProvider{}
+	d := newDeps(t, fp)
+	d.withGit(&fakeGit{isolated: boolPtr(false)})
+	fr := d.withRunner(t, &fakeRunner{resp: runner.Response{Decision: DecisionDone}})
+	mr := provider.MR{ProjectID: "x/y", IID: 1}
+	r := awaitingRun(t, "u", mr)
+
+	ev := provider.Event{
+		Kind: provider.EventNoteAdded, MR: mr,
+		Author: provider.User{Handle: "reviewer"},
+		Note:   provider.Note{Body: "please rename Foo to Bar"},
+	}
+	next, err := d.resume(t.Context(), r, payloadOf(t, ev))
+	if err != nil {
+		t.Fatalf("resume: want nil err (pause committed via state, not retried), got %v", err)
+	}
+	if next != StatusPaused {
+		t.Errorf("want Paused when worktree isolation check fails, got %v", next)
+	}
+	if !strings.Contains(r.Object.PauseReason, "isolation") {
+		t.Errorf("PauseReason should name the failing check: %q", r.Object.PauseReason)
+	}
+	if len(fr.calls) != 0 {
+		t.Errorf("runner must NOT be invoked when the isolation check fails; got %d calls", len(fr.calls))
 	}
 }
 
