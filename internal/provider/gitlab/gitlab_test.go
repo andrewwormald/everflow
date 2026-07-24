@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/andrewwormald/syntropy/internal/provider"
@@ -92,6 +93,79 @@ func TestCreateMR_DraftPrefix(t *testing.T) {
 	})
 	if seenTitle != "Draft: already" {
 		t.Errorf("double-draft: want %q, got %q", "Draft: already", seenTitle)
+	}
+}
+
+// TestCreateMR_LabelsAppliedViaFollowUpCall guards against a real GitLab
+// quirk found live: a label that doesn't already exist on the project can
+// get silently created-but-not-attached when passed inline on MR creation.
+// Labels must be applied via a separate PUT using add_labels (additive),
+// not baked into the POST /merge_requests body, mirroring the GitHub
+// provider's existing two-step pattern.
+func TestCreateMR_LabelsAppliedViaFollowUpCall(t *testing.T) {
+	var createBody map[string]any
+	var labelCall struct {
+		method string
+		path   string
+		body   map[string]any
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			_ = json.NewDecoder(r.Body).Decode(&createBody)
+			_, _ = w.Write([]byte(`{"iid":7,"web_url":"https://gitlab/x/-/merge_requests/7"}`))
+			return
+		}
+		labelCall.method = r.Method
+		labelCall.path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&labelCall.body)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	mr, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "b", TargetBranch: "main", Title: "Migrate logger",
+		Labels: []string{"syntropy", "syntropy:abc123"},
+	})
+	if err != nil {
+		t.Fatalf("CreateMR: %v", err)
+	}
+	if mr.IID != 7 {
+		t.Fatalf("MR IID: want 7, got %d", mr.IID)
+	}
+
+	if _, ok := createBody["labels"]; ok {
+		t.Errorf("labels must not be sent in the creation payload (that's the buggy path); creation body: %+v", createBody)
+	}
+	if labelCall.method != http.MethodPut {
+		t.Fatalf("want a follow-up PUT to apply labels, got method=%q", labelCall.method)
+	}
+	if !strings.HasSuffix(labelCall.path, "/merge_requests/7") {
+		t.Errorf("label call path: want suffix /merge_requests/7, got %q", labelCall.path)
+	}
+	if got := labelCall.body["add_labels"]; got != "syntropy,syntropy:abc123" {
+		t.Errorf("add_labels: want %q, got %q", "syntropy,syntropy:abc123", got)
+	}
+}
+
+// TestCreateMR_NoLabels_NoFollowUpCall proves an empty Labels slice makes
+// no follow-up request at all — only one HTTP call total.
+func TestCreateMR_NoLabels_NoFollowUpCall(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		_, _ = w.Write([]byte(`{"iid":1,"web_url":"https://gitlab/x/-/merge_requests/1"}`))
+	}))
+	defer srv.Close()
+
+	p, _ := New(Config{BaseURL: srv.URL, Token: "t"})
+	if _, err := p.CreateMR(t.Context(), "owner/repo", provider.MRDraft{
+		Branch: "b", TargetBranch: "main", Title: "Migrate logger",
+	}); err != nil {
+		t.Fatalf("CreateMR: %v", err)
+	}
+	if callCount != 1 {
+		t.Errorf("want exactly 1 HTTP call with no labels, got %d", callCount)
 	}
 }
 

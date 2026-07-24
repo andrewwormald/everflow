@@ -190,9 +190,6 @@ func (p *Provider) CreateMR(ctx context.Context, projectID string, draft provide
 		"title":         title,
 		"description":   draft.Description,
 	}
-	if len(draft.Labels) > 0 {
-		body["labels"] = strings.Join(draft.Labels, ",")
-	}
 	var resp struct {
 		IID    int    `json:"iid"`
 		WebURL string `json:"web_url"`
@@ -201,12 +198,30 @@ func (p *Provider) CreateMR(ctx context.Context, projectID string, draft provide
 	if err := p.doJSON(ctx, http.MethodPost, path, body, &resp); err != nil {
 		return provider.MR{}, err
 	}
-	return provider.MR{
+	mr := provider.MR{
 		ProjectID: projectID,
 		IID:       resp.IID,
 		URL:       resp.WebURL,
 		Branch:    draft.Branch,
-	}, nil
+	}
+	if len(draft.Labels) > 0 {
+		// A follow-up call, not part of the creation payload above: GitLab
+		// can silently create-but-not-attach a label that doesn't already
+		// exist on the project when it's passed inline on MR creation —
+		// found live (the label ends up existing as a project label, with
+		// zero "add" events ever recorded against the MR it was meant for).
+		// add_labels (additive) also avoids clobbering any labels gitStream
+		// or another integration adds around the same time, unlike the
+		// plain labels param (which replaces the whole set). Matches the
+		// GitHub provider's existing two-step pattern for the same reason.
+		labelPath := fmt.Sprintf("/api/v4/projects/%s/merge_requests/%d",
+			url.PathEscape(projectID), resp.IID)
+		_ = p.doJSON(ctx, http.MethodPut, labelPath, map[string]any{
+			"add_labels": strings.Join(draft.Labels, ","),
+		}, nil)
+		// Label-application failures are non-fatal; the MR is already open.
+	}
+	return mr, nil
 }
 
 // PostComment → POST /api/v4/projects/:id/merge_requests/:iid/notes.
