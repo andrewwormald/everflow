@@ -61,6 +61,13 @@ type Request struct {
 	CommentBody string // populated for address-comment invocations
 	CIFailure   string // populated for fix-CI invocations (last ~2KB of log)
 
+	// CommenterIsAuthor reports whether CommentBody came from the Run's
+	// author. When false, the prompt tells the runner to auto-implement
+	// only objective defects and route solution-steering suggestions to
+	// DecisionAsk for the author's approval (ADR-0072). Meaningless when
+	// CommentBody is empty.
+	CommenterIsAuthor bool
+
 	Timeout time.Duration
 	Budget  Budget
 }

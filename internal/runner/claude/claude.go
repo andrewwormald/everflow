@@ -249,7 +249,9 @@ func BuildArgs(req runner.Request, extraArgs []string) []string {
 // Layout:
 //  1. Header lines (Skill / Unit / Worktree, if set)
 //  2. The body — req.Goal, taken verbatim
-//  3. Event-specific blocks (comment to address, CI failure to fix)
+//  3. Event-specific blocks (comment to address — plus the non-author
+//     triage guidance when the commenter isn't the Run's author, see
+//     ADR-0072 — and CI failure to fix)
 //  4. The scope-discipline reminder (always appended; flavour depends on
 //     whether req.UnitID is set — see ADR-0045)
 //  5. The decision-marker protocol instructions (always appended)
@@ -270,6 +272,9 @@ func BuildPrompt(req runner.Request) string {
 
 	if req.CommentBody != "" {
 		fmt.Fprintf(&b, "## Reviewer feedback to address\n\n%s\n\n", req.CommentBody)
+		if !req.CommenterIsAuthor {
+			b.WriteString(nonAuthorCommentGuidance)
+		}
 	}
 	if req.CIFailure != "" {
 		fmt.Fprintf(&b, "## CI failure to investigate\n\n```\n%s\n```\n\n", req.CIFailure)
@@ -288,6 +293,30 @@ func BuildPrompt(req runner.Request) string {
 	b.WriteString(decisionProtocol)
 	return b.String()
 }
+
+// nonAuthorCommentGuidance follows the reviewer-feedback block when the
+// comment came from someone other than the Run's author. ADR-0072 extends
+// the author-vs-reviewer privilege model (ADR-0017) from control commands
+// to review comments: a reviewer can get an objective defect fixed
+// directly, but a change of solution or direction needs the author's
+// sign-off, so the runner routes those to Decision=Ask instead of
+// implementing them.
+const nonAuthorCommentGuidance = `This comment is from a reviewer, not the Run's author. Before acting on
+it, classify it:
+
+- **Objective defect** — it points out a correctness problem: broken
+  logic, a bug, a failing or missing test, a crash, a security flaw, or
+  code that plainly doesn't do what the task requires. Implement the fix
+  as usual.
+- **Solution steering** — it suggests a different approach, design,
+  structure, naming, scope, or a style preference; the current code is
+  not objectively wrong. Do NOT implement it. Finish with Decision=Ask
+  and a question that summarises the reviewer's suggestion so the Run's
+  author can approve or decline it.
+
+If you are unsure which it is, treat it as solution steering and ask.
+
+`
 
 // planningScopeDiscipline is the scope-discipline flavour for planning
 // invocations (req.UnitID == ""). See ADR-0045: a planner left to its own

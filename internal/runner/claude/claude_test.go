@@ -293,6 +293,74 @@ func TestBuildPrompt_MinimalFields(t *testing.T) {
 	}
 }
 
+func TestBuildPrompt_NonAuthorComment_AppendsTriageGuidance(t *testing.T) {
+	// ADR-0072: a comment from someone other than the Run's author gets the
+	// objective-defect-vs-solution-steering guidance, telling the runner to
+	// route steering suggestions to Decision=Ask instead of implementing them.
+	req := runner.Request{
+		UnitID:            "svc-payments",
+		Goal:              "do the unit",
+		CommentBody:       "I'd structure this as a middleware instead",
+		CommenterIsAuthor: false,
+	}
+	prompt := BuildPrompt(req)
+
+	for _, want := range []string{
+		"## Reviewer feedback to address",
+		"not the Run's author",
+		"Objective defect",
+		"Solution steering",
+		"Decision=Ask",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("prompt missing %q\n--- prompt ---\n%s", want, prompt)
+		}
+	}
+
+	// The guidance must sit with the feedback it qualifies, before the
+	// scope/decision boilerplate.
+	guidanceIdx := strings.Index(prompt, "not the Run's author")
+	scopeIdx := strings.Index(prompt, "## Scope discipline")
+	if guidanceIdx == -1 || scopeIdx == -1 || guidanceIdx >= scopeIdx {
+		t.Errorf("guidance should precede scope discipline; guidanceIdx=%d scopeIdx=%d", guidanceIdx, scopeIdx)
+	}
+}
+
+func TestBuildPrompt_AuthorComment_NoTriageGuidance(t *testing.T) {
+	// The author steering their own Run is the normal case — no triage
+	// block; their comment is implemented as before.
+	req := runner.Request{
+		UnitID:            "svc-payments",
+		Goal:              "do the unit",
+		CommentBody:       "I'd structure this as a middleware instead",
+		CommenterIsAuthor: true,
+	}
+	prompt := BuildPrompt(req)
+
+	if !strings.Contains(prompt, "## Reviewer feedback to address") {
+		t.Errorf("author comment should still render the feedback block")
+	}
+	if strings.Contains(prompt, "not the Run's author") {
+		t.Errorf("author comment should not get the non-author triage guidance\n--- prompt ---\n%s", prompt)
+	}
+}
+
+func TestBuildPrompt_NoComment_NoTriageGuidance(t *testing.T) {
+	// CommenterIsAuthor defaults to false on every non-comment invocation
+	// (planning, work, fix-CI); the guidance must key off CommentBody being
+	// present, not off the bool alone.
+	for _, req := range []runner.Request{
+		{Goal: "plan the next increment"},
+		{Goal: "do the unit", UnitID: "svc-payments"},
+		{Goal: "do the unit", UnitID: "svc-payments", CIFailure: "FAIL: TestSomething"},
+	} {
+		prompt := BuildPrompt(req)
+		if strings.Contains(prompt, "not the Run's author") {
+			t.Errorf("no CommentBody should mean no triage guidance; req=%+v", req)
+		}
+	}
+}
+
 func TestBuildPrompt_ScopeDiscipline_PlanningVsUnit(t *testing.T) {
 	// req.UnitID is the discriminator between the two scope-discipline
 	// flavours: empty means a planning invocation, set means a unit
